@@ -1,58 +1,39 @@
 import os
-import ujson
+import torch
+import json
+from typing import List
 
-from functools import partial
-from colbert.utils.utils import print_message
-from colbert.modeling.tokenization import QueryTokenizer, DocTokenizer, tensorize_triples
+from transformers import AutoTokenizer
 
-from colbert.utils.runs import Run
+from Bio import Seq
 
 
-class EagerBatcher():
-    def __init__(self, args):
-        self.bsize = args.bsize
-        self.tokenizer = 
-        self.tensorize_triples = partial(tensorize_triples, self.query_tokenizer, self.doc_tokenizer)
-        self.triples_path = args.triples
-        self._reset_triples()
+class Batcher(torch.utils.data.Dataset):
+    def __init__(self, jsonl_path):
+        """Initializes the dataset by storing the file path."""
+        self.file_path = jsonl_path
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            "zhihan1996/DNABERT-2-117M", trust_remote_code=True
+        )
+        # For large files, it's better to get line offsets first
+        with open(self.file_path, "r") as f:
+            self.lines = f.readlines()
 
-    def _reset_triples(self):
-        self.reader = open(self.triples_path, mode='r', encoding="utf-8")
-        self.position = 0
+    def __len__(self):
+        """Returns the total number of samples (lines) in the file."""
+        return len(self.lines)
 
-    def __iter__(self):
-        return self
+    def __getitem__(self, idx):
+        """Fetches one sample from the file by its index."""
+        line = self.lines[idx]
+        data = json.loads(line)
+        query = data["query"]
+        reads = data["reads"]
+        return self.collate(query, reads)
 
-    def __next__(self):
-        queries, positives, negatives = [], [], []
-
-        for line_idx, line in zip(range(self.bsize * self.nranks), self.reader):
-            if (self.position + line_idx) % self.nranks != self.rank:
-                continue
-
-            query, pos, neg = line.strip().split('\t')
-
-            queries.append(query)
-            positives.append(pos)
-            negatives.append(neg)
-
-        self.position += line_idx + 1
-
-        if len(queries) < self.bsize:
-            raise StopIteration
-
-        return self.collate(queries, positives, negatives)
-
-    def collate(self, queries, positives, negatives):
-        assert len(queries) == len(positives) == len(negatives) == self.bsize
-
-        return self.tensorize_triples(queries, positives, negatives, self.bsize // self.accumsteps)
-
-    def skip_to_batch(self, batch_idx, intended_batch_size):
-        self._reset_triples()
-
-        Run.warn(f'Skipping to batch #{batch_idx} (with intended_batch_size = {intended_batch_size}) for training.')
-
-        _ = [self.reader.readline() for _ in range(batch_idx * intended_batch_size)]
-
-        return None
+    def collate(self, query: str, reads: List[str]):
+        query_tokens = self.tokenizer(query, return_tensors="pt")  # 1, query_length
+        read_tokens = self.tokenizer(
+            reads, return_tensors="pt", padding=True
+        )  # num_reads, max_read_length
+        return query_tokens, read_tokens

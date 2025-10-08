@@ -3,90 +3,103 @@ import random
 import time
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
+from functools import partial
 
-from transformers import AdamW
-from rawbert.training.batcher import Batcher 
-from rawbert.modeling.rawbert import RawBERT 
+from torch.utils.data import DataLoader, Subset
+from torch.optim import AdamW
+from transformers import BatchEncoding
+from rawbert.training.batcher import Batcher
+from rawbert.modeling.rawbert import RawBERT
 
 
-def train(args):
+def collate_fn(samples: list[tuple[BatchEncoding, BatchEncoding]], pad_token: int):
+    # def collate_fn(batch_list, pad_token_id: int):
+    # Extract tensors from all BatchEncodings
+    max_query_len = max([sample[0].input_ids.shape[-1] for sample in samples])
+    max_num_reads = max([sample[1].input_ids.shape[0] for sample in samples])
+    max_seq_len = max([sample[1].input_ids.shape[1] for sample in samples])
+
+    def pad_tensor(t, target_n, target_l, pad_val):
+        n, l = t.shape
+        out = torch.full((target_n, target_l), pad_val, dtype=t.dtype, device=t.device)
+        out[:n, :l] = t
+        return out
+
+    padded_query_ids = torch.stack(
+        [
+            pad_tensor(sample[0].input_ids, 1, max_query_len, pad_token)
+            for sample in samples
+        ],
+        dim=0,
+    )
+    padded_query_mask = torch.stack(
+        [
+            pad_tensor(sample[0].attention_mask, 1, max_query_len, 0)
+            for sample in samples
+        ],
+        dim=0,
+    )
+    padded_queries = {
+        "input_ids": padded_query_ids,
+        "attention_mask": padded_query_mask,
+    }
+    padded_reads_ids = torch.stack(
+        [
+            pad_tensor(sample[1].input_ids, max_num_reads, max_seq_len, pad_token)
+            for sample in samples
+        ],
+        dim=0,
+    )
+    padded_reads_mask = torch.stack(
+        [
+            pad_tensor(sample[1].attention_mask, max_num_reads, max_seq_len, 0)
+            for sample in samples
+        ],
+        dim=0,
+    )
+    padded_reads = {"input_ids": padded_reads_ids, "attention_mask": padded_reads_mask}
+    return padded_queries, padded_reads
+
+
+def train(dataset_path, device, batch_size, lr, epochs, dim, single_batch, run):
     random.seed(1337)
     np.random.seed(1337)
     torch.manual_seed(1337)
-    if args.distributed:
-        torch.cuda.manual_seed_all(1337)
 
-    reader = Batcher()
+    reader = Batcher(dataset_path)
 
-    if args.rank not in [-1, 0]:
-        torch.distributed.barrier()
+    if single_batch:
+        reader = Subset(reader, range(batch_size))
 
-    rawbert = RawBERT.from_pretrained('bert-base-uncased',
-                                      query_maxlen=args.query_maxlen,
-                                      doc_maxlen=args.doc_maxlen,
-                                      dim=args.dim,
-                                      similarity_metric=args.similarity,
-                                      mask_punctuation=args.mask_punctuation)
+    collater = partial(collate_fn, pad_token=reader.tokenizer.pad_token)
+    dataloader = DataLoader(reader, batch_size, shuffle=True, collate_fn=collater)
 
-    if args.checkpoint is not None:
-        assert args.resume_optimizer is False, "TODO: This would mean reload optimizer too."
-        print_message(f"#> Starting from checkpoint {args.checkpoint} -- but NOT the optimizer!")
+    rawbert = RawBERT(dim=dim)
+    rawbert = rawbert.to(device)
+    rawbert.train()
 
-        checkpoint = torch.load(args.checkpoint, map_location='cpu')
-
-        try:
-            colbert.load_state_dict(checkpoint['model_state_dict'])
-        except:
-            print_message("[WARNING] Loading checkpoint with strict=False")
-            colbert.load_state_dict(checkpoint['model_state_dict'], strict=False)
-
-    #colbert = colbert.to(DEVICE)
-    colbert.train()
-
-    optimizer = AdamW(filter(lambda p: p.requires_grad, colbert.parameters()), lr=args.lr, eps=1e-8)
-    optimizer.zero_grad()
-
-    criterion = nn.CrossEntropyLoss()
-    labels = torch.zeros(args.bsize, dtype=torch.long, device=DEVICE)
+    optimizer = AdamW(filter(lambda p: p.requires_grad, rawbert.parameters()), lr=lr)
 
     start_time = time.time()
-    train_loss = 0.0
 
-    start_batch_idx = 0
-
-    if args.resume:
-        assert args.checkpoint is not None
-        start_batch_idx = checkpoint['batch']
-
-        reader.skip_to_batch(start_batch_idx, checkpoint['arguments']['bsize'])
-
-    for batch_idx, BatchSteps in zip(range(start_batch_idx, args.maxsteps), reader):
-        this_batch_loss = 0.0
-
-        for queries, passages in BatchSteps:
-            scores = colbert(queries, experiments).view(2, -1).permute(1, 0)
-            loss = criterion(scores, labels[:scores.size(0)])
-
-            print_progress(scores)
-            amp.backward(loss)
-
-            train_loss += loss.item()
-            this_batch_loss += loss.item()
-
-        amp.step(colbert, optimizer)
-
-        if args.rank < 1:
-            avg_loss = train_loss / (batch_idx+1)
-
-            num_examples_seen = (batch_idx - start_batch_idx) * args.bsize * args.nranks
+    for _ in range(epochs):
+        for batch in dataloader:
+            queries, reads = batch
+            scores = rawbert(queries, reads)
+            labels = torch.arange(scores.size(0), device=scores.device)
+            loss = F.cross_entropy(scores, labels)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
             elapsed = float(time.time() - start_time)
 
-            log_to_mlflow = (batch_idx % 20 == 0)
-            Run.log_metric('train/avg_loss', avg_loss, step=batch_idx, log_to_mlflow=log_to_mlflow)
-            Run.log_metric('train/batch_loss', this_batch_loss, step=batch_idx, log_to_mlflow=log_to_mlflow)
-            Run.log_metric('train/examples', num_examples_seen, step=batch_idx, log_to_mlflow=log_to_mlflow)
-            Run.log_metric('train/throughput', num_examples_seen / elapsed, step=batch_idx, log_to_mlflow=log_to_mlflow)
-
-            print_message(batch_idx, avg_loss)
-            manage_checkpoints(args, colbert, optimizer, batch_idx+1)
+            run.log(
+                {
+                    "train/loss": loss.item(),
+                    "train/lr": lr,
+                    "train/batch_size": batch_size,
+                    "train/time_elapsed": elapsed,
+                }
+            )

@@ -38,7 +38,8 @@ def main():
 
                     reads = []
                     for left, right in zip(left_reads, right_reads):
-                        reads.append((str(left.seq), str(right.seq.reverse_complement())))
+                        reads.append(str(left.seq))
+                        reads.append(str(right.seq))
                     # write (query, reads) to jsonl
                     record = {"id": int(dirpath.split("/")[-1]), "query": query, "reads": reads}
                     json_record = json.dumps(record)
