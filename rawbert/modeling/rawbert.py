@@ -43,13 +43,14 @@ class RawBERT(nn.Module):
     def forward(self, Q, R):
         # Q is (B, 1, query_length)
         # R is (B, num_reads)
-        Q_mask = Q["attention_mask"]
+        Q_mask = Q["attention_mask"].to(self.device)
         Q = self.embed(**Q).squeeze()
         R, R_mask = self.embed(**R, pool_reads=True)
         return self.score(Q, Q_mask.squeeze(), R, R_mask)
 
     def embed(self, input_ids, attention_mask, pool_reads=False):
         # input_ids is (B, max_num_reads, max_read_length)
+        input_ids, attention_mask = input_ids.to(self.device), attention_mask.to(self.device)
         B, num_reads, read_length = input_ids.shape
         input_ids = input_ids.view(B * num_reads, read_length)
         attention_mask = attention_mask.view(B * num_reads, read_length)

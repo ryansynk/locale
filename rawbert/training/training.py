@@ -69,11 +69,11 @@ def train(dataset_path, device, batch_size, lr, epochs, dim, single_batch, run):
     torch.manual_seed(1337)
 
     reader = Batcher(dataset_path)
+    collater = partial(collate_fn, pad_token=reader.tokenizer.pad_token_id)
 
     if single_batch:
         reader = Subset(reader, range(batch_size))
 
-    collater = partial(collate_fn, pad_token=reader.tokenizer.pad_token)
     dataloader = DataLoader(reader, batch_size, shuffle=True, collate_fn=collater)
 
     rawbert = RawBERT(dim=dim)

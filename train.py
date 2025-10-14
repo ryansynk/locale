@@ -1,6 +1,6 @@
 import torch
 import wandb
-from jsonargparse import autocli
+from jsonargparse import auto_cli
 from rawbert.training.training import train
 
 
@@ -12,7 +12,7 @@ def main(
     dim: int = 64,
     single_batch: bool = False,
 ):
-    device = torch.device("cuda" if torch.cuda_is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     run = wandb.init(
         entity="tomg-group-umd",
         project="rawbert",
@@ -27,4 +27,4 @@ def main(
 
 
 if __name__ == "__main__":
-    autocli(main)
+    auto_cli(main, as_positional=False)
