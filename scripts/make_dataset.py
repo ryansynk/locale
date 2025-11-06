@@ -59,7 +59,7 @@ def build_unitigs(read_files, tmp_dir, cuttlefish_exe_path):
         read_files[0],
         read_files[1],
         "-t",
-        "30",
+        "1",
         "-k",
         "31",
         "-o",
