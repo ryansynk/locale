@@ -11,6 +11,8 @@ def main(
     epochs: int,
     dim: int = 64,
     single_batch: bool = False,
+    record_memory_snapshot: bool = False,
+    use_triton: bool = False,
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     run = wandb.init(
@@ -22,7 +24,39 @@ def main(
         },
         name="test-name",
     )
-    train(dataset_path, device, batch_size, lr, epochs, dim, single_batch, run)
+
+    if record_memory_snapshot:
+        torch.cuda.memory._record_memory_history()
+        try:
+            train(
+                dataset_path,
+                device,
+                batch_size,
+                lr,
+                epochs,
+                dim,
+                single_batch,
+                run,
+                use_triton,
+            )
+        except torch.cuda.OutOfMemoryError:
+            if record_memory_snapshot:
+                torch.cuda.memory._dump_snapshot("my_snapshot.pickle")
+        except Exception as e:
+            print(f"An unexpected error occurred: {e}")
+    else:
+        train(
+            dataset_path,
+            device,
+            batch_size,
+            lr,
+            epochs,
+            dim,
+            single_batch,
+            run,
+            use_triton,
+        )
+
     run.finish()
 
 

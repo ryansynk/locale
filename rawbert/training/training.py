@@ -63,7 +63,9 @@ def collate_fn(samples: list[tuple[BatchEncoding, BatchEncoding]], pad_token: in
     return padded_queries, padded_reads
 
 
-def train(dataset_path, device, batch_size, lr, epochs, dim, single_batch, run):
+def train(
+    dataset_path, device, batch_size, lr, epochs, dim, single_batch, run, use_triton
+):
     random.seed(1337)
     np.random.seed(1337)
     torch.manual_seed(1337)
@@ -76,7 +78,7 @@ def train(dataset_path, device, batch_size, lr, epochs, dim, single_batch, run):
 
     dataloader = DataLoader(reader, batch_size, shuffle=True, collate_fn=collater)
 
-    rawbert = RawBERT(dim=dim)
+    rawbert = RawBERT(dim=dim, use_triton=use_triton)
     rawbert = rawbert.to(device)
     rawbert.train()
 

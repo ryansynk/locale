@@ -3,61 +3,53 @@ import pathlib
 import os
 import random
 from Bio import SeqIO
+from jsonargparse import auto_cli
+
 
 def format_number(num):
     if num % 1000 == 0 and num > 0:
         return f"{num // 1000}k"
     return str(num)
 
-def select_sequences(fasta_file, n, l):
+
+def select_sequences(transcriptome_fasta, N, L_min, L_max):
     """
-    Selects N non-overlapping sequences of length L from a FASTA file.
+    Selects N distinct transcript sequences from a FASTA file,
+    where each sequence length is between L_min and L_max.
     """
-    transcripts = list(SeqIO.parse(fasta_file, "fasta"))
+    transcripts = list(SeqIO.parse(transcriptome_fasta, "fasta"))
+    filtered_transcripts = [t for t in transcripts if L_min <= len(t) <= L_max]
+    assert N <= len(filtered_transcripts)
+    selected = random.sample(filtered_transcripts, N)
+    return [(t.id, str(t.seq)) for t in selected]
 
-    selected_sequences = []
-    selected_transcript_ids = []
-    while len(selected_sequences) < n:
-        random_transcript_idx = random.randint(0, len(transcripts))
-        if random_transcript_idx in selected_transcript_ids:
-            continue
-        selected_transcript_ids.append(random_transcript_idx)
-        sequence = transcripts[random_transcript_idx]
-        if len(sequence) >= l:
-            selected_sequences.append((random_transcript_idx, sequence))
-            
-    return selected_sequences
 
-def main():
-    parser = argparse.ArgumentParser(description="Select non-overlapping sequences from a FASTA file.")
-    parser.add_argument('--N_train', type=int, default=10000, help="Number of sequences to select for train dataset.")
-    parser.add_argument('--N_val', type=int, default=2000, help="Number of sequences to select for val dataset.")
-    parser.add_argument('--N_test', type=int, default=2000, help="Number of sequences to select for test dataset.")
-    parser.add_argument('--L', type=int, default=1000, help="Length of each sequence.")
-    parser.add_argument('fasta_file', type=str, help="Path to the FASTA file.")
-    args = parser.parse_args()
-
-    n_train = args.N_train
-    n_val = args.N_val
-    n_test = args.N_test
-    n_total = n_train + n_val + n_test
-    l = args.L
-    fasta_file = args.fasta_file
+def main(
+    transcriptome_fasta: str,
+    N_train: int = 90000,
+    N_val: int = 5000,
+    N_test: int = 5000,
+    L_min: int = 1000,
+    L_max: int = 10000,
+):
     random.seed(1337)
 
-    if not os.path.exists(fasta_file):
-        print(f"Error: File not found at {fasta_file}")
+    if not os.path.exists(transcriptome_fasta):
+        print(f"Error: File not found at {transcriptome_fasta}")
         return
-
-    sequences = select_sequences(fasta_file, n_total, l)
-    train_sequences = sequences[:n_train]
-    val_sequences = sequences[n_train:(n_train + n_val)]
-    test_sequences = sequences[(n_train + n_val):]
+    N_total = N_train + N_val + N_test
+    sequences = select_sequences(transcriptome_fasta, N_total, L_min, L_max)
 
     data_dir = pathlib.Path(__file__).parent.resolve() / ".." / "data" / "dataset"
     data_dir.mkdir(exist_ok=True)
 
-    for split, selected_sequences in [("train", train_sequences), ("val", val_sequences), ("test", test_sequences)]:
+
+
+    #for split, selected_sequences in [
+    #    ("train", train_sequences),
+    #    ("val", val_sequences),
+    #    ("test", test_sequences),
+    #]:
         split_dir = data_dir / split
         split_dir.mkdir(exist_ok=True)
         for idx, record in selected_sequences:
@@ -68,7 +60,10 @@ def main():
             with output_file.open("w") as f:
                 SeqIO.write(record, f, "fasta")
 
-    print(f"Successfully selected {n_total} sequences and saved them to {str(data_dir)}")
+    print(
+        f"Successfully selected {N_total} sequences and saved them to {str(data_dir)}"
+    )
+
 
 if __name__ == "__main__":
-    main()
+    auto_cli(main)

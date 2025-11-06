@@ -1,13 +1,16 @@
-import string
+import sys
 import einops
 import torch
 import torch.nn as nn
 
 from transformers import AutoModel, BertConfig
+from .flash_attn_triton import (
+    flash_attn_qkvpacked_func as updated_flash_attn_qkvpacked_func,
+)
 
 
 class RawBERT(nn.Module):
-    def __init__(self, dim=64):
+    def __init__(self, dim=64, use_triton=False):
         super().__init__()
         self.config = BertConfig.from_pretrained("zhihan1996/DNABERT-2-117M")
         self.bert = AutoModel.from_pretrained(
@@ -15,6 +18,7 @@ class RawBERT(nn.Module):
         )
         self.dim = dim
         self.linear = nn.Linear(self.config.hidden_size, dim, bias=False)
+        self._apply_bert_flash_attn_patch(use_triton)
 
     @property
     def device(self):
@@ -40,6 +44,32 @@ class RawBERT(nn.Module):
         embed_last = torch.gather(embed, dim=2, index=idx).squeeze(2)  # (B, H, D)
         return embed_last, new_mask
 
+    def _apply_bert_flash_attn_patch(self, use_triton):
+        print("Attempting to apply monkey patch...")
+        try:
+            # The bert model is now an attribute of self, so we reference it with self.bert
+            bert_layer_module_name = self.bert.encoder.layer[0].__module__
+            target_module = sys.modules[bert_layer_module_name]
+            # Replace the function in the loaded module with our corrected version
+
+            if use_triton:
+                update = updated_flash_attn_qkvpacked_func
+            else:
+                update = None
+            setattr(
+                target_module,
+                "flash_attn_qkvpacked_func",
+                update,
+            )
+
+            print(f"Monkey patch successful for module: {target_module.__name__}")
+        except (AttributeError, KeyError) as e:
+            print(
+                f"CRITICAL: Could not perform the monkey patch. The model may not work correctly. Error: {e}"
+            )
+            # You might want to raise an exception here depending on how critical the patch is
+            # raise RuntimeError("Failed to apply essential flash attention patch.") from e
+
     def forward(self, Q, R):
         # Q is (B, 1, query_length)
         # R is (B, num_reads)
@@ -50,7 +80,9 @@ class RawBERT(nn.Module):
 
     def embed(self, input_ids, attention_mask, pool_reads=False):
         # input_ids is (B, max_num_reads, max_read_length)
-        input_ids, attention_mask = input_ids.to(self.device), attention_mask.to(self.device)
+        input_ids, attention_mask = input_ids.to(self.device), attention_mask.to(
+            self.device
+        )
         B, num_reads, read_length = input_ids.shape
         input_ids = input_ids.view(B * num_reads, read_length)
         attention_mask = attention_mask.view(B * num_reads, read_length)

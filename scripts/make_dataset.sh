@@ -18,13 +18,15 @@ mkdir ${SCRIPT_DIR}/../data/tools
 cd ${SCRIPT_DIR}/../data/tools
 wget https://www.niehs.nih.gov/sites/default/files/2024-02/artbinmountrainier2016.06.05linux64.tgz
 tar -xvf artbinmountrainier2016.06.05linux64.tgz
+
+# Get cuttlefish
+git clone git@github.com:COMBINE-lab/cuttlefish.git
+cd cuttlefish/
+mkdir build && cd build/
+cmake -DCMAKE_INSTALL_PREFIX=../ ..
+make -j 8 install
+cd ../..
+ulimit -n 2048
 cd ${SCRIPT_DIR}
 
-echo "Selecting random transcriptome subsets"
-python ${SCRIPT_DIR}/select_sequences.py ${SCRIPT_DIR}/../data/dataset/gencode.v49.transcripts.fa
-
-echo "Simulating illumina sequencer"
-python ${SCRIPT_DIR}/run_art.py
-
-echo "Finalizing dataset"
-python ${SCRIPT_DIR}/make_pairs.py --data_dir "${SCRIPT_DIR}/../data"
+python ${SCRIPT_DIR}/make_dataset.py ${SCRIPT_DIR}/../data/dataset/gencode.v49.transcripts.fa
