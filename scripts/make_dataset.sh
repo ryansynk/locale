@@ -28,5 +28,3 @@ make -j 8 install
 cd ../..
 ulimit -n 2048
 cd ${SCRIPT_DIR}
-
-python ${SCRIPT_DIR}/make_dataset.py ${SCRIPT_DIR}/../data/dataset/gencode.v49.transcripts.fa
