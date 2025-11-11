@@ -6,8 +6,8 @@ import os
 import traceback
 import pyarrow as pa
 import pyarrow.parquet as pq
-import Bio
-from typing import List
+from Bio import SeqIO
+from typing import List, Optional
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from jsonargparse import auto_cli
@@ -20,7 +20,7 @@ def run_art(seq_record, tmp_dir, art_exe_path, coverage=5, read_len=150):
     Returns paths to simulated reads.
     """
     seq_path = tmp_dir / "seq.fasta"
-    Bio.SeqIO.write(seq_record, seq_path, "fasta")
+    SeqIO.write(seq_record, seq_path, "fasta")
 
     reads_prefix = tmp_dir / "tmp"
 
@@ -77,12 +77,12 @@ def build_unitigs(read_files, tmp_dir, cuttlefish_exe_path):
         capture_output=True,
     )
     unitig_path = output_prefix.with_suffix(".fa")
-    unitigs = [str(rec.seq) for rec in Bio.SeqIO.parse(unitig_path, "fasta")]
+    unitigs = [str(rec.seq) for rec in SeqIO.parse(unitig_path, "fasta")]
     return unitigs
 
 
 def process_batch(
-    seq_batch: List[Bio.SeqRecord],
+    seq_batch: List[SeqIO.SeqRecord],
     art_exe_path: str,
     cuttlefish_exe_path: str,
     base_tmp_dir: Path,
@@ -99,8 +99,15 @@ def process_batch(
                 reads = run_art(seq_record, tmp_dir, art_exe_path)
                 unitigs = build_unitigs(reads, tmp_dir, cuttlefish_exe_path)
                 transcript_ids.append(seq_record.id)
-                query_seqs.append(str(seq_record.seg))
+                query_seqs.append(str(seq_record.seq))
                 unitigs_list.append(unitigs)
+
+                # Remove temporary files
+                for f in tmp_dir.glob("*"):
+                    if f.is_file():
+                        f.unlink()
+                    elif f.is_dir():
+                        shutil.rmtree(f)
             except Exception:
                 traceback.print_exc()
                 continue
@@ -117,6 +124,7 @@ def process_transcriptome(
     transcriptome_fasta: str,
     num_workers: int,
     batch_size: int = 100,
+    cuttlefish_exe_path: Optional[str] = None,
 ):
     """
     Stream through the transcriptome, generate (query, [unitigs]) pairs,
@@ -129,9 +137,13 @@ def process_transcriptome(
     art_exe_path = (
         data_dir / "tools" / "art_bin_MountRainier" / "art_illumina"
     ).resolve()
-    cuttlefish_exe_path = (
-        data_dir / "tools" / "cuttlefish" / "bin" / "cuttlefish"
-    ).resolve()
+    if cuttlefish_exe_path is None:
+        cuttlefish_exe_path = (
+            data_dir / "tools" / "cuttlefish" / "bin" / "cuttlefish"
+        ).resolve()
+        assert cuttlefish_exe_path.is_file(), f"Cuttlefish not installed"
+    else:
+        cuttlefish_exe_path = Path(cuttlefish_exe_path).resolve()
 
     tmp_dir = (data_dir / "tmp").resolve()
     tmp_dir.mkdir(exist_ok=True)
@@ -148,14 +160,16 @@ def process_transcriptome(
     futures = []
     batch_records = []
     batch_counter = 0
+    start = time.time()
     with ProcessPoolExecutor(max_workers=num_workers) as executor:
-        for i, seq_record in enumerate(Bio.SeqIO.parse(transcriptome_fasta, "fasta")):
+        print(f"Building work queue")
+        for i, seq_record in enumerate(SeqIO.parse(transcriptome_fasta, "fasta")):
             batch_records.append(seq_record)
             if len(batch_records) >= batch_size:
                 futures.append(
                     executor.submit(
                         process_batch,
-                        seq_record,
+                        batch_records,
                         art_exe_path,
                         cuttlefish_exe_path,
                         tmp_dir,
@@ -171,7 +185,7 @@ def process_transcriptome(
             futures.append(
                 executor.submit(
                     process_batch,
-                    seq_record,
+                    batch_records,
                     art_exe_path,
                     cuttlefish_exe_path,
                     tmp_dir,
@@ -182,11 +196,16 @@ def process_transcriptome(
             batch_counter += 1
             batch_records = []
 
+        print(f"Added {batch_counter} batches to work queue")
+        print(f"Starting work...")
         for f in tqdm(as_completed(futures), total=len(futures), desc="Processing"):
             result = f.result()
             if result:
                 part_files.append(result)
 
+    end = time.time()
+    elapsed = end - start
+    print(f"Total time: {elapsed}")
     final_path = data_dir / "data.parquet"
     tables = [pq.read_table(p) for p in part_files if Path(p).exists()]
     if tables:

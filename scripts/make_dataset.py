@@ -81,6 +81,7 @@ def process_transcriptome(
     N: int = 100000,
     L_min: int = 1000,
     L_max: int = 10000,
+    cuttlefish_exe_path: str = None,
 ):
     """
     Stream through the transcriptome, generate (query, [unitigs]) pairs,
@@ -93,9 +94,12 @@ def process_transcriptome(
     art_exe_path = (
         data_dir / "tools" / "art_bin_MountRainier" / "art_illumina"
     ).resolve()
-    cuttlefish_exe_path = (
-        data_dir / "tools" / "cuttlefish" / "bin" / "cuttlefish"
-    ).resolve()
+    if cuttlefish_exe_path is None:
+        cuttlefish_exe_path = (
+            data_dir / "tools" / "cuttlefish" / "bin" / "cuttlefish"
+        ).resolve()
+    else:
+        cuttlefish_exe_path = Path(cuttlefish_exe_path)
 
     tmp_dir = (data_dir / "tmp").resolve()
     tmp_dir.mkdir(exist_ok=True)
