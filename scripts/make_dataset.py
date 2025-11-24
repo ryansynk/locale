@@ -45,7 +45,7 @@ def run_art(seq_record, tmp_dir, art_exe_path, coverage=5, read_len=150):
     return [(tmp_dir / "tmp1.fq").resolve(), (tmp_dir / "tmp2.fq").resolve()]
 
 
-def build_unitigs(read_files, tmp_dir, cuttlefish_exe_path):
+def build_unitigs(read_files, tmp_dir, cuttlefish_exe_path, cuttlefish_threads):
     """
     Build unitigs from simulated reads using Cuttlefish.
     """
@@ -59,7 +59,7 @@ def build_unitigs(read_files, tmp_dir, cuttlefish_exe_path):
         read_files[0],
         read_files[1],
         "-t",
-        "1",
+        str(cuttlefish_threads),
         "-k",
         "31",
         "-o",
@@ -78,16 +78,14 @@ def build_unitigs(read_files, tmp_dir, cuttlefish_exe_path):
 
 def process_transcriptome(
     transcriptome_fasta: str,
-    N: int = 100000,
-    L_min: int = 1000,
-    L_max: int = 10000,
+    output_path: str,
+    cuttlefish_threads: int = 1,
     cuttlefish_exe_path: str = None,
 ):
     """
     Stream through the transcriptome, generate (query, [unitigs]) pairs,
     and write them to a parquet file
     """
-
     # Get the path to the directory containing this script
     repo_root = Path(__file__).resolve().parent.parent
     data_dir = repo_root / "data"
@@ -112,49 +110,46 @@ def process_transcriptome(
             ("unitigs", pa.list_(pa.string())),  # nested list column
         ]
     )
-    writer = pq.ParquetWriter((data_dir / "data.parquet").resolve(), schema)
+    output_path = Path(output_path)
+    writer = pq.ParquetWriter((output_path).resolve(), schema)
     entries_written = 0
     try:
         start = time.time()
         total_time_reads = 0.0
         total_time_unitigs = 0.0
         total_time_writes = 0.0
-        with tqdm(total=N, desc="Writing dataset", unit="entries") as pbar:
-            for seq_record in SeqIO.parse(transcriptome_fasta, "fasta"):
-                if not (L_min <= len(seq_record.seq) <= L_max):
-                    continue
-
-                # Run ART + Cuttlefish
-                try:
-                    reads_start = time.time()
-                    reads = run_art(seq_record, tmp_dir, art_exe_path)
-                    total_time_reads += time.time() - reads_start
-                    unitigs_start = time.time()
-                    unitigs = build_unitigs(reads, tmp_dir, cuttlefish_exe_path)
-                    total_time_unitigs += time.time() - unitigs_start
-                except subprocess.CalledProcessError as e:
-                    print(f"Error processing {seq_record.id}: {e}")
-                    continue
-
-                table = pa.table(
-                    [[seq_record.id], [str(seq_record.seq)], [unitigs]], schema=schema
+        seq_records = list(SeqIO.parse(transcriptome_fasta, "fasta"))
+        for seq_record in tqdm(seq_records, desc="Writing dataset"):
+            # Run ART + Cuttlefish
+            try:
+                reads_start = time.time()
+                reads = run_art(seq_record, tmp_dir, art_exe_path)
+                total_time_reads += time.time() - reads_start
+                unitigs_start = time.time()
+                unitigs = build_unitigs(
+                    reads, tmp_dir, cuttlefish_exe_path, cuttlefish_threads
                 )
+                total_time_unitigs += time.time() - unitigs_start
+            except subprocess.CalledProcessError as e:
+                print(f"Error processing {seq_record.id}: {e}")
+                continue
 
-                # Remove the temporary FASTA and read files
-                for f in tmp_dir.glob("*"):
-                    if f.is_file():
-                        f.unlink()
-                    elif f.is_dir():
-                        shutil.rmtree(f)
+            table = pa.table(
+                [[seq_record.id], [str(seq_record.seq)], [unitigs]], schema=schema
+            )
 
-                start_writes = time.time()
-                writer.write_table(table)
-                pbar.update(1)
-                entries_written += 1
-                total_time_writes += time.time() - start_writes
+            # Remove the temporary FASTA and read files
+            for f in tmp_dir.glob("*"):
+                if f.is_file():
+                    f.unlink()
+                elif f.is_dir():
+                    shutil.rmtree(f)
 
-                if entries_written >= N:
-                    break
+            start_writes = time.time()
+            writer.write_table(table)
+            entries_written += 1
+            total_time_writes += time.time() - start_writes
+
         total_time = time.time() - start
         print(f"TOTAL TIME = {total_time:2f}s")
         print(
