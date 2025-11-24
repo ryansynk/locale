@@ -1,12 +1,8 @@
-import sys
 import einops
 import torch
 import torch.nn as nn
 
 from transformers import AutoModel, BertConfig
-from .flash_attn_triton import (
-    flash_attn_qkvpacked_func as updated_flash_attn_qkvpacked_func,
-)
 
 
 class RawBERT(nn.Module):
@@ -18,7 +14,6 @@ class RawBERT(nn.Module):
         )
         self.dim = dim
         self.linear = nn.Linear(self.config.hidden_size, dim, bias=False)
-        self._apply_bert_flash_attn_patch(use_triton)
 
     @property
     def device(self):
@@ -43,32 +38,6 @@ class RawBERT(nn.Module):
         idx = last_idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, 1, embed.size(-1))
         embed_last = torch.gather(embed, dim=2, index=idx).squeeze(2)  # (B, H, D)
         return embed_last, new_mask
-
-    def _apply_bert_flash_attn_patch(self, use_triton):
-        print("Attempting to apply monkey patch...")
-        try:
-            # The bert model is now an attribute of self, so we reference it with self.bert
-            bert_layer_module_name = self.bert.encoder.layer[0].__module__
-            target_module = sys.modules[bert_layer_module_name]
-            # Replace the function in the loaded module with our corrected version
-
-            if use_triton:
-                update = updated_flash_attn_qkvpacked_func
-            else:
-                update = None
-            setattr(
-                target_module,
-                "flash_attn_qkvpacked_func",
-                update,
-            )
-
-            print(f"Monkey patch successful for module: {target_module.__name__}")
-        except (AttributeError, KeyError) as e:
-            print(
-                f"CRITICAL: Could not perform the monkey patch. The model may not work correctly. Error: {e}"
-            )
-            # You might want to raise an exception here depending on how critical the patch is
-            # raise RuntimeError("Failed to apply essential flash attention patch.") from e
 
     def forward(self, Q, R):
         # Q is (B, 1, query_length)
