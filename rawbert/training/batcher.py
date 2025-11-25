@@ -1,11 +1,7 @@
-import os
 import torch
-import json
-from typing import List
-
+from Bio import SeqIO
 from transformers import AutoTokenizer
-
-from Bio import Seq
+from .augmenter import UnitigAugmenter
 
 
 class Batcher(torch.utils.data.Dataset):
@@ -16,8 +12,8 @@ class Batcher(torch.utils.data.Dataset):
             "zhihan1996/DNABERT-2-117M", trust_remote_code=True
         )
         # For large files, it's better to get line offsets first
-        with open(self.file_path, "r") as f:
-            self.lines = f.readlines()
+        self.lines = list(SeqIO.parse(self.file_path, "fasta"))
+        self.augmenter = UnitigAugmenter(min_len=100)
 
     def __len__(self):
         """Returns the total number of samples (lines) in the file."""
@@ -25,15 +21,7 @@ class Batcher(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         """Fetches one sample from the file by its index."""
-        line = self.lines[idx]
-        data = json.loads(line)
-        query = data["query"]
-        reads = data["reads"]
-        return self.collate(query, reads)
-
-    def collate(self, query: str, reads: List[str]):
-        query_tokens = self.tokenizer(query, return_tensors="pt")  # 1, query_length
-        read_tokens = self.tokenizer(
-            reads, return_tensors="pt", padding=True
-        )  # num_reads, max_read_length
-        return query_tokens, read_tokens
+        transcript = self.lines[idx]
+        query = str(transcript.seq)
+        key = self.augmenter.augment(transcript).seq
+        return query, str(key)

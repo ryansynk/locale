@@ -12,7 +12,6 @@ def main(
     dim: int = 64,
     single_batch: bool = False,
     record_memory_snapshot: bool = False,
-    use_triton: bool = False,
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     run = wandb.init(
@@ -37,7 +36,6 @@ def main(
                 dim,
                 single_batch,
                 run,
-                use_triton,
             )
         except torch.cuda.OutOfMemoryError:
             if record_memory_snapshot:
@@ -54,7 +52,6 @@ def main(
             dim,
             single_batch,
             run,
-            use_triton,
         )
 
     run.finish()

@@ -1,3 +1,4 @@
+import itertools
 import einops
 import torch
 import torch.nn as nn
@@ -6,101 +7,113 @@ from transformers import AutoModel, BertConfig
 
 
 class RawBERT(nn.Module):
-    def __init__(self, dim=64, use_triton=False):
+    def __init__(self, K=4096, m=0.999, dim=64):
         super().__init__()
         self.config = BertConfig.from_pretrained("zhihan1996/DNABERT-2-117M")
-        self.bert = AutoModel.from_pretrained(
+        self.bert_q = AutoModel.from_pretrained(
             "zhihan1996/DNABERT-2-117M", trust_remote_code=True
         )
+        self.linear_q = nn.Linear(self.config.hidden_size, dim, bias=False)
+        self.bert_k = AutoModel.from_pretrained(
+            "zhihan1996/DNABERT-2-117M", trust_remote_code=True
+        )
+        self.linear_k = nn.Linear(self.config.hidden_size, dim, bias=False)
         self.dim = dim
-        self.linear = nn.Linear(self.config.hidden_size, dim, bias=False)
+
+        params_q = itertools.chain(self.bert_q.parameters(), self.linear_q.parameters())
+        params_k = itertools.chain(self.bert_k.parameters(), self.linear_k.parameters())
+
+        for param_q, param_k in zip(params_q, params_k):
+            param_k.data.copy_(param_q.data)  # initialize
+            param_k.requires_grad = False  # not update by gradient
+
+        # create the queue
+        self.register_buffer("queue", torch.randn(dim, K))
+        self.queue = nn.functional.normalize(self.queue, dim=0)
+        self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
+        self.m = m
 
     @property
     def device(self):
-        # Get the device of the first parameter
         return next(self.parameters()).device
 
-    @staticmethod
-    def pool_reads_last_token(embed, attention_mask):
-        # embed: (B, num_reads, num_tokens_per_read, D)
-        # attention_mask: (B, num_reads, num_tokens_per_read)
-        # output is (B, num_reads, D)
+    @torch.no_grad()
+    def _dequeue_and_enqueue(self, keys) -> None:
+        batch_size = keys.shape[0]
 
-        # Number of valid (unmasked) tokens along the sequence
-        lengths = attention_mask.sum(dim=-1)  # (B, H)
-        new_mask = (lengths != 0).int()
+        ptr = int(self.queue_ptr)
+        assert self.K % batch_size == 0  # for simplicity
 
-        # Convert to indices of last valid position (subtract 1)
-        last_idx = lengths - 1  # (B, H)
-        last_idx[last_idx == -1] = 0
+        # replace the keys at ptr (dequeue and enqueue)
+        self.queue[:, ptr : ptr + batch_size] = keys.T
+        ptr = (ptr + batch_size) % self.K  # move pointer
 
-        # Gather the corresponding entries
-        idx = last_idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, 1, embed.size(-1))
-        embed_last = torch.gather(embed, dim=2, index=idx).squeeze(2)  # (B, H, D)
-        return embed_last, new_mask
+        self.queue_ptr[0] = ptr
 
-    def forward(self, Q, R):
-        # Q is (B, 1, query_length)
-        # R is (B, num_reads)
-        Q_mask = Q["attention_mask"].to(self.device)
-        Q = self.embed(**Q).squeeze()
-        R, R_mask = self.embed(**R, pool_reads=True)
-        return self.score(Q, Q_mask.squeeze(), R, R_mask)
+    @torch.no_grad()
+    def _momentum_update_key_encoder(self) -> None:
+        """
+        Momentum update of the key encoder
+        """
+        params_q = itertools.chain(self.bert_q.parameters(), self.linear_q.parameters())
+        params_k = itertools.chain(self.bert_k.parameters(), self.linear_k.parameters())
 
-    def embed(self, input_ids, attention_mask, pool_reads=False):
-        # input_ids is (B, max_num_reads, max_read_length)
-        input_ids, attention_mask = input_ids.to(self.device), attention_mask.to(
-            self.device
-        )
-        B, num_reads, read_length = input_ids.shape
-        input_ids = input_ids.view(B * num_reads, read_length)
-        attention_mask = attention_mask.view(B * num_reads, read_length)
-        E = self.bert(input_ids=input_ids, attention_mask=attention_mask)[0]
+        for param_q, param_k in zip(params_q, params_k):
+            param_k.data = param_k.data * self.m + param_q.data * (1.0 - self.m)
 
-        attention_mask = attention_mask.view(B, num_reads, read_length)
-        E = E.view(B, num_reads, read_length, -1)
+    def forward(self, query, key):
+        # seq is (B, N_max, D)
+        query = query.to(self.device)
+        q = self._embed_q(query)
+        q = nn.functional.normalize(q, dim=1)  # (B, D)
 
-        if pool_reads:
-            E, new_mask = RawBERT.pool_reads_last_token(E, attention_mask)
-            E = self.linear(E)  # select last token of each read
-            E = torch.nn.functional.normalize(E, p=2, dim=2)
-            return E, new_mask
-        else:
-            E = self.linear(E)  # select last token of each read
-            E = torch.nn.functional.normalize(E, p=2, dim=2)
-            return E
+        with torch.no_grad():
+            # update key encoder
+            self._momentum_update_key_encoder()
+            key = key.to(self.device)
 
-    def score(self, Q, Q_mask, R, R_mask):
-        # Q is (B, max_query_len, D)
-        # Q_mask is (B, max_query_len)
-        # R is (B, max_num_reads, D)
-        # R_mask is (B, max_num_reads)
+            k = self._embed_k(key)
+            k = nn.functional.normalize(k, dim=1)  # (B, D)
 
-        # scores is (B, B)
-        scores = einops.einsum(
-            Q, R, "B q_tokens D, BB n_reads D -> B BB q_tokens n_reads"
-        )
+        # Positive logits: B x 1
+        l_pos = einops.einsum(q, k, "B D, B D -> B").unsqueeze(-1)
 
-        # Need to mask out tokens with -inf before taking max!
-        LARGE_NEG = -1e9
-        # Expand masks to broadcast shapes
-        # Q_mask: (B, q_tokens) -> (B, 1, q_tokens, 1)
-        q_mask_exp = Q_mask[:, None, :, None]
-        # R_mask: (B, n_reads) -> (1, B, 1, n_reads)
-        r_mask_exp = R_mask[None, :, None, :]
+        # Negative logits: B x K
+        l_neg = einops.einsum(q, self.queue.clone().detach(), "B D, D K -> B K")
 
-        # Combine: valid where both are 1
-        valid_mask = q_mask_exp * r_mask_exp  # (B, B, q_tokens, n_reads)
+        # Logits: B x (1 + K)
+        logits = torch.cat([l_pos, l_neg], dim=1)
 
-        # Apply mask
-        scores = scores.masked_fill(valid_mask == 0, LARGE_NEG)
+        labels = torch.zeros(logits.shape[0], dtype=torch.long).cuda()
 
-        # Perform sum-of-max operation
-        scores = scores.max(-1).values
+        self._dequeue_and_enqueue(k)
 
-        # Zero out queries that are masked
-        valid_query_mask = Q_mask.unsqueeze(1).float()  # (B, 1, q_tokens)
-        scores = scores * valid_query_mask  # zero out invalid query tokens
-        scores = scores.sum(-1)
+        return logits, labels
 
-        return scores
+    def _embed_q(self, seq_ids):
+        embeddings = self.bert_q(**seq_ids, output_hidden_states=True)[
+            0
+        ]  # use raw logit output
+
+        # Mean pooling
+        embeddings = embeddings.sum(axis=-1) / seq_ids.attention_mask.sum(
+            axis=-1
+        ).unsqueeze(-1)
+
+        # Linear output
+        embeddings = self.linear_q(embeddings)
+        return embeddings
+
+    def _embed_k(self, seq_ids):
+        embeddings = self.bert_k(**seq_ids, output_hidden_states=True)[
+            0
+        ]  # use raw logit output
+
+        # Mean pooling
+        embeddings = embeddings.sum(axis=-1) / seq_ids.attention_mask.sum(
+            axis=-1
+        ).unsqueeze(-1)
+
+        # Linear output
+        embeddings = self.linear_k(embeddings)
+        return embeddings
