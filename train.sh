@@ -1,0 +1,1 @@
+python train.py --dataset_path="./data/gencode.v49.transcripts.train.fa" --test_dataset_path="./data/gencode.v49.transcripts.test.fa" --batch_size=8 --lr=1e-6 --epochs=2 --dim=128 --moco_queue_size 1024
