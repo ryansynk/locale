@@ -9,6 +9,7 @@ import torch
 import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, Subset
+from tqdm import tqdm
 
 from rawbert.modeling.rawbert import RawBERT
 from rawbert.training.batcher import Batcher
@@ -46,7 +47,6 @@ def train(
     lr,
     epochs,
     dim,
-    single_batch,
     moco_queue_size,
     moco_momentum,
     num_test_batches,
@@ -60,9 +60,6 @@ def train(
     reader = Batcher(dataset_path)
     test_reader = Batcher(test_dataset_path)
     collater = partial(collate, tokenizer=reader.tokenizer)
-
-    if single_batch:
-        reader = Subset(reader, range(batch_size))
 
     dataloader = DataLoader(reader, batch_size, shuffle=True, collate_fn=collater)
     test_dataloader = DataLoader(
@@ -81,43 +78,48 @@ def train(
     start_time = time.time()
     global_step = 0
     log_interval = 1000
+
     for epoch in range(epochs):
         rawbert.train()
-        for batch in dataloader:
+        for batch in tqdm(dataloader):
             q, k = batch
-            logits, labels = rawbert(q, k)
-            loss = F.cross_entropy(logits, labels)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            elapsed = float(time.time() - start_time)
+            N = q.input_ids.shape[1]
+            # TODO: Hack, doesn't train on long examples to prevent OOM
+            if N <= 10000:
+                logits, labels = rawbert(q, k)
+                loss = F.cross_entropy(logits, labels)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                elapsed = float(time.time() - start_time)
 
-            run.log(
-                {
-                    "train/loss": loss.item(),
-                    "train/lr": lr,
-                    "train/batch_size": batch_size,
-                    "train/time_elapsed": elapsed,
-                    "global_step": global_step,
-                }
-            )
-
-            if global_step % log_interval == 0 and global_step > 0:
-                test_loss = evaluate(rawbert, test_dataloader, num_test_batches)
                 run.log(
                     {
-                        "test_loss": test_loss,
+                        "train/loss": loss.item(),
+                        "train/lr": lr,
+                        "train/batch_size": batch_size,
+                        "train/time_elapsed": elapsed,
                         "global_step": global_step,
                     }
                 )
-                save_checkpoint(
-                    {
-                        "epoch": epoch,
-                        "step": global_step,
-                        "model": rawbert.state_dict(),
-                        "optimizer": optimizer.state_dict(),
-                    },
-                    checkpoint_dir,
-                )
 
-            global_step += 1
+                if global_step % log_interval == 0 and global_step > 0:
+                    test_loss = evaluate(rawbert, test_dataloader, num_test_batches)
+                    run.log(
+                        {
+                            "test_loss": test_loss,
+                            "global_step": global_step,
+                        }
+                    )
+                    save_checkpoint(
+                        {
+                            "epoch": epoch,
+                            "step": global_step,
+                            "model": rawbert.state_dict(),
+                            "optimizer": optimizer.state_dict(),
+                        },
+                        checkpoint_dir,
+                    )
+                    rawbert.train()
+
+                global_step += 1

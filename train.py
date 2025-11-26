@@ -7,11 +7,11 @@ from rawbert.training.training import train
 
 def main(
     dataset_path: str,
+    test_dataset_path: str,
     batch_size: int,
     lr: float,
     epochs: int,
     dim: int = 64,
-    single_batch: bool = False,
     record_memory_snapshot: bool = False,
     moco_queue_size: int = 4096,
     moco_momentum: float = 0.999,
@@ -34,12 +34,12 @@ def main(
         try:
             train(
                 dataset_path,
+                test_dataset_path,
                 device,
                 batch_size,
                 lr,
                 epochs,
                 dim,
-                single_batch,
                 moco_queue_size,
                 moco_momentum,
                 num_test_batches,
@@ -54,12 +54,12 @@ def main(
     else:
         train(
             dataset_path,
+            test_dataset_path,
             device,
             batch_size,
             lr,
             epochs,
             dim,
-            single_batch,
             moco_queue_size,
             moco_momentum,
             num_test_batches,

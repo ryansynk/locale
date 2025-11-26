@@ -109,7 +109,7 @@ class RawBERT(nn.Module):
         return logits, labels
 
     def _embed_q(self, seq_ids):
-        embeddings = self.bert_q(**seq_ids, output_hidden_states=True)[
+        embeddings = self.bert_q(**seq_ids)[
             0
         ]  # use raw logit output (B, seq_len, hidden_size)
 
@@ -126,7 +126,7 @@ class RawBERT(nn.Module):
         return embeddings
 
     def _embed_k(self, seq_ids):
-        embeddings = self.bert_k(**seq_ids, output_hidden_states=True)[
+        embeddings = self.bert_k(**seq_ids)[
             0
         ]  # use raw logit output (B, seq_len, hidden_size)
 
