@@ -8,7 +8,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.optim import AdamW
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from rawbert.modeling.rawbert import RawBERT
