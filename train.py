@@ -1,6 +1,7 @@
 import torch
-import wandb
 from jsonargparse import auto_cli
+
+import wandb
 from rawbert.training.training import train
 
 
@@ -12,6 +13,8 @@ def main(
     dim: int = 64,
     single_batch: bool = False,
     record_memory_snapshot: bool = False,
+    moco_queue_size: int = 4096,
+    moco_momentum: float = 0.999,
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     run = wandb.init(
@@ -35,6 +38,8 @@ def main(
                 epochs,
                 dim,
                 single_batch,
+                moco_queue_size,
+                moco_momentum,
                 run,
             )
         except torch.cuda.OutOfMemoryError:
@@ -51,6 +56,8 @@ def main(
             epochs,
             dim,
             single_batch,
+            moco_queue_size,
+            moco_momentum,
             run,
         )
 

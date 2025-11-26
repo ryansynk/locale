@@ -1,14 +1,15 @@
 import random
 import time
-import torch
-import torch.nn.functional as F
-import numpy as np
 from functools import partial
 
-from torch.utils.data import DataLoader, Subset
+import numpy as np
+import torch
+import torch.nn.functional as F
 from torch.optim import AdamW
-from rawbert.training.batcher import Batcher
+from torch.utils.data import DataLoader, Subset
+
 from rawbert.modeling.rawbert import RawBERT
+from rawbert.training.batcher import Batcher
 
 
 def collate(batch, tokenizer):
@@ -27,6 +28,8 @@ def train(
     epochs,
     dim,
     single_batch,
+    moco_queue_size,
+    moco_momentum,
     run,
 ):
     random.seed(1337)
@@ -41,7 +44,7 @@ def train(
 
     dataloader = DataLoader(reader, batch_size, shuffle=True, collate_fn=collater)
 
-    rawbert = RawBERT(dim=dim)
+    rawbert = RawBERT(dim=dim, K=moco_queue_size, m=moco_momentum)
     rawbert = rawbert.to(device)
     rawbert.train()
 

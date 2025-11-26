@@ -1,22 +1,22 @@
 import itertools
+
 import einops
 import torch
 import torch.nn as nn
-
 from transformers import AutoModel, BertConfig
 
 
 class RawBERT(nn.Module):
-    def __init__(self, K=4096, m=0.999, dim=64):
+    def __init__(self, dim=64, K=4096, m=0.999):
         super().__init__()
         self.config = BertConfig.from_pretrained("zhihan1996/DNABERT-2-117M")
         self.bert_q = AutoModel.from_pretrained(
             "zhihan1996/DNABERT-2-117M", trust_remote_code=True
         )
-        self.linear_q = nn.Linear(self.config.hidden_size, dim, bias=False)
         self.bert_k = AutoModel.from_pretrained(
             "zhihan1996/DNABERT-2-117M", trust_remote_code=True
         )
+        self.linear_q = nn.Linear(self.config.hidden_size, dim, bias=False)
         self.linear_k = nn.Linear(self.config.hidden_size, dim, bias=False)
         self.dim = dim
 
@@ -31,6 +31,7 @@ class RawBERT(nn.Module):
         self.register_buffer("queue", torch.randn(dim, K))
         self.queue = nn.functional.normalize(self.queue, dim=0)
         self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
+        self.K = K
         self.m = m
 
     @property
@@ -93,27 +94,33 @@ class RawBERT(nn.Module):
     def _embed_q(self, seq_ids):
         embeddings = self.bert_q(**seq_ids, output_hidden_states=True)[
             0
-        ]  # use raw logit output
+        ]  # use raw logit output (B, seq_len, hidden_size)
 
         # Mean pooling
-        embeddings = embeddings.sum(axis=-1) / seq_ids.attention_mask.sum(
+        embeddings = embeddings.sum(axis=1) / seq_ids.attention_mask.sum(
             axis=-1
-        ).unsqueeze(-1)
+        ).unsqueeze(
+            -1
+        )  # (B, hidden_size)
 
         # Linear output
-        embeddings = self.linear_q(embeddings)
+        embeddings = self.linear_q(embeddings)  # (B, self.dim)
+
         return embeddings
 
     def _embed_k(self, seq_ids):
         embeddings = self.bert_k(**seq_ids, output_hidden_states=True)[
             0
-        ]  # use raw logit output
+        ]  # use raw logit output (B, seq_len, hidden_size)
 
         # Mean pooling
-        embeddings = embeddings.sum(axis=-1) / seq_ids.attention_mask.sum(
+        embeddings = embeddings.sum(axis=1) / seq_ids.attention_mask.sum(
             axis=-1
-        ).unsqueeze(-1)
+        ).unsqueeze(
+            -1
+        )  # (B, hidden_size)
 
         # Linear output
-        embeddings = self.linear_k(embeddings)
+        embeddings = self.linear_k(embeddings)  # (B, self.dim)
+
         return embeddings
