@@ -15,6 +15,8 @@ def main(
     record_memory_snapshot: bool = False,
     moco_queue_size: int = 4096,
     moco_momentum: float = 0.999,
+    num_test_batches: int = 100,
+    checkpoint_dir: str = "checkpoints",
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     run = wandb.init(
@@ -40,6 +42,8 @@ def main(
                 single_batch,
                 moco_queue_size,
                 moco_momentum,
+                num_test_batches,
+                checkpoint_dir,
                 run,
             )
         except torch.cuda.OutOfMemoryError:
@@ -58,6 +62,8 @@ def main(
             single_batch,
             moco_queue_size,
             moco_momentum,
+            num_test_batches,
+            checkpoint_dir,
             run,
         )
 
