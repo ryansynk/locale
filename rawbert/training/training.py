@@ -20,17 +20,6 @@ def save_checkpoint(state, checkpoint_dir):
     torch.save(state, filename)
 
 
-def evaluate(model, dataloader, num_batches):
-    model.eval()
-    loss = 0
-    with torch.no_grad():
-        for batch in islice(dataloader, num_batches):
-            q, k = batch
-            logits, labels = model(q, k)
-            loss += F.cross_entropy(logits, labels)
-    return loss / num_batches
-
-
 def collate(batch, tokenizer):
     # batch is list of (query, key) pairs
     queries, keys = zip(*batch)
@@ -92,10 +81,13 @@ def train(
                 loss.backward()
                 optimizer.step()
                 elapsed = float(time.time() - start_time)
+                acc1, acc5 = accuracy(logits, labels, topk=(1, 5))
 
                 run.log(
                     {
                         "train/loss": loss.item(),
+                        "train/acc1": acc1[0],
+                        "train/acc5": acc5[0],
                         "train/lr": lr,
                         "train/batch_size": batch_size,
                         "train/time_elapsed": elapsed,
@@ -104,10 +96,12 @@ def train(
                 )
 
                 if global_step % log_interval == 0 and global_step > 0:
-                    test_loss = evaluate(rawbert, test_dataloader, num_test_batches)
+                    test_loss, test_acc1, test_acc5 = evaluate(rawbert, test_dataloader, num_test_batches)
                     run.log(
                         {
-                            "test_loss": test_loss,
+                            "test/loss": test_loss,
+                            "test/acc1": test_acc1,
+                            "test/acc5": test_acc5,
                             "global_step": global_step,
                         }
                     )
@@ -123,3 +117,35 @@ def train(
                     rawbert.train()
 
                 global_step += 1
+
+
+def evaluate(model, dataloader, num_batches):
+    model.eval()
+    loss = 0
+    acc1 = 0
+    acc5 = 0
+    with torch.no_grad():
+        for batch in islice(dataloader, num_batches):
+            q, k = batch
+            logits, labels = model(q, k)
+            loss += F.cross_entropy(logits, labels)
+            acc1_ex, acc5_ex = accuracy(logits, labels, topk=(1, 5))
+            acc1 += acc1_ex[0]
+            acc5 += acc5_ex[0]
+    return loss / num_batches, acc1 / num_batches, acc5 / num_batches
+
+def accuracy(output, target, topk=(1,)):
+    """Computes the accuracy over the k top predictions for the specified values of k"""
+    with torch.no_grad():
+        maxk = max(topk)
+        batch_size = target.size(0)
+
+        _, pred = output.topk(maxk, 1, True, True)
+        pred = pred.t()
+        correct = pred.eq(target.view(1, -1).expand_as(pred))
+
+        res = []
+        for k in topk:
+            correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
+            res.append(correct_k.mul_(100.0 / batch_size))
+        return res
