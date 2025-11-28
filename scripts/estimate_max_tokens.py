@@ -42,6 +42,7 @@ def main(gencode_fasta: str):
     optimizer = AdamW(filter(lambda p: p.requires_grad, rawbert.parameters()), lr=0.9)
 
     successful_lengths = []
+    unsuccessful_lengths = []
     for q, k in data:
         seqlen = q.input_ids.shape[1]
         print(f"Attempting forward with sequence length = {seqlen}")
@@ -54,10 +55,12 @@ def main(gencode_fasta: str):
             successful_lengths.append(seqlen)
         except torch.cuda.OutOfMemoryError:
             print(f"Out of memory, batch size 1, sequence length = {seqlen}")
+            unsuccessful_lengths.append(seqlen)
         except Exception as e:
             print(f"An unexpected error occurred: {e}")
 
     print(f"Largest sequence length fitting in memory: {max(successful_lengths)}")
+    print(f"Total sequences that OOM'd = {len(unsuccessful_lengths)}")
         
 
 if __name__=="__main__":
