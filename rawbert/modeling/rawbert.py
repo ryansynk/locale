@@ -33,14 +33,11 @@ class RawBERT(nn.Module):
         else:
             logger.warning("Executing model without flash attention")
 
-        self.linear_q = nn.Linear(self.config.hidden_size, dim, bias=False)
-        self.linear_k = nn.Linear(self.config.hidden_size, dim, bias=False)
+        self.bert_q.pooler = nn.Linear(self.config.hidden_size, dim, bias=False)
+        self.bert_k.pooler = nn.Linear(self.config.hidden_size, dim, bias=False)
         self.dim = dim
 
-        params_q = itertools.chain(self.bert_q.parameters(), self.linear_q.parameters())
-        params_k = itertools.chain(self.bert_k.parameters(), self.linear_k.parameters())
-
-        for param_q, param_k in zip(params_q, params_k):
+        for param_q, param_k in zip(self.bert_q.parameters(), self.bert_k.parameters()):
             param_k.data.copy_(param_q.data)  # initialize
             param_k.requires_grad = False  # not update by gradient
 
@@ -73,10 +70,7 @@ class RawBERT(nn.Module):
         """
         Momentum update of the key encoder
         """
-        params_q = itertools.chain(self.bert_q.parameters(), self.linear_q.parameters())
-        params_k = itertools.chain(self.bert_k.parameters(), self.linear_k.parameters())
-
-        for param_q, param_k in zip(params_q, params_k):
+        for param_q, param_k in zip(self.bert_q.parameters(), self.bert_k.parameters()):
             param_k.data = param_k.data * self.m + param_q.data * (1.0 - self.m)
 
     def forward(self, query, key):
@@ -109,36 +103,28 @@ class RawBERT(nn.Module):
         return logits, labels
 
     def _embed_q(self, seq_ids):
-        embeddings = self.bert_q(**seq_ids)[
-            0
-        ]  # use raw logit output (B, seq_len, hidden_size)
+        embeddings = self.bert_q(**seq_ids)[1]  # use "pooled" logit output (B, seq_len, self.dim)
 
         # Mean pooling
         embeddings = embeddings.sum(axis=1) / seq_ids.attention_mask.sum(
             axis=-1
         ).unsqueeze(
             -1
-        )  # (B, hidden_size)
-
-        # Linear output
-        embeddings = self.linear_q(embeddings)  # (B, self.dim)
+        )  # (B, self.dim)
 
         return embeddings
 
     def _embed_k(self, seq_ids):
         embeddings = self.bert_k(**seq_ids)[
-            0
-        ]  # use raw logit output (B, seq_len, hidden_size)
+            1
+        ]  # use "pooled" logit output (B, seq_len, self.dim)
 
         # Mean pooling
         embeddings = embeddings.sum(axis=1) / seq_ids.attention_mask.sum(
             axis=-1
         ).unsqueeze(
             -1
-        )  # (B, hidden_size)
-
-        # Linear output
-        embeddings = self.linear_k(embeddings)  # (B, self.dim)
+        )  # (B, self.dim)
 
         return embeddings
 
