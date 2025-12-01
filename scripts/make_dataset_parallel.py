@@ -141,7 +141,7 @@ def process_transcriptome(
         cuttlefish_exe_path = (
             data_dir / "tools" / "cuttlefish" / "bin" / "cuttlefish"
         ).resolve()
-        assert cuttlefish_exe_path.is_file(), f"Cuttlefish not installed"
+        assert cuttlefish_exe_path.is_file(), "Cuttlefish not installed"
     else:
         cuttlefish_exe_path = Path(cuttlefish_exe_path).resolve()
 
@@ -162,7 +162,7 @@ def process_transcriptome(
     batch_counter = 0
     start = time.time()
     with ProcessPoolExecutor(max_workers=num_workers) as executor:
-        print(f"Building work queue")
+        print("Building work queue")
         for i, seq_record in enumerate(SeqIO.parse(transcriptome_fasta, "fasta")):
             batch_records.append(seq_record)
             if len(batch_records) >= batch_size:
@@ -197,7 +197,7 @@ def process_transcriptome(
             batch_records = []
 
         print(f"Added {batch_counter} batches to work queue")
-        print(f"Starting work...")
+        print("Starting work...")
         for f in tqdm(as_completed(futures), total=len(futures), desc="Processing"):
             result = f.result()
             if result:
