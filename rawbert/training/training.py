@@ -140,8 +140,6 @@ def train(
                         "train/acc1": acc1[0],
                         "train/acc5": acc5[0],
                         "train/lr": lr,
-                        "train/global_batch_size": batch_size,
-                        "train/per_device_batch_size": per_device_batch_size,
                         "train/time_elapsed": elapsed,
                         "train/step": global_step,
                     }

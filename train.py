@@ -80,6 +80,7 @@ def main(
                 "learning_rate": lr,
                 "epochs": epochs,
                 "batch_size": batch_size,
+                "per_device_batch_size": per_device_batch_size,
                 "embedding_dim": dim,
                 "moco_queue_size": moco_queue_size,
                 "moco_momentum": moco_momentum,
