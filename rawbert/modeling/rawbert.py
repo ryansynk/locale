@@ -1,3 +1,13 @@
+"""
+This file contains code adapted from the Moco repository:
+https://github.com/facebookresearch/moco/tree/main
+
+Original Author: Kaiming He, Yuxin Wu
+License: MIT License
+
+Code has been modified for DNA sequence data
+"""
+
 import logging
 import math
 
@@ -18,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 class RawBERT(nn.Module):
-    def __init__(self, dim=64, K=4096, m=0.999):
+    def __init__(self, dim: int = 64, K: int = 4096, m: float = 0.999, T: float = 0.07):
         super().__init__()
         self.config = BertConfig.from_pretrained("zhihan1996/DNABERT-2-117M")
         self.bert_q = AutoModel.from_pretrained(
@@ -46,13 +56,16 @@ class RawBERT(nn.Module):
         self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
         self.K = K
         self.m = m
+        self.T = T
 
     @property
     def device(self):
         return next(self.parameters()).device
 
     @torch.no_grad()
-    def _dequeue_and_enqueue(self, keys) -> None:
+    def _dequeue_and_enqueue(self, keys, is_distributed) -> None:
+        if is_distributed:
+            keys = concat_all_gather(keys)
         batch_size = keys.shape[0]
 
         ptr = int(self.queue_ptr)
@@ -72,7 +85,7 @@ class RawBERT(nn.Module):
         for param_q, param_k in zip(self.bert_q.parameters(), self.bert_k.parameters()):
             param_k.data = param_k.data * self.m + param_q.data * (1.0 - self.m)
 
-    def forward(self, query, key):
+    def forward(self, query, key, is_distributed=False):
         # seq is (B, N_max, D)
         query = query.to(self.device)
         q = self._embed_q(query)
@@ -95,14 +108,19 @@ class RawBERT(nn.Module):
         # Logits: B x (1 + K)
         logits = torch.cat([l_pos, l_neg], dim=1)
 
+        # apply temperature
+        logits /= self.T
+
         labels = torch.zeros(logits.shape[0], dtype=torch.long).cuda()
 
-        self._dequeue_and_enqueue(k)
+        self._dequeue_and_enqueue(k, is_distributed)
 
         return logits, labels
 
     def _embed_q(self, seq_ids):
-        embeddings = self.bert_q(**seq_ids)[1]  # use "pooled" logit output (B, seq_len, self.dim)
+        embeddings = self.bert_q(**seq_ids)[
+            1
+        ]  # use "pooled" logit output (B, seq_len, self.dim)
 
         # Mean pooling
         embeddings = embeddings.sum(axis=1) / seq_ids.attention_mask.sum(
@@ -221,3 +239,19 @@ class RawBERT(nn.Module):
         print(
             f"Successfully patched {TargetClass.__name__} with flash_attn library (ALiBi enabled)."
         )
+
+
+# utils
+@torch.no_grad()
+def concat_all_gather(tensor):
+    """
+    Performs all_gather operation on the provided tensors.
+    *** Warning ***: torch.distributed.all_gather has no gradient.
+    """
+    tensors_gather = [
+        torch.ones_like(tensor) for _ in range(torch.distributed.get_world_size())
+    ]
+    torch.distributed.all_gather(tensors_gather, tensor, async_op=False)
+
+    output = torch.cat(tensors_gather, dim=0)
+    return output
