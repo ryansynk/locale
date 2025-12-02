@@ -88,6 +88,7 @@ def train(
             batch_size=per_device_batch_size,
             sampler=sampler,
             collate_fn=collater,
+            drop_last=True,
         )
         test_dataloader = DataLoader(
             test_reader,
@@ -158,9 +159,9 @@ def train(
 
                     run.log(
                         {
-                            "test/acc1": test_acc1,
-                            "test/acc5": test_acc5,
-                            "global_step": global_step,
+                            "test/acc1": test_acc1[0],
+                            "test/acc5": test_acc5[0],
+                            "test/step": global_step,
                         }
                     )
                     save_checkpoint(
