@@ -144,6 +144,12 @@ class RawBERT(nn.Module):
         )  # (B, self.dim)
 
         return embeddings
+    
+    def encode(self, sequences):
+        sequences = sequences.to(self.device)
+        sequences = self._embed_q(sequences)
+        sequences = nn.functional.normalize(sequences, dim=1)  # (B, D)
+        return sequences
 
     def _patch_with_flash_lib(self):
         """

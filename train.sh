@@ -14,9 +14,10 @@ torchrun --standalone --nproc_per_node=$NUM_GPUS train.py \
     --dataset_path="./data/gencode.v49.transcripts.train.fa" \
     --test_dataset_path="./data/gencode.v49.transcripts.test.fa" \
     --batch_size=128 \
-    --lr=1e-5 \
-    --epochs=10 \
+    --lr=4e-6 \
+    --epochs=5 \
     --dim=128 \
-    --moco_queue_size 65536 \
+    --moco_queue_size 131072 \
     --moco_momentum 0.9995 \
+    --moco_softmax_temp 0.05 \
     --checkpoint_interval 1000 \
