@@ -1,1 +1,1 @@
-from .modeling.rawbert import RawBERT
+from .modeling.model import RawBERT
