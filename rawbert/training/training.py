@@ -13,7 +13,7 @@ from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 from transformers.utils import logging as transformers_logging
 
-from rawbert.modeling.rawbert import RawBERT
+from rawbert.modeling.model import RawBERT
 from rawbert.training.batcher import Batcher
 
 
@@ -168,6 +168,7 @@ def train(
                             "step": global_step,
                             "model": raw_model.state_dict(),
                             "optimizer": optimizer.state_dict(),
+                            "model_args": {"dim": dim, "K": moco_queue_size, "m": moco_momentum, "T": moco_softmax_temp}
                         },
                         checkpoint_dir,
                     )
