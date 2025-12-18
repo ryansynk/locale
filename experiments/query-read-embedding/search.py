@@ -1,65 +1,67 @@
-import numpy as np
-import os
-import polars as pl
-from Bio import SeqIO
-from jsonargparse import auto_cli
-from transformers import AutoModel, AutoTokenizer
-from pathlib import Path
-from tqdm import tqdm
-import io
 import math
-import zstandard as zstd
+import warnings
+from argparse import ArgumentParser
+from pathlib import Path
 
-from typing import Literal
+import numpy as np
+import polars as pl
 import torch
+from tqdm import tqdm
+from transformers import AutoModel, AutoTokenizer
+from transformers.utils import logging as transformers_logging
+
 from rawbert import RawBERT
 from rawbert.utils.patch import patch_with_flash_lib
+
+
+def get_rawbert_model(args):
+    model = RawBERT(dim=args.dim, K=args.K)
+    checkpoint_path = Path(args.checkpoint_path).resolve()
+    assert checkpoint_path.is_file()
+    checkpoint = torch.load(checkpoint_path)
+    model.load_state_dict(checkpoint["model"])
+    model = model.eval()
+    tokenizer = AutoTokenizer.from_pretrained(
+        "zhihan1996/DNABERT-2-117M", trust_remote_code=True
+    )
+    return model, tokenizer, args.dim
+
+
+def get_dnabert_model(args):
+    model = AutoModel.from_pretrained(
+        "zhihan1996/DNABERT-2-117M", trust_remote_code=True
+    )
+    tokenizer = AutoTokenizer.from_pretrained(
+        "zhihan1996/DNABERT-2-117M", trust_remote_code=True
+    )
+    patch_with_flash_lib(model)
+    model = model.eval()
+    model.encode = lambda x: model(**x)[1]
+    # TODO get this from model?
+    dim = 768
+    return model, tokenizer, dim
 
 
 def count_reads(accessions_path, metadata_path):
     accs = pl.read_csv(accessions_path)
     accs = accs.sort(by="accession")
     metadata = pl.read_parquet(metadata_path)
-    total_reads = accs.join(metadata, on="accession").select(pl.sum("seqstats_unitigs_nbseq")).item() 
+    total_reads = (
+        accs.join(metadata, on="accession")
+        .select(pl.sum("seqstats_unitigs_nbseq"))
+        .item()
+    )
     return total_reads
-
-def get_model_and_tokenizer(model_str: str, checkpoint_path: str, dim: int, K: int):
-    if model_str == "rawbert":
-        print("Loading rawbert checkpoint...")
-        model = RawBERT(dim=dim, K=K)
-        assert checkpoint_path, "No checkpoint_path provided!"
-        checkpoint_path = Path(checkpoint_path).resolve()
-        assert checkpoint_path.is_file()
-        checkpoint = torch.load(checkpoint_path)
-        model.load_state_dict(checkpoint["model"])
-        model = model.eval()
-        tokenizer = AutoTokenizer.from_pretrained(
-            "zhihan1996/DNABERT-2-117M", trust_remote_code=True
-        )
-        print("Loaded rawbert checkpoint successfully")
-    elif model_str == "dnabert":
-        model = AutoModel.from_pretrained(
-            "zhihan1996/DNABERT-2-117M", trust_remote_code=True
-        )
-        tokenizer = AutoTokenizer.from_pretrained(
-            "zhihan1996/DNABERT-2-117M", trust_remote_code=True
-        )
-        patch_with_flash_lib(model)
-        model = model.eval()
-        model.encode = lambda x: model(**x)[1]
-    else:
-        raise ValueError(f"Expected rawbert or dnabert for model, got {model}")
-
-    return model, tokenizer
 
 
 def embed_query_transcripts(model, tokenizer, dataset):
     vectors = []
     idx_mapping = []
-    print("Encoding queries...")
     with torch.no_grad():
         for row in tqdm(
-            dataset.iter_rows(named=True), desc="Encoding queries...", total=len(dataset)
+            dataset.iter_rows(named=True),
+            desc="Encoding queries...",
+            total=len(dataset),
         ):
             id = row["transcript_id"]
             seq = row["seq"]
@@ -72,158 +74,75 @@ def embed_query_transcripts(model, tokenizer, dataset):
     return vectors, idx_mapping
 
 
-def search_vectors(queries, embeddings_path, num_vectors, dim, batch_size, k):
+def search_vectors(queries, embeddings_path, num_vectors, dim, batch_size, k, device):
     # 1. Memory map the large file (Instant, consumes no RAM)
     # Ensure your binary file is purely the vectors (no headers).
     # If there is a header, use the 'offset' parameter.
     X_disk = np.memmap(
         embeddings_path, dtype="float32", mode="r", shape=(num_vectors, dim)
     )
-
-    # Initialize storage for top-k candidates
-    # We will maintain a global list of top results
-    global_top_dists = np.full((len(queries), k), -np.inf, dtype="float32")
-    global_top_indices = np.full((len(queries), k), -1, dtype="int64")
+    num_queries: int = queries.shape[0]
+    # Initialize Global Buffers to store the best results found so far
+    # Values initialized to -infinity, Indices to -1
+    global_topk_vals: torch.Tensor = torch.full(
+        (num_queries, k), float("-inf"), device=device
+    )
+    global_topk_indices: torch.Tensor = torch.full(
+        (num_queries, k), -1, dtype=torch.long, device=device
+    )
 
     print(f"Starting scan over {num_vectors} vectors...")
-
+    queries = torch.from_numpy(queries).to(device)
     # 2. Iterate in chunks
     num_batches = math.ceil(num_vectors / batch_size)
-    for i in tqdm(range(0, num_vectors, batch_size), desc="Searching index", total=num_batches):
+    current_offset = 0
+    for i in tqdm(
+        range(0, num_vectors, batch_size), desc="Searching index", total=num_batches
+    ):
         # Determine actual batch end (handle last chunk)
         end = min(i + batch_size, num_vectors)
 
         # Load chunk into RAM (This triggers the disk read)
-        print("Loading chunk into RAM...")
-        chunk = X_disk[i:end]
+        chunk = torch.from_numpy(X_disk[i:end]).to(device)
 
-        # 3. Perform Matrix Multiplication (Inner Product)
-        # If you need L2 distance, see note below*
-        print("Performing dot product...")
-        dists = np.dot(chunk, queries.T).T  # Shape: (num_queries, batch_size)
+        # Perform Matrix Multiplication (Inner Product)
+        # chunk is batch_size x dim, queries is num_queries x dim
+        # dists is num_queries x batch_size
+        dists = (chunk @ queries.T).T
 
-        # 4. Update Top-K
-        # We concatenate current best with new batch results and sort
-        # This logic is efficient because k is usually small
+        local_k = min(k, batch_size)
+        # topk_dists, topk_indices are num_queries x local_k
+        local_dists, local_indices = torch.topk(dists, local_k, dim=1)
+        global_mapped_indices = local_indices + current_offset
 
-        # Combine current batch results with previous bests
-        print("Updating topk...")
-        combined_dists = np.concatenate([global_top_dists, dists], axis=1)
-        combined_indices = np.concatenate(
-            [
-                global_top_indices,
-                np.arange(i, end)
-                + np.zeros((len(queries), 1), dtype="int64"),  # broadcast indices
-            ],
-            axis=1,
+        # 4. Merge with Global Buffer
+        # Concatenate current global best with new local candidates
+        combined_vals = torch.cat([global_topk_vals, local_dists], dim=1)
+        combined_indices = torch.cat(
+            [global_topk_indices, global_mapped_indices], dim=1
         )
 
-        # Argpartition is faster than sort for finding top k
-        # We want largest dot products (closest)
-        top_k_idx_in_combined = np.argpartition(combined_dists, -k, axis=1)[:, -k:]
+        # 6. Reduce back to Top-K
+        # This keeps our memory footprint constant regardless of total array size
+        global_topk_vals, best_of_both_idx = torch.topk(combined_vals, k, dim=1)
+        global_topk_indices = torch.gather(combined_indices, 1, best_of_both_idx)
 
-        # Gather the results
-        rows = np.arange(len(queries))[:, None]
-        global_top_dists = combined_dists[rows, top_k_idx_in_combined]
-        global_top_indices = combined_indices[rows, top_k_idx_in_combined]
+        current_offset += batch_size
+        del chunk, dists, local_dists, local_indices
 
-        # Optional: sort the final k for tidiness (argpartition is not sorted)
-        sorted_order = np.argsort(global_top_dists, axis=1)[:, ::-1]
-        global_top_dists = global_top_dists[rows, sorted_order]
-        global_top_indices = global_top_indices[rows, sorted_order]
+    if i % (batch_size * 10) == 0:
+        print(f"Processed {end} / {num_vectors} vectors")
 
-        if i % (batch_size * 10) == 0:
-            print(f"Processed {end} / {num_vectors} vectors")
+    print("Search complete.")
 
-        print("Search complete.")
-
-    return global_top_dists, global_top_indices
-
-def iterate_batches_to_gpu(data_np, batch_size, device):
-    num_vecs = data_np.shape[0]
-    
-    for i in range(0, num_vecs, batch_size):
-        # Slice handles the tail end (non-divisible batch) automatically
-        # e.g., data_np[299_999_000 : 300_000_100] returns just the last 1k rows
-        batch_cpu = torch.from_numpy(data_np[i : i + batch_size])
-        
-        # Move to GPU
-        # non_blocking=True allows overlap if you are doing compute asynchronously
-        batch_gpu = batch_cpu.to(device, non_blocking=True)
-        
-        yield batch_gpu
-
-def search_vectors_new(queries, embeddings_path, num_vectors, dim, batch_size, k, device):
-    # queries (num_queries, D)
-
-    # 1. Memory map the large file (Instant, consumes no RAM)
-    # Ensure your binary file is purely the vectors (no headers).
-    # If there is a header, use the 'offset' parameter.
-    #X_disk = np.memmap(
-    #    embeddings_path, dtype="float32", mode="r", shape=(num_vectors, dim)
-    #)
-    X_disk = np.memmap(
-        embeddings_path, dtype="float32", mode="r", shape=(num_vectors, dim)
-    )
-
-    # Initialize storage for top-k candidates
-    # We will maintain a global list of top results
-    global_top_dists = np.full((len(queries), k), -np.inf, dtype="float32")
-    global_top_indices = np.full((len(queries), k), -1, dtype="int64")
-
-    print(f"Starting scan over {queries.shape[0]} queries...")
-    for query in tqdm(queries, desc="Searching over queries", total=queries.shape[0]):
-        # 3. Perform Matrix Multiplication (Inner Product)
-        # If you need L2 distance, see note below*
-        print("Performing dot product...")
-        torch_query = torch.from_numpy(query).to(device)
-        all_dists = []
-        for batch in tqdm(iterate_batches_to_gpu(X_disk, batch_size, device), desc="Chunking", total=math.ceil(num_vectors / batch_size)):
-            dists = (batch @ torch_query.T).T
-            all_dists.append(dists)
-        dists = torch.cat(dists).cpu().numpy()
-        breakpoint()
-
-        # 4. Update Top-K
-        # We concatenate current best with new batch results and sort
-        # This logic is efficient because k is usually small
-
-        # Combine current batch results with previous bests
-        print("Updating topk...")
-        combined_dists = np.concatenate([global_top_dists, dists], axis=1)
-        combined_indices = np.concatenate(
-            [
-                global_top_indices,
-                np.arange(i, end)
-                + np.zeros((len(queries), 1), dtype="int64"),  # broadcast indices
-            ],
-            axis=1,
-        )
-
-        # Argpartition is faster than sort for finding top k
-        # We want largest dot products (closest)
-        top_k_idx_in_combined = np.argpartition(combined_dists, -k, axis=1)[:, -k:]
-
-        # Gather the results
-        rows = np.arange(len(queries))[:, None]
-        global_top_dists = combined_dists[rows, top_k_idx_in_combined]
-        global_top_indices = combined_indices[rows, top_k_idx_in_combined]
-
-        # Optional: sort the final k for tidiness (argpartition is not sorted)
-        sorted_order = np.argsort(global_top_dists, axis=1)[:, ::-1]
-        global_top_dists = global_top_dists[rows, sorted_order]
-        global_top_indices = global_top_indices[rows, sorted_order]
-
-        if i % (batch_size * 10) == 0:
-            print(f"Processed {end} / {num_vectors} vectors")
-
-        print("Search complete.")
-
-    return global_top_dists, global_top_indices
+    return global_topk_vals.cpu().numpy(), global_topk_indices.cpu().numpy()
 
 
-def get_reads_from_indices(result_ids, result_dists, query_idx_mapping, embeddings_idx_map_path):
-    df_ranges = pl.from_parquet(embeddings_idx_map_path)
+def get_accs_from_indices(
+    result_ids, result_dists, query_idx_mapping, embeddings_idx_map_path
+):
+    print("Mapping results to accessions")
+    df_ranges = pl.read_parquet(embeddings_idx_map_path)
     # Create a DataFrame for your queries
     # Note: sort("query_id") is usually required for efficient asof joins
     df_dists = pl.from_numpy(result_dists, schema={"dists": pl.List(pl.Float32)})
@@ -256,7 +175,7 @@ def get_reads_from_indices(result_ids, result_dists, query_idx_mapping, embeddin
                 pl.col("query_ids"),  # The original IDs (now sorted)
                 pl.col("accession"),  # The mapped accessions (as a list)
                 pl.col("read_offset"),  # The local offsets (as a list)
-                pl.col("dists")
+                pl.col("dists"),
             ]
         )
         .sort("row_nr")  # Restore original row order
@@ -265,40 +184,120 @@ def get_reads_from_indices(result_ids, result_dists, query_idx_mapping, embeddin
 
     return result_df
 
-def get_recall_precision(expected_df, actual_df):
-    breakpoint()
 
 def main(
+    model,
+    tokenizer,
+    dim: int,
     dataset_path: str,
     accessions_path: str,
     embeddings_bin_path: str,
     embeddings_idx_map_path: str,
-    model_str: Literal["rawbert", "dnabert"],
-    num_vectors: int = None,
-    checkpoint_path: str = None,
-    metadata_path: str = None,
-    dim: int = None,
-    K: int = None,
-    batch_size: int = 10_000_000,
-    top_k: int = 10,
+    metadata_path: str,
+    batch_size: int,
+    topk: int,
+    output_parquet: str,
 ):
+    warnings.filterwarnings("ignore", message=".*Increasing alibi size.*")
+    warnings.filterwarnings("ignore", message=".*Unable to import Triton.*")
+    transformers_logging.set_verbosity_error()
+
     # Configuration
-    if num_vectors is None:
-        num_vectors = count_reads(accessions_path, metadata_path)
+    num_vectors = count_reads(accessions_path, metadata_path)
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    assert device == "cuda"
-    model, tokenizer = get_model_and_tokenizer(model_str, checkpoint_path, dim, K)
+    assert device == "cuda", "No GPU available, aborting"
     model = model.to(device)
 
     dataset = pl.read_ndjson(dataset_path)
     query_embeds, query_idx_mapping = embed_query_transcripts(model, tokenizer, dataset)
 
-    dists, indices = search_vectors_new(
-        query_embeds, embeddings_bin_path, num_vectors, dim, batch_size, top_k, device
+    dists, indices = search_vectors(
+        query_embeds, embeddings_bin_path, num_vectors, dim, batch_size, topk, device
     )
-    reads_df = get_reads_from_indices(indices, dists, query_idx_mapping, embeddings_idx_map_path)
-    recall, precision = get_recall_precision(dataset, reads_df)
+    results_df = get_accs_from_indices(
+        indices, dists, query_idx_mapping, embeddings_idx_map_path
+    )
+    results_df.write_parquet(output_parquet)
 
 
 if __name__ == "__main__":
-    auto_cli(main)
+    # 1. Create the parent parser for shared arguments
+    # add_help=False is CRITICAL here to avoid conflict
+    shared_parser = ArgumentParser(add_help=False)
+    shared_parser.add_argument(
+        "--dataset_path", type=str, required=True, help="Path to test dataset jsonl"
+    )
+    shared_parser.add_argument(
+        "--accessions_path", type=str, required=True, help="Path to accessions csv"
+    )
+    shared_parser.add_argument(
+        "--embeddings_bin_path",
+        type=str,
+        required=True,
+        help="Path to embeddings bin file",
+    )
+    shared_parser.add_argument(
+        "--embeddings_idx_map_path",
+        type=str,
+        required=True,
+        help="Path to idx-read mapping file",
+    )
+    shared_parser.add_argument(
+        "--metadata_path",
+        type=str,
+        required=True,
+        help="Path to logan seqstats metadata",
+    )
+    shared_parser.add_argument(
+        "--output",
+        type=str,
+        required=True,
+        help="Path to CSV output file for search results",
+    )
+    shared_parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=1_000_000,
+        help="Batch size to process embedding vecs with",
+    )
+    shared_parser.add_argument(
+        "--topk", type=int, default=10, help="Number of k to search with"
+    )
+
+    # 2. Create the main top-level parser
+    main_parser = ArgumentParser()
+    subparsers = main_parser.add_subparsers(dest="model_name")
+
+    # 3. Create subparsers that inherit from shared_parser
+    # You can pass multiple parents in the list
+    rawbert_parser = subparsers.add_parser(
+        "rawbert", parents=[shared_parser], help="Benchmark rawbert model"
+    )
+    rawbert_parser.add_argument(
+        "--checkpoint_path", type=str, help="Path to rawbert checkpoint"
+    )
+    rawbert_parser.add_argument(
+        "--dim", type=int, help="Dimension of rawbert embedding"
+    )
+    rawbert_parser.add_argument("--K", type=int, help="Length of rawbert queue")
+    rawbert_parser.set_defaults(func=get_rawbert_model)
+    dnabert_parser = subparsers.add_parser(
+        "dnabert", parents=[shared_parser], help="Benchmark dnabert model"
+    )
+    dnabert_parser.set_defaults(func=get_dnabert_model)
+    args = main_parser.parse_args()
+    model, tokenizer, dim = args.func(args)
+
+    main(
+        model,
+        tokenizer,
+        dim,
+        args.dataset_path,
+        args.accessions_path,
+        args.embeddings_bin_path,
+        args.embeddings_idx_map_path,
+        args.metadata_path,
+        args.batch_size,
+        args.topk,
+        args.output,
+    )

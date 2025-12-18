@@ -211,3 +211,4 @@ wandb
 nexus_scripts
 output
 checkpoints
+*.parquet
