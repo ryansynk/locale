@@ -7,6 +7,7 @@ from typing import Literal
 import numpy as np
 import polars as pl
 import torch
+import torch.nn.functional as F
 import zstandard as zstd
 from Bio import SeqIO
 from jsonargparse import auto_cli
@@ -105,7 +106,7 @@ def main(
         patch_with_flash_lib(model)
         model = model.eval()
         model = model.to(device)
-        model.encode = lambda x: model(**x)[1]
+        model.encode = lambda x: F.normalize(model(**x)[1], dim=1)
     else:
         raise ValueError(f"Expected rawbert or dnabert for model, got {model}")
 
