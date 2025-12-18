@@ -1,10 +1,11 @@
-import polars as pl
-from jsonargparse import auto_cli
-import zstandard as zstd
-from pathlib import Path
-from tqdm import tqdm
 import io
+from pathlib import Path
+
+import polars as pl
+import zstandard as zstd
 from Bio import SeqIO
+from jsonargparse import auto_cli
+from tqdm import tqdm
 
 
 def get_reads_from_accs(df, logan_dir):
