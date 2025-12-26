@@ -17,8 +17,6 @@ from transformers import AutoModel, BertConfig
 
 # Try to import the specific varlen function from flash_attn
 try:
-    from flash_attn import flash_attn_varlen_qkvpacked_func
-
     FLASH_ATTN_AVAILABLE = True
     from rawbert.utils.patch import patch_with_flash_lib
 except ImportError:

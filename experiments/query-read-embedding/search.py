@@ -2,6 +2,7 @@ import math
 import warnings
 from argparse import ArgumentParser
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import polars as pl
@@ -138,6 +139,103 @@ def search_vectors(queries, embeddings_path, num_vectors, dim, batch_size, k, de
     return global_topk_vals.cpu().numpy(), global_topk_indices.cpu().numpy()
 
 
+def search_vectors_pool_accession(
+    queries,
+    embeddings_path,
+    embeddings_idx_map_path,
+    num_vectors,
+    dim,
+    batch_size,
+    k,
+    device,
+    query_idx_mapping,
+):
+    # 1. Memory map the large file (Instant, consumes no RAM)
+    # Ensure your binary file is purely the vectors (no headers).
+    # If there is a header, use the 'offset' parameter.
+    X_disk = np.memmap(
+        embeddings_path, dtype="float32", mode="r", shape=(num_vectors, dim)
+    )
+    df_offsets = pl.read_parquet(embeddings_idx_map_path)
+    num_queries: int = queries.shape[0]
+
+    print(f"Starting scan over {num_vectors} vectors...")
+    queries = torch.from_numpy(queries).to(device)
+
+    accs = df_offsets["accession"].to_list()
+    start_indices = df_offsets["start_id"].to_list()
+    results = {}
+    query_ids = [id for (id, seq) in query_idx_mapping]
+    for id in query_ids:
+        results[id] = {}
+
+    current_offset = 0
+    k_pool = 100
+    for start_idx, end_idx, acc in tqdm(
+        list(zip(start_indices, start_indices[1:] + [num_vectors], accs))
+    ):
+        global_topk_vals: torch.Tensor = torch.full(
+            (num_queries, k_pool), float("-inf"), device=device
+        )
+        global_topk_indices: torch.Tensor = torch.full(
+            (num_queries, k_pool), -1, dtype=torch.long, device=device
+        )
+        for i in range(start_idx, end_idx, batch_size):
+            # Determine actual batch end (handle last chunk)
+            # end = min(i + batch_size, num_vectors_in_acc)
+            end = min(i + batch_size, end_idx)
+
+            # Load chunk into RAM (This triggers the disk read)
+            chunk = torch.from_numpy(X_disk[i:end]).to(device)
+
+            # Perform Matrix Multiplication (Inner Product)
+            # chunk is batch_size x dim, queries is num_queries x dim
+            # dists is num_queries x batch_size
+            dists = (chunk @ queries.T).T
+
+            local_k = min(k_pool, batch_size)
+            # topk_dists, topk_indices are num_queries x local_k
+            local_dists, local_indices = torch.topk(dists, local_k, dim=1)
+            global_mapped_indices = local_indices + current_offset
+
+            # 4. Merge with Global Buffer
+            # Concatenate current global best with new local candidates
+            combined_vals = torch.cat([global_topk_vals, local_dists], dim=1)
+            combined_indices = torch.cat(
+                [global_topk_indices, global_mapped_indices], dim=1
+            )
+
+            # 6. Reduce back to Top-K
+            # This keeps our memory footprint constant regardless of total array size
+            global_topk_vals, best_of_both_idx = torch.topk(
+                combined_vals, k_pool, dim=1
+            )
+            global_topk_indices = torch.gather(combined_indices, 1, best_of_both_idx)
+
+            current_offset += batch_size
+            del chunk, dists, local_dists, local_indices
+
+        for id, val in zip(query_ids, global_topk_vals.sum(dim=1).cpu().tolist()):
+            results[id].update({acc: val})
+
+    print("Search complete.")
+    filtered_results = []
+    for transcript_id in results.keys():
+        # list of (acc, score)
+        sorted_accs = sorted(
+            results[transcript_id].items(), key=lambda f: f[1], reverse=True
+        )
+        filtered_results.append(
+            {
+                "transcript_id": transcript_id,
+                "accession": [acc for acc, score in sorted_accs[:k]],
+            }
+        )
+
+    results_df = pl.from_dicts(filtered_results)
+    return results_df
+
+
 def get_accs_from_indices(
     result_ids, result_dists, query_idx_mapping, embeddings_idx_map_path
 ):
@@ -197,6 +295,7 @@ def main(
     batch_size: int,
     topk: int,
     output_parquet: str,
+    search_strategy: Literal["standard", "by-accession"],
 ):
     warnings.filterwarnings("ignore", message=".*Increasing alibi size.*")
     warnings.filterwarnings("ignore", message=".*Unable to import Triton.*")
@@ -211,12 +310,31 @@ def main(
     dataset = pl.read_ndjson(dataset_path)
     query_embeds, query_idx_mapping = embed_query_transcripts(model, tokenizer, dataset)
 
-    dists, indices = search_vectors(
-        query_embeds, embeddings_bin_path, num_vectors, dim, batch_size, topk, device
-    )
-    results_df = get_accs_from_indices(
-        indices, dists, query_idx_mapping, embeddings_idx_map_path
-    )
+    if search_strategy == "standard":
+        dists, indices = search_vectors(
+            query_embeds,
+            embeddings_bin_path,
+            num_vectors,
+            dim,
+            batch_size,
+            topk,
+            device,
+        )
+        results_df = get_accs_from_indices(
+            indices, dists, query_idx_mapping, embeddings_idx_map_path
+        )
+    elif search_strategy == "by-accession":
+        results_df = search_vectors_pool_accession(
+            query_embeds,
+            embeddings_bin_path,
+            embeddings_idx_map_path,
+            num_vectors,
+            dim,
+            batch_size,
+            topk,
+            device,
+            query_idx_mapping,
+        )
     results_df.write_parquet(output_parquet)
 
 
@@ -263,6 +381,9 @@ if __name__ == "__main__":
     shared_parser.add_argument(
         "--topk", type=int, default=10, help="Number of k to search with"
     )
+    shared_parser.add_argument(
+        "--strategy", type=str, choices=["standard", "by-accession"], default="standard"
+    )
 
     # 2. Create the main top-level parser
     main_parser = ArgumentParser()
@@ -300,4 +421,5 @@ if __name__ == "__main__":
         args.batch_size,
         args.topk,
         args.output,
+        args.strategy,
     )
