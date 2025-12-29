@@ -18,14 +18,13 @@ from rawbert import RawBERT
 from rawbert.utils.patch import patch_with_flash_lib
 
 
-def embed_accs(accs, tokenizer, model, model_str, device, outpath, batch_size):
+def embed_accs(accs, tokenizer, model, device, outfile, batch_size):
     model = model.to(device)
     print(f"Embedding {len(accs)} accessions")
     dctx = zstd.ZstdDecompressor()
     global_idx = 0
     range_data = []
 
-    outfile = outpath / f"{model_str}_embds.bin"
     with open(outfile, "wb") as f_out:
         for acc_row in accs.iter_rows(named=True):
             acc_id = acc_row["accession"]
@@ -65,14 +64,14 @@ def embed_accs(accs, tokenizer, model, model_str, device, outpath, batch_size):
 
                     global_idx += num_reads
 
-    idfile = outpath / f"{model_str}_sra_id_map.parquet"
+    idfile = (outfile.parent / f"{outfile.stem}_sra_id_map.parquet").resolve()
     df_ranges = pl.DataFrame(range_data)
     df_ranges.write_parquet(idfile)
 
 
 def main(
     accessions_csv: str,
-    output_dir: str,
+    output_bin: str,
     model_str: Literal["rawbert", "dnabert"],
     checkpoint_path: str = None,
     batch_size: int = 16384,
@@ -81,8 +80,10 @@ def main(
 ):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     assert device == "cuda"
-    output_dir = Path(output_dir).resolve()
-    assert output_dir.exists(), f"Provided output dir = {output_dir} does not exist!"
+    output_bin = Path(output_bin).resolve()
+    assert output_bin.parent.exists(), (
+        f"Provided output dir = {output_bin.parent} does not exist!"
+    )
     if model_str == "rawbert":
         print("Loading rawbert checkpoint...")
         model = RawBERT(dim=dim, K=K)
@@ -112,7 +113,7 @@ def main(
 
     accs = pl.read_csv(accessions_csv)
     accs = accs.sort(by="accession")
-    embed_accs(accs, tokenizer, model, model_str, device, output_dir, batch_size)
+    embed_accs(accs, tokenizer, model, device, output_bin, batch_size)
 
 
 if __name__ == "__main__":

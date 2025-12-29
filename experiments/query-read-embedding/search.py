@@ -1,4 +1,5 @@
 import math
+import os
 import warnings
 from argparse import ArgumentParser
 from pathlib import Path
@@ -43,18 +44,6 @@ def get_dnabert_model(args):
     return model, tokenizer, dim
 
 
-def count_reads(accessions_path, metadata_path):
-    accs = pl.read_csv(accessions_path)
-    accs = accs.sort(by="accession")
-    metadata = pl.read_parquet(metadata_path)
-    total_reads = (
-        accs.join(metadata, on="accession")
-        .select(pl.sum("seqstats_unitigs_nbseq"))
-        .item()
-    )
-    return total_reads
-
-
 def embed_query_transcripts(model, tokenizer, dataset):
     vectors = []
     idx_mapping = []
@@ -75,13 +64,10 @@ def embed_query_transcripts(model, tokenizer, dataset):
     return vectors, idx_mapping
 
 
-def search_vectors(queries, embeddings_path, num_vectors, dim, batch_size, k, device):
+def search_vectors(queries, embeddings_path, dim, batch_size, k, device):
     # 1. Memory map the large file (Instant, consumes no RAM)
     # Ensure your binary file is purely the vectors (no headers).
     # If there is a header, use the 'offset' parameter.
-    X_disk = np.memmap(
-        embeddings_path, dtype="float32", mode="r", shape=(num_vectors, dim)
-    )
     num_queries: int = queries.shape[0]
     # Initialize Global Buffers to store the best results found so far
     # Values initialized to -infinity, Indices to -1
@@ -90,6 +76,12 @@ def search_vectors(queries, embeddings_path, num_vectors, dim, batch_size, k, de
     )
     global_topk_indices: torch.Tensor = torch.full(
         (num_queries, k), -1, dtype=torch.long, device=device
+    )
+    file_size_bytes = os.path.getsize(embeddings_path)
+    bytes_per_item = np.dtype(np.float32).itemsize
+    num_vectors = file_size_bytes // (bytes_per_item * dim)
+    X_disk = np.memmap(
+        embeddings_path, dtype="float32", mode="r", shape=(num_vectors, dim), order="C"
     )
 
     print(f"Starting scan over {num_vectors} vectors...")
@@ -143,7 +135,6 @@ def search_vectors_pool_accession(
     queries,
     embeddings_path,
     embeddings_idx_map_path,
-    num_vectors,
     dim,
     batch_size,
     k,
@@ -153,8 +144,11 @@ def search_vectors_pool_accession(
     # 1. Memory map the large file (Instant, consumes no RAM)
     # Ensure your binary file is purely the vectors (no headers).
     # If there is a header, use the 'offset' parameter.
+    file_size_bytes = os.path.getsize(embeddings_path)
+    bytes_per_item = np.dtype(np.float32).itemsize
+    num_vectors = file_size_bytes // (bytes_per_item * dim)
     X_disk = np.memmap(
-        embeddings_path, dtype="float32", mode="r", shape=(num_vectors, dim)
+        embeddings_path, dtype="float32", mode="r", shape=(num_vectors, dim), order="C"
     )
     df_offsets = pl.read_parquet(embeddings_idx_map_path)
     num_queries: int = queries.shape[0]
@@ -291,7 +285,6 @@ def main(
     accessions_path: str,
     embeddings_bin_path: str,
     embeddings_idx_map_path: str,
-    metadata_path: str,
     batch_size: int,
     topk: int,
     output_parquet: str,
@@ -302,7 +295,6 @@ def main(
     transformers_logging.set_verbosity_error()
 
     # Configuration
-    num_vectors = count_reads(accessions_path, metadata_path)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     assert device == "cuda", "No GPU available, aborting"
     model = model.to(device)
@@ -314,7 +306,6 @@ def main(
         dists, indices = search_vectors(
             query_embeds,
             embeddings_bin_path,
-            num_vectors,
             dim,
             batch_size,
             topk,
@@ -328,7 +319,6 @@ def main(
             query_embeds,
             embeddings_bin_path,
             embeddings_idx_map_path,
-            num_vectors,
             dim,
             batch_size,
             topk,
@@ -359,12 +349,6 @@ if __name__ == "__main__":
         type=str,
         required=True,
         help="Path to idx-read mapping file",
-    )
-    shared_parser.add_argument(
-        "--metadata_path",
-        type=str,
-        required=True,
-        help="Path to logan seqstats metadata",
     )
     shared_parser.add_argument(
         "--output",
@@ -417,7 +401,6 @@ if __name__ == "__main__":
         args.accessions_path,
         args.embeddings_bin_path,
         args.embeddings_idx_map_path,
-        args.metadata_path,
         args.batch_size,
         args.topk,
         args.output,
