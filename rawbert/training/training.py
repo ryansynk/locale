@@ -1,8 +1,10 @@
 import time
 import warnings
 from functools import partial
+from itertools import batched  # ty: ignore unresolved-import
 from pathlib import Path
 
+import polars as pl
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
@@ -11,6 +13,7 @@ from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
+from transformers import AutoTokenizer
 from transformers.utils import logging as transformers_logging
 
 from rawbert.modeling.model import RawBERT
@@ -43,6 +46,9 @@ def collate(batch, tokenizer):
 def train(
     dataset_path,
     test_dataset_path,
+    augment_config,
+    num_test_queries,
+    num_test_keys,
     batch_size,
     per_device_batch_size,
     lr,
@@ -76,13 +82,15 @@ def train(
     else:
         ddp_rawbert = rawbert
 
-    reader = Batcher(dataset_path)
-    test_reader = Batcher(test_dataset_path)
-    collater = partial(collate, tokenizer=reader.tokenizer)
+    reader = Batcher(dataset_path, augment_config)
+    # test_reader = Batcher(test_dataset_path)
+    tokenizer = AutoTokenizer.from_pretrained(
+        "zhihan1996/DNABERT-2-117M", trust_remote_code=True
+    )
+    collater = partial(collate, tokenizer=tokenizer)
 
     if is_distributed:
         sampler = DistributedSampler(reader)
-        test_sampler = DistributedSampler(test_reader)
         dataloader = DataLoader(
             reader,
             batch_size=per_device_batch_size,
@@ -90,20 +98,11 @@ def train(
             collate_fn=collater,
             drop_last=True,
         )
-        test_dataloader = DataLoader(
-            test_reader,
-            batch_size=per_device_batch_size,
-            sampler=test_sampler,
-            collate_fn=collater,
-        )
     else:
         sampler = None
         # In single GPU mode, we just shuffle normally
         dataloader = DataLoader(
             reader, per_device_batch_size, shuffle=True, collate_fn=collater
-        )
-        test_dataloader = DataLoader(
-            test_reader, per_device_batch_size, shuffle=True, collate_fn=collater
         )
 
     optimizer = AdamW(
@@ -148,10 +147,13 @@ def train(
             if global_step % checkpoint_interval == 0 and global_step > 0:
                 if global_rank == 0:
                     test_acc1, test_acc5 = get_test_accuracy(
-                        test_dataloader,
+                        test_dataset_path,
+                        num_test_queries,
+                        num_test_keys,
+                        batch_size,
+                        collate,
                         ddp_rawbert.module if is_distributed else ddp_rawbert,
                         local_rank,
-                        temperature=moco_softmax_temp,
                     )
                     raw_model = ddp_rawbert.module if is_distributed else ddp_rawbert
 
@@ -168,7 +170,12 @@ def train(
                             "step": global_step,
                             "model": raw_model.state_dict(),
                             "optimizer": optimizer.state_dict(),
-                            "model_args": {"dim": dim, "K": moco_queue_size, "m": moco_momentum, "T": moco_softmax_temp}
+                            "model_args": {
+                                "dim": dim,
+                                "K": moco_queue_size,
+                                "m": moco_momentum,
+                                "T": moco_softmax_temp,
+                            },
                         },
                         checkpoint_dir,
                     )
@@ -195,7 +202,16 @@ def accuracy(output, target, topk=(1,)):
         return res
 
 
-def get_test_accuracy(test_loader, model, local_rank, temperature=0.07):
+def get_test_accuracy(
+    test_dataset_path,
+    num_queries,
+    num_keys,
+    batch_size,
+    collate_fn,
+    model,
+    local_rank,
+    temperature=0.07,
+):
     par_print("Evaluating test accuracy")
     model.eval()
 
@@ -204,19 +220,20 @@ def get_test_accuracy(test_loader, model, local_rank, temperature=0.07):
     all_k = []
 
     with torch.no_grad():
-        for batch in test_loader:
-            # Assuming inputs is a pair or your loader splits them
-            # x_q = query sequences, x_k = key sequences
-            q, k = batch
-            q = q.to(local_rank)
-            k = k.to(local_rank)
-            # seq is (B, N_max, D)
-            q = model._embed_q(q)
-            q = F.normalize(q, dim=1)  # (B, D)
-            all_q.append(q)
+        df = pl.read_parquet(test_dataset_path)
+        queries = df.select("query_seq").limit(num_queries).to_list()
+        keys = df.select("query_seq").limit(num_keys).to_list()
 
+        q = collate_fn(queries)
+        q = model._embed_q(q)
+        q = F.normalize(q, dim=1)  # (B, D)
+        all_q.append(q)
+
+        for batch in batched(keys, batch_size):
+            k = collate_fn(batch)
+            k = k.to(local_rank)
             # update key encoder
-            k = model._embed_k(k)
+            k = model._embed_q(k)
             k = F.normalize(k, dim=1)  # (B, D)
             all_k.append(k)
 
