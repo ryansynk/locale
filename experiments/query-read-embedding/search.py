@@ -282,7 +282,6 @@ def main(
     tokenizer,
     dim: int,
     dataset_path: str,
-    accessions_path: str,
     embeddings_bin_path: str,
     embeddings_idx_map_path: str,
     batch_size: int,
@@ -334,9 +333,6 @@ if __name__ == "__main__":
     shared_parser = ArgumentParser(add_help=False)
     shared_parser.add_argument(
         "--dataset_path", type=str, required=True, help="Path to test dataset jsonl"
-    )
-    shared_parser.add_argument(
-        "--accessions_path", type=str, required=True, help="Path to accessions csv"
     )
     shared_parser.add_argument(
         "--embeddings_bin_path",
@@ -398,7 +394,6 @@ if __name__ == "__main__":
         tokenizer,
         dim,
         args.dataset_path,
-        args.accessions_path,
         args.embeddings_bin_path,
         args.embeddings_idx_map_path,
         args.batch_size,
