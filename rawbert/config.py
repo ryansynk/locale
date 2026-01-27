@@ -12,7 +12,7 @@ class AugmentConfig:
     min_seq_len: int = 150
     containment_prob: float = 0.66
     overlap_prob: float = 0.34
-    min_alignment_len: int = 200
+    min_alignment_len: int = 150
 
     # Mutation rates
     insertion_rate: float = 0.005
@@ -70,4 +70,5 @@ class TrainConfig:
     num_val_queries: int = 100
     num_val_keys: int = 100_000
     dim: int = 128
+    sanity_test: bool = False
     augment_config: AugmentConfig = field(default_factory=AugmentConfig)

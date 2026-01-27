@@ -64,6 +64,7 @@ def train(
     world_size,
     is_distributed,
     checkpoint_interval,
+    sanity_test,
 ):
     warnings.filterwarnings("ignore", message=".*Increasing alibi size.*")
     warnings.filterwarnings("ignore", message=".*Unable to import Triton.*")
@@ -101,9 +102,7 @@ def train(
     else:
         sampler = None
         # In single GPU mode, we just shuffle normally
-        dataloader = DataLoader(
-            reader, per_device_batch_size, shuffle=True, collate_fn=collater
-        )
+        dataloader = DataLoader(reader, per_device_batch_size, collate_fn=collater)
 
     optimizer = AdamW(
         filter(lambda p: p.requires_grad, ddp_rawbert.parameters()), lr=lr
@@ -119,7 +118,16 @@ def train(
         sampler.set_epoch(0)
     ddp_rawbert.train()
 
-    for batch in tqdm(islice(dataloader, total_steps), total=total_steps):
+    if sanity_test:
+        par_print("Running in sanity test mode. Overfitting on a single batch.")
+        # Grab a single batch from the dataloader
+        single_batch = next(iter(dataloader))
+        # Create an iterator that yields the same batch indefinitely
+        data_iterator = (single_batch for _ in range(total_steps))
+    else:
+        data_iterator = islice(dataloader, total_steps)
+
+    for batch in tqdm(data_iterator, total=total_steps):
         q, k = batch
         q = q.to(local_rank)
         k = k.to(local_rank)

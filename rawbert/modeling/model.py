@@ -100,8 +100,18 @@ class RawBERT(nn.Module):
         # Positive logits: B x 1
         l_pos = einops.einsum(q, k, "B D, B D -> B").unsqueeze(-1)
 
-        # Negative logits: B x K
-        l_neg = einops.einsum(q, self.queue.clone().detach(), "B D, D K -> B K")
+        if self.K > 0:
+            # Negative logits: B x K
+            l_neg = einops.einsum(q, self.queue.clone().detach(), "B D, D K -> B K")
+        else:
+            # In-batch negative loss
+            batch_size = q.shape[0]
+            if batch_size > 1:
+                logits_matrix = torch.einsum("bd,cd->bc", q, k)
+                mask = torch.eye(batch_size, dtype=torch.bool, device=q.device)
+                l_neg = logits_matrix[~mask].view(batch_size, -1)
+            else:
+                l_neg = torch.empty((batch_size, 0), device=q.device)
 
         # Logits: B x (1 + K)
         logits = torch.cat([l_pos, l_neg], dim=1)
@@ -109,9 +119,10 @@ class RawBERT(nn.Module):
         # apply temperature
         logits /= self.T
 
-        labels = torch.zeros(logits.shape[0], dtype=torch.long).cuda()
+        labels = torch.zeros(logits.shape[0], dtype=torch.long, device=self.device)
 
-        self._dequeue_and_enqueue(k, is_distributed)
+        if self.K > 0:
+            self._dequeue_and_enqueue(k, is_distributed)
 
         return logits, labels
 

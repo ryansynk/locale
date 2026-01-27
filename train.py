@@ -92,6 +92,7 @@ def main(cfg: TrainConfig):
         world_size,
         is_distributed,
         cfg.checkpoint_interval,
+        cfg.sanity_test,
     )
 
     if global_rank == 0:

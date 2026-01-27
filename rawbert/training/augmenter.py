@@ -24,6 +24,7 @@ class SequenceAugmenter:
         global_max = seq_len - effective_len + 1
         global_start = self.rng.integers(0, global_max) if global_max > 0 else 0
         # Infer cfg min_len from data
+        assert self.cfg.min_alignment_len < effective_len + 1
         overlap_len = self.rng.integers(self.cfg.min_alignment_len, effective_len + 1)
 
         # Select Strategy
@@ -116,7 +117,7 @@ class SequenceAugmenter:
         for _ in range(num_ops):
             bp = self.rng.integers(0, seq_len)
             probs = self.cfg.substitution_matrix[result[bp]]
-            new_bp = self.rng.choice(a=np.array(["a", "c", "g", "t"]), p=probs)
+            new_bp = self.rng.choice(a=np.array(["A", "C", "G", "T"]), p=probs)
             result[bp] = new_bp
         return "".join(result)
 

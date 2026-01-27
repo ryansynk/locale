@@ -65,7 +65,7 @@ class Batcher(IterableDataset):
         for file_path in my_files:
             with open(file_path, "r") as handle:
                 for record in FastaIterator(handle):
-                    if len(record.seq) < self.augmenter.cfg.min_seq_length:
+                    if len(record.seq) < self.augmenter.cfg.min_seq_len:
                         continue
 
                     query, target = self.augmenter(record.seq)
