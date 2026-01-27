@@ -1,9 +1,11 @@
 import os
+from dataclasses import asdict
 
 import torch.distributed as dist
-from jsonargparse import auto_cli
+from jsonargparse import CLI
 
 import wandb
+from rawbert.config import TrainConfig
 from rawbert.training.training import train
 
 
@@ -30,19 +32,7 @@ def par_print(*args, **kwargs):
         print(*args, **kwargs)
 
 
-def main(
-    dataset_path: str,
-    test_dataset_path: str,
-    batch_size: int,
-    lr: float,
-    epochs: int,
-    dim: int = 64,
-    moco_queue_size: int = 4096,
-    moco_momentum: float = 0.999,
-    moco_softmax_temp: float = 0.07,
-    checkpoint_dir: str = "checkpoints",
-    checkpoint_interval: int = 1000,
-):
+def main(cfg: TrainConfig):
     # Check if we are running via torchrun (distributed) or standard python (single GPU)
     is_distributed = "RANK" in os.environ
 
@@ -59,55 +49,49 @@ def main(
         par_print("Running in Single-GPU mode (No DDP detected).")
 
     # Calculate per-device batch size
-    per_device_batch_size = batch_size // world_size
+    per_device_batch_size = cfg.batch_size // world_size
 
-    par_print(f"Global Batch Size: {batch_size}")
+    par_print(f"Global Batch Size: {cfg.batch_size}")
     par_print(f"World Size: {world_size}")
     par_print(f"Per-Device Batch Size: {per_device_batch_size}")
-    if batch_size % world_size != 0:
+    if cfg.batch_size % world_size != 0:
         par_print(
             "Warning: Global batch size is not divisible by world size. This results in an uneven split."
         )
 
-    par_print(f"Rawbert dim = {dim}")
-    par_print(f"Rawbert queue size = {moco_queue_size}")
+    par_print(f"Rawbert dim = {cfg.dim}")
+    par_print(f"Rawbert queue size = {cfg.moco_queue_size}")
 
     if global_rank == 0:
         run = wandb.init(
             entity="tomg-group-umd",
             project="rawbert",
-            config={
-                "learning_rate": lr,
-                "epochs": epochs,
-                "batch_size": batch_size,
-                "per_device_batch_size": per_device_batch_size,
-                "embedding_dim": dim,
-                "moco_queue_size": moco_queue_size,
-                "moco_momentum": moco_momentum,
-                "moco_softmax_temp": moco_softmax_temp,
-            },
+            config=asdict(cfg),
         )
     else:
         run = None
 
     train(
-        dataset_path,
-        test_dataset_path,
-        batch_size,
+        cfg.dataset_path,
+        cfg.test_dataset_path,
+        cfg.augment_config,
+        cfg.num_val_queries,
+        cfg.num_val_keys,
+        cfg.batch_size,
         per_device_batch_size,
-        lr,
-        epochs,
-        dim,
-        moco_queue_size,
-        moco_momentum,
-        moco_softmax_temp,
-        checkpoint_dir,
+        cfg.lr,
+        cfg.total_steps,
+        cfg.dim,
+        cfg.moco_queue_size,
+        cfg.moco_momentum,
+        cfg.moco_softmax_temp,
+        cfg.checkpoint_dir,
         run,
         local_rank,
         global_rank,
         world_size,
         is_distributed,
-        checkpoint_interval,
+        cfg.checkpoint_interval,
     )
 
     if global_rank == 0:
@@ -115,4 +99,5 @@ def main(
 
 
 if __name__ == "__main__":
-    auto_cli(main, as_positional=False)
+    cfg = CLI(TrainConfig, as_positional=False)
+    main(cfg)

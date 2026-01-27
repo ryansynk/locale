@@ -3,7 +3,7 @@ from enum import Enum
 
 import numpy as np
 
-from .augment_config import AugmentConfig
+from ..config import AugmentConfig
 
 
 class CropType(Enum):

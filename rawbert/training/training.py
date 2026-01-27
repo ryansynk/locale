@@ -1,7 +1,7 @@
 import time
 import warnings
 from functools import partial
-from itertools import batched  # ty: ignore unresolved-import
+from itertools import batched, islice  # ty: ignore unresolved-import
 from pathlib import Path
 
 import polars as pl
@@ -47,12 +47,12 @@ def train(
     dataset_path,
     test_dataset_path,
     augment_config,
-    num_test_queries,
-    num_test_keys,
+    num_val_queries,
+    num_val_keys,
     batch_size,
     per_device_batch_size,
     lr,
-    epochs,
+    total_steps,
     dim,
     moco_queue_size,
     moco_momentum,
@@ -115,74 +115,72 @@ def train(
     start_time = time.time()
     global_step = 0
 
-    for epoch in range(epochs):
-        if is_distributed:
-            sampler.set_epoch(epoch)
-        ddp_rawbert.train()
+    if is_distributed:
+        sampler.set_epoch(0)
+    ddp_rawbert.train()
 
-        for batch in tqdm(dataloader):
-            q, k = batch
-            q = q.to(local_rank)
-            k = k.to(local_rank)
-            optimizer.zero_grad()
-            logits, labels = ddp_rawbert(q, k, is_distributed)
-            loss = F.cross_entropy(logits, labels)
-            loss.backward()
-            optimizer.step()
-            elapsed = float(time.time() - start_time)
-            acc1, acc5 = accuracy(logits, labels, topk=(1, 5))
+    for batch in tqdm(islice(dataloader, total_steps), total=total_steps):
+        q, k = batch
+        q = q.to(local_rank)
+        k = k.to(local_rank)
+        optimizer.zero_grad()
+        logits, labels = ddp_rawbert(q, k, is_distributed)
+        loss = F.cross_entropy(logits, labels)
+        loss.backward()
+        optimizer.step()
+        elapsed = float(time.time() - start_time)
+        acc1, acc5 = accuracy(logits, labels, topk=(1, 5))
 
+        if global_rank == 0:
+            run.log(
+                {
+                    "train/loss": loss.item(),
+                    "train/acc1": acc1[0],
+                    "train/acc5": acc5[0],
+                    "train/lr": lr,
+                    "train/time_elapsed": elapsed,
+                    "train/step": global_step,
+                }
+            )
+
+        if global_step % checkpoint_interval == 0 and global_step > 0:
             if global_rank == 0:
+                val_acc1, val_acc5 = get_test_accuracy(
+                    test_dataset_path,
+                    num_val_queries,
+                    num_val_keys,
+                    batch_size,
+                    collate,
+                    ddp_rawbert.module if is_distributed else ddp_rawbert,
+                    local_rank,
+                )
+                raw_model = ddp_rawbert.module if is_distributed else ddp_rawbert
+
                 run.log(
                     {
-                        "train/loss": loss.item(),
-                        "train/acc1": acc1[0],
-                        "train/acc5": acc5[0],
-                        "train/lr": lr,
-                        "train/time_elapsed": elapsed,
-                        "train/step": global_step,
+                        "val/acc1": val_acc1[0],
+                        "val/acc5": val_acc5[0],
+                        "val/step": global_step,
                     }
                 )
-
-            if global_step % checkpoint_interval == 0 and global_step > 0:
-                if global_rank == 0:
-                    test_acc1, test_acc5 = get_test_accuracy(
-                        test_dataset_path,
-                        num_test_queries,
-                        num_test_keys,
-                        batch_size,
-                        collate,
-                        ddp_rawbert.module if is_distributed else ddp_rawbert,
-                        local_rank,
-                    )
-                    raw_model = ddp_rawbert.module if is_distributed else ddp_rawbert
-
-                    run.log(
-                        {
-                            "test/acc1": test_acc1[0],
-                            "test/acc5": test_acc5[0],
-                            "test/step": global_step,
-                        }
-                    )
-                    save_checkpoint(
-                        {
-                            "epoch": epoch,
-                            "step": global_step,
-                            "model": raw_model.state_dict(),
-                            "optimizer": optimizer.state_dict(),
-                            "model_args": {
-                                "dim": dim,
-                                "K": moco_queue_size,
-                                "m": moco_momentum,
-                                "T": moco_softmax_temp,
-                            },
+                save_checkpoint(
+                    {
+                        "step": global_step,
+                        "model": raw_model.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                        "model_args": {
+                            "dim": dim,
+                            "K": moco_queue_size,
+                            "m": moco_momentum,
+                            "T": moco_softmax_temp,
                         },
-                        checkpoint_dir,
-                    )
-                torch.distributed.barrier()
-                ddp_rawbert.train()
+                    },
+                    checkpoint_dir,
+                )
+            torch.distributed.barrier()
+            ddp_rawbert.train()
 
-            global_step += 1
+        global_step += 1
 
 
 def accuracy(output, target, topk=(1,)):
