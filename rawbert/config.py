@@ -12,7 +12,7 @@ class AugmentConfig:
     min_seq_len: int = 150
     containment_prob: float = 0.66
     overlap_prob: float = 0.34
-    min_alignment_len: int = 150
+    min_alignment_len: int = 149
 
     # Mutation rates
     insertion_rate: float = 0.005

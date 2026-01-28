@@ -29,9 +29,18 @@ def par_print(*args, **kwargs):
         print(*args, **kwargs)
 
 
+def par_tqdm_write(*args, **kwargs):
+    if dist.is_initialized():
+        if dist.get_rank() == 0:
+            tqdm.write(*args, **kwargs)
+    else:
+        # Fallback for single GPU runs so it still works
+        tqdm.write(*args, **kwargs)
+
+
 def save_checkpoint(state, checkpoint_dir):
     filename = (checkpoint_dir / "checkpoint.pth.tar").resolve()
-    par_print(f"Saving checkpoint to {str(filename)}")
+    par_tqdm_write(f"Saving checkpoint to {str(filename)}")
     torch.save(state, filename)
 
 
@@ -90,19 +99,12 @@ def train(
     )
     collater = partial(collate, tokenizer=tokenizer)
 
-    if is_distributed:
-        sampler = DistributedSampler(reader)
-        dataloader = DataLoader(
-            reader,
-            batch_size=per_device_batch_size,
-            sampler=sampler,
-            collate_fn=collater,
-            drop_last=True,
-        )
-    else:
-        sampler = None
-        # In single GPU mode, we just shuffle normally
-        dataloader = DataLoader(reader, per_device_batch_size, collate_fn=collater)
+    dataloader = DataLoader(
+        reader,
+        batch_size=per_device_batch_size,
+        collate_fn=collater,
+        drop_last=True,
+    )
 
     optimizer = AdamW(
         filter(lambda p: p.requires_grad, ddp_rawbert.parameters()), lr=lr
@@ -114,8 +116,6 @@ def train(
     start_time = time.time()
     global_step = 0
 
-    if is_distributed:
-        sampler.set_epoch(0)
     ddp_rawbert.train()
 
     if sanity_test:
@@ -158,9 +158,10 @@ def train(
                     num_val_queries,
                     num_val_keys,
                     batch_size,
-                    collate,
                     ddp_rawbert.module if is_distributed else ddp_rawbert,
                     local_rank,
+                    tokenizer,
+                    augment_config,
                 )
                 raw_model = ddp_rawbert.module if is_distributed else ddp_rawbert
 
@@ -213,50 +214,58 @@ def get_test_accuracy(
     num_queries,
     num_keys,
     batch_size,
-    collate_fn,
     model,
     local_rank,
+    tokenizer,
+    augment_config,
     temperature=0.07,
 ):
-    par_print("Evaluating test accuracy")
+    par_tqdm_write("Evaluating test accuracy")
     model.eval()
 
-    # store all queries and keys
-    all_q = []
-    all_k = []
+    df = pl.read_parquet(test_dataset_path)
+    df = df.with_columns(
+        pl.col("query_seq").str.len_chars().alias("query_seq_len"),
+        pl.col("reference_seq").str.len_chars().alias("reference_seq_len"),
+    ).filter(
+        (pl.col("reference_seq_len") < augment_config.max_len)
+        & (pl.col("query_seq_len") < augment_config.max_len)
+    )
+    queries = df.head(num_queries)["query_seq"].to_list()
+    keys = df.head(num_keys)["reference_seq"].to_list()
 
     with torch.no_grad():
-        df = pl.read_parquet(test_dataset_path)
-        queries = df.select("query_seq").limit(num_queries).to_list()
-        keys = df.select("query_seq").limit(num_keys).to_list()
+        # store all queries and keys
+        all_q = []
+        all_k = []
 
-        q = collate_fn(queries)
+        q = tokenizer(queries, return_tensors="pt", padding=True)
+        q = q.to(local_rank)
         q = model._embed_q(q)
         q = F.normalize(q, dim=1)  # (B, D)
         all_q.append(q)
 
         for batch in batched(keys, batch_size):
-            k = collate_fn(batch)
+            k = tokenizer(batch, return_tensors="pt", padding=True)
             k = k.to(local_rank)
-            # update key encoder
             k = model._embed_q(k)
             k = F.normalize(k, dim=1)  # (B, D)
             all_k.append(k)
 
-    # Concatenate all features
-    all_q = torch.cat(all_q, dim=0)
-    all_k = torch.cat(all_k, dim=0)
+        # Concatenate all features
+        all_q = torch.cat(all_q, dim=0)
+        all_k = torch.cat(all_k, dim=0)
 
-    # 3. Compute logits: (N_test, N_test)
-    # Every row i is the query i compared against ALL keys
-    logits = torch.matmul(all_q, all_k.T) / temperature
+        # 3. Compute logits: (N_test, N_test)
+        # Every row i is the query i compared against ALL keys
+        logits = torch.matmul(all_q, all_k.T) / temperature
 
-    # 4. Create labels
-    # The positive for query i is at index i (the diagonal)
-    labels = torch.arange(all_q.shape[0]).to(local_rank)
+        # 4. Create labels
+        # The positive for query i is at index i (the diagonal)
+        labels = torch.arange(all_q.shape[0]).to(local_rank)
 
-    # 5. Calculate Accuracy
-    acc1 = accuracy(logits, labels, topk=(1,))
-    acc5 = accuracy(logits, labels, topk=(5,))
+        # 5. Calculate Accuracy
+        acc1 = accuracy(logits, labels, topk=(1,))
+        acc5 = accuracy(logits, labels, topk=(5,))
 
     return acc1, acc5

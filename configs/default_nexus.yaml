@@ -2,14 +2,14 @@ dataset_path: /fs/nexus-projects/sra_search/data/train/shards/
 test_dataset_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/val_contigs.parquet
 batch_size: 128
 lr: 4.0e-06
-total_steps: 1000000
+total_steps: 10000
 moco_queue_size: 65536
 moco_momentum: 0.999
 moco_softmax_temp: 0.05
 checkpoint_dir: /fs/nexus-scratch/ryansynk/rawbert/checkpoints/
 checkpoint_interval: 1000
 num_val_queries: 100
-num_val_keys: 100000
+num_val_keys: 10000
 dim: 128
 sanity_test: false
 augment_config:
