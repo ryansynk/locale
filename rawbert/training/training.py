@@ -1,5 +1,6 @@
 import time
 import warnings
+from dataclasses import asdict
 from functools import partial
 from itertools import batched, islice  # ty: ignore unresolved-import
 from pathlib import Path
@@ -8,21 +9,23 @@ import polars as pl
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
+import yaml
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
-from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 from transformers import AutoTokenizer
 from transformers.utils import logging as transformers_logging
 
+from rawbert.config import TrainConfig
 from rawbert.modeling.model import RawBERT
 from rawbert.training.batcher import Batcher
+from wandb import Run
 
 
 def par_print(*args, **kwargs):
-    if dist.is_initialized():
-        if dist.get_rank() == 0:
+    if dist.is_initialized():  # ty: ignore possibly-missing-attribute
+        if dist.get_rank() == 0:  # ty: ignore possibly-missing-attribute
             print(*args, **kwargs)
     else:
         # Fallback for single GPU runs so it still works
@@ -30,16 +33,22 @@ def par_print(*args, **kwargs):
 
 
 def par_tqdm_write(*args, **kwargs):
-    if dist.is_initialized():
-        if dist.get_rank() == 0:
+    if dist.is_initialized():  # ty: ignore possibly-missing-attribute
+        if dist.get_rank() == 0:  # ty: ignore possibly-missing-attribute
             tqdm.write(*args, **kwargs)
     else:
         # Fallback for single GPU runs so it still works
         tqdm.write(*args, **kwargs)
 
 
-def save_checkpoint(state, checkpoint_dir):
-    filename = (checkpoint_dir / "checkpoint.pth.tar").resolve()
+def save_checkpoint(state, checkpoint_dir, cfg, run_id):
+    this_ckpt_dir: Path = Path(checkpoint_dir / run_id).resolve()
+    this_ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    with open(this_ckpt_dir / "config.yaml", "w") as f:
+        yaml.dump(asdict(cfg), f)
+
+    filename = (this_ckpt_dir / "checkpoint.pth.tar").resolve()
     par_tqdm_write(f"Saving checkpoint to {str(filename)}")
     torch.save(state, filename)
 
@@ -53,27 +62,13 @@ def collate(batch, tokenizer):
 
 
 def train(
-    dataset_path,
-    test_dataset_path,
-    augment_config,
-    num_val_queries,
-    num_val_keys,
-    batch_size,
-    per_device_batch_size,
-    lr,
-    total_steps,
-    dim,
-    moco_queue_size,
-    moco_momentum,
-    moco_softmax_temp,
-    checkpoint_dir,
-    run,
-    local_rank,
-    global_rank,
-    world_size,
-    is_distributed,
-    checkpoint_interval,
-    sanity_test,
+    cfg: TrainConfig,
+    per_device_batch_size: int,
+    run: Run | None,
+    local_rank: int,
+    global_rank: int,
+    world_size: int,
+    is_distributed: bool,
 ):
     warnings.filterwarnings("ignore", message=".*Increasing alibi size.*")
     warnings.filterwarnings("ignore", message=".*Unable to import Triton.*")
@@ -82,7 +77,9 @@ def train(
     torch.cuda.set_device(local_rank)
 
     # Instantiate model and move to the correct GPU
-    rawbert = RawBERT(dim=dim, K=moco_queue_size, m=moco_momentum, T=moco_softmax_temp)
+    rawbert = RawBERT(
+        dim=cfg.dim, K=cfg.moco_queue_size, m=cfg.moco_momentum, T=cfg.moco_softmax_temp
+    )
     rawbert = rawbert.to(local_rank)
     rawbert.train()
 
@@ -92,7 +89,7 @@ def train(
     else:
         ddp_rawbert = rawbert
 
-    reader = Batcher(dataset_path, augment_config)
+    reader = Batcher(cfg.dataset_path, cfg.augment_config)
     # test_reader = Batcher(test_dataset_path)
     tokenizer = AutoTokenizer.from_pretrained(
         "zhihan1996/DNABERT-2-117M", trust_remote_code=True
@@ -107,27 +104,30 @@ def train(
     )
 
     optimizer = AdamW(
-        filter(lambda p: p.requires_grad, ddp_rawbert.parameters()), lr=lr
+        filter(lambda p: p.requires_grad, ddp_rawbert.parameters()), lr=cfg.lr
     )
 
-    checkpoint_dir = Path(checkpoint_dir)
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    if cfg.checkpoint_dir:
+        checkpoint_dir = Path(cfg.checkpoint_dir)
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        raise ValueError("No checkpoint_dir provided!")
 
     start_time = time.time()
     global_step = 0
 
     ddp_rawbert.train()
 
-    if sanity_test:
+    if cfg.sanity_test:
         par_print("Running in sanity test mode. Overfitting on a single batch.")
         # Grab a single batch from the dataloader
         single_batch = next(iter(dataloader))
         # Create an iterator that yields the same batch indefinitely
-        data_iterator = (single_batch for _ in range(total_steps))
+        data_iterator = (single_batch for _ in range(cfg.total_steps))
     else:
-        data_iterator = islice(dataloader, total_steps)
+        data_iterator = islice(dataloader, cfg.total_steps)
 
-    for batch in tqdm(data_iterator, total=total_steps):
+    for batch in tqdm(data_iterator, total=cfg.total_steps):
         q, k = batch
         q = q.to(local_rank)
         k = k.to(local_rank)
@@ -140,28 +140,29 @@ def train(
         acc1, acc5 = accuracy(logits, labels, topk=(1, 5))
 
         if global_rank == 0:
+            assert run
             run.log(
                 {
                     "train/loss": loss.item(),
                     "train/acc1": acc1[0],
                     "train/acc5": acc5[0],
-                    "train/lr": lr,
+                    "train/lr": cfg.lr,
                     "train/time_elapsed": elapsed,
                     "train/step": global_step,
                 }
             )
 
-        if global_step % checkpoint_interval == 0 and global_step > 0:
+        if global_step % cfg.checkpoint_interval == 0 and global_step > 0:
             if global_rank == 0:
                 val_acc1, val_acc5 = get_test_accuracy(
-                    test_dataset_path,
-                    num_val_queries,
-                    num_val_keys,
-                    batch_size,
+                    cfg.test_dataset_path,
+                    cfg.num_val_queries,
+                    cfg.num_val_keys,
+                    cfg.batch_size,
                     ddp_rawbert.module if is_distributed else ddp_rawbert,
                     local_rank,
                     tokenizer,
-                    augment_config,
+                    cfg.augment_config,
                 )
                 raw_model = ddp_rawbert.module if is_distributed else ddp_rawbert
 
@@ -178,13 +179,15 @@ def train(
                         "model": raw_model.state_dict(),
                         "optimizer": optimizer.state_dict(),
                         "model_args": {
-                            "dim": dim,
-                            "K": moco_queue_size,
-                            "m": moco_momentum,
-                            "T": moco_softmax_temp,
+                            "dim": cfg.dim,
+                            "K": cfg.moco_queue_size,
+                            "m": cfg.moco_momentum,
+                            "T": cfg.moco_softmax_temp,
                         },
                     },
                     checkpoint_dir,
+                    cfg,
+                    run.id,
                 )
             torch.distributed.barrier()
             ddp_rawbert.train()

@@ -72,31 +72,19 @@ def main(cfg: TrainConfig):
         run = None
 
     train(
-        cfg.dataset_path,
-        cfg.test_dataset_path,
-        cfg.augment_config,
-        cfg.num_val_queries,
-        cfg.num_val_keys,
-        cfg.batch_size,
+        cfg,
         per_device_batch_size,
-        cfg.lr,
-        cfg.total_steps,
-        cfg.dim,
-        cfg.moco_queue_size,
-        cfg.moco_momentum,
-        cfg.moco_softmax_temp,
-        cfg.checkpoint_dir,
         run,
         local_rank,
         global_rank,
         world_size,
         is_distributed,
-        cfg.checkpoint_interval,
-        cfg.sanity_test,
     )
 
     if global_rank == 0:
         run.finish()
+
+    dist.destroy_process_group()  # ty: ignore possibly-missing-attribute
 
 
 if __name__ == "__main__":

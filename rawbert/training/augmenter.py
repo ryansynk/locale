@@ -24,8 +24,16 @@ class SequenceAugmenter:
         global_max = seq_len - effective_len + 1
         global_start = self.rng.integers(0, global_max) if global_max > 0 else 0
         # Infer cfg min_len from data
-        assert self.cfg.min_alignment_len < effective_len + 1
-        overlap_len = self.rng.integers(self.cfg.min_alignment_len, effective_len + 1)
+
+        max_alignment_len = int(self.cfg.max_alignment_ratio * (effective_len + 1))
+        if self.cfg.min_alignment_len < max_alignment_len:
+            overlap_len = self.rng.integers(
+                self.cfg.min_alignment_len, max_alignment_len
+            )
+        else:
+            overlap_len = self.rng.integers(
+                self.cfg.min_alignment_len, effective_len + 1
+            )
 
         # Select Strategy
         crop_type: CropType = self.rng.choice(
