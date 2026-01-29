@@ -15,17 +15,17 @@ def setup():
     Initialize the distributed process group.
     torchrun sets environment variables: MASTER_ADDR, MASTER_PORT, WORLD_SIZE, RANK.
     """
-    dist.init_process_group("nccl")
+    dist.init_process_group("nccl")  # ty: ignore possibly-missing-attribute
 
 
 def cleanup():
     """Destroy the process group."""
-    dist.destroy_process_group()
+    dist.destroy_process_group()  # ty: ignore possibly-missing-attribute
 
 
 def par_print(*args, **kwargs):
-    if dist.is_initialized():
-        if dist.get_rank() == 0:
+    if dist.is_initialized():  # ty: ignore possibly-missing-attribute
+        if dist.get_rank() == 0:  # ty: ignore possibly-missing-attribute
             print(*args, **kwargs)
     else:
         # Fallback for single GPU runs so it still works
@@ -93,7 +93,7 @@ def main(cfg: TrainConfig):
         )
 
     if global_rank == 0:
-        run.finish()
+        run.finish()  # ty: ignore possibly-missing-attribute
 
     dist.destroy_process_group()  # ty: ignore possibly-missing-attribute
 
