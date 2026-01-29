@@ -6,7 +6,7 @@ from jsonargparse import CLI
 
 import wandb
 from rawbert.config import TrainConfig
-from rawbert.training.training import train
+from rawbert.training.training import train, train_supervised
 
 
 # 1. Basic setup function
@@ -71,15 +71,26 @@ def main(cfg: TrainConfig):
     else:
         run = None
 
-    train(
-        cfg,
-        per_device_batch_size,
-        run,
-        local_rank,
-        global_rank,
-        world_size,
-        is_distributed,
-    )
+    if cfg.supervised:
+        train_supervised(
+            cfg,
+            per_device_batch_size,
+            run,
+            local_rank,
+            global_rank,
+            world_size,
+            is_distributed,
+        )
+    else:
+        train(
+            cfg,
+            per_device_batch_size,
+            run,
+            local_rank,
+            global_rank,
+            world_size,
+            is_distributed,
+        )
 
     if global_rank == 0:
         run.finish()

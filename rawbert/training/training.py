@@ -13,13 +13,15 @@ import yaml
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, get_cosine_schedule_with_warmup
 from transformers.utils import logging as transformers_logging
 
 from rawbert.config import TrainConfig
 from rawbert.modeling.model import RawBERT
 from rawbert.training.batcher import Batcher
+from rawbert.training.supervised_batcher import SupervisedBatcher
 from wandb import Run
 
 
@@ -82,6 +84,22 @@ def train(
     )
     rawbert = rawbert.to(local_rank)
     rawbert.train()
+    backbone_params = list(
+        filter(lambda p: p.requires_grad, rawbert.bert_q.parameters())
+    )
+    head_params = list(
+        filter(lambda p: p.requires_grad, rawbert.projector_q.parameters())
+    )
+
+    # 3. Create the optimizer with distinct dictionary entries
+    optimizer = AdamW(
+        [
+            # Backbones usually need a much lower learning rate (e.g., 1e-5)
+            {"params": backbone_params, "lr": cfg.backbone_lr},
+            # Heads need a higher learning rate to learn quickly (e.g., 1e-3 or cfg.lr)
+            {"params": head_params, "lr": cfg.lr},
+        ]
+    )
 
     # Wrap model with DDP only if distributed
     if is_distributed:
@@ -101,10 +119,6 @@ def train(
         batch_size=per_device_batch_size,
         collate_fn=collater,
         drop_last=True,
-    )
-
-    optimizer = AdamW(
-        filter(lambda p: p.requires_grad, ddp_rawbert.parameters()), lr=cfg.lr
     )
 
     if cfg.checkpoint_dir:
@@ -163,6 +177,7 @@ def train(
                     local_rank,
                     tokenizer,
                     cfg.augment_config,
+                    temperature=cfg.moco_softmax_temp,
                 )
                 raw_model = ddp_rawbert.module if is_distributed else ddp_rawbert
 
@@ -193,6 +208,160 @@ def train(
             ddp_rawbert.train()
 
         global_step += 1
+
+
+def train_supervised(
+    cfg: TrainConfig,
+    per_device_batch_size: int,
+    run: Run | None,
+    local_rank: int,
+    global_rank: int,
+    world_size: int,
+    is_distributed: bool,
+):
+    par_print("Supervised Training Mode")
+    warnings.filterwarnings("ignore", message=".*Increasing alibi size.*")
+    warnings.filterwarnings("ignore", message=".*Unable to import Triton.*")
+    transformers_logging.set_verbosity_error()
+    # Set the device for this process
+    torch.cuda.set_device(local_rank)
+
+    # Instantiate model and move to the correct GPU
+    rawbert = RawBERT(
+        dim=cfg.dim, K=cfg.moco_queue_size, m=cfg.moco_momentum, T=cfg.moco_softmax_temp
+    )
+    rawbert = rawbert.to(local_rank)
+    rawbert.train()
+
+    backbone_params = list(
+        filter(lambda p: p.requires_grad, rawbert.bert_q.parameters())
+    )
+    head_params = list(
+        filter(lambda p: p.requires_grad, rawbert.projector_q.parameters())
+    )
+    optimizer = AdamW(
+        [
+            # Backbones usually need a much lower learning rate (e.g., 1e-5)
+            {"params": backbone_params, "lr": cfg.backbone_lr},
+            # Heads need a higher learning rate to learn quickly (e.g., 1e-3 or cfg.lr)
+            {"params": head_params, "lr": cfg.lr},
+        ]
+    )
+
+    # Wrap model with DDP only if distributed
+    if is_distributed:
+        ddp_rawbert = DDP(rawbert, device_ids=[local_rank])
+    else:
+        ddp_rawbert = rawbert
+
+    reader = SupervisedBatcher(cfg.dataset_path, cfg.augment_config)
+    sampler = DistributedSampler(reader) if is_distributed else None
+    # test_reader = Batcher(test_dataset_path)
+    tokenizer = AutoTokenizer.from_pretrained(
+        "zhihan1996/DNABERT-2-117M", trust_remote_code=True
+    )
+    collater = partial(collate, tokenizer=tokenizer)
+
+    dataloader = DataLoader(
+        reader,
+        batch_size=per_device_batch_size,
+        collate_fn=collater,
+        sampler=sampler,
+        drop_last=True,
+    )
+
+    total_steps = len(dataloader) * cfg.num_epochs
+    scheduler = get_cosine_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=int(0.05 * total_steps),
+        num_training_steps=total_steps,
+    )
+    if cfg.checkpoint_dir:
+        checkpoint_dir = Path(cfg.checkpoint_dir)
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        raise ValueError("No checkpoint_dir provided!")
+
+    start_time = time.time()
+    global_step = 0
+
+    ddp_rawbert.train()
+
+    if cfg.sanity_test:
+        raise NotImplementedError
+
+    for epoch in range(cfg.num_epochs):
+        par_tqdm_write(f"Training epoch = {epoch + 1}/{cfg.num_epochs}")
+        for batch in tqdm(dataloader):
+            q, k = batch
+            q = q.to(local_rank)
+            k = k.to(local_rank)
+            optimizer.zero_grad()
+            logits, labels = ddp_rawbert(q, k, is_distributed)
+            loss = F.cross_entropy(logits, labels)
+            loss.backward()
+            optimizer.step()
+            scheduler.step()
+            elapsed = float(time.time() - start_time)
+            acc1, acc5 = accuracy(logits, labels, topk=(1, 5))
+
+            if global_rank == 0:
+                assert run
+                lrs = scheduler.get_last_lr()
+                run.log(
+                    {
+                        "train/loss": loss.item(),
+                        "train/acc1": acc1[0],
+                        "train/acc5": acc5[0],
+                        "train/lr": lrs[1],
+                        "train/backbone_lr": lrs[0],
+                        "train/time_elapsed": elapsed,
+                        "train/step": global_step,
+                    }
+                )
+
+            if global_step % cfg.checkpoint_interval == 0 and global_step > 0:
+                if global_rank == 0:
+                    val_acc1, val_acc5 = get_test_accuracy_new(
+                        cfg.test_dataset_path,
+                        cfg.num_val_queries,
+                        cfg.num_val_keys,
+                        cfg.batch_size,
+                        ddp_rawbert.module if is_distributed else ddp_rawbert,
+                        local_rank,
+                        tokenizer,
+                        cfg.augment_config,
+                        temperature=cfg.moco_softmax_temp,
+                    )
+                    raw_model = ddp_rawbert.module if is_distributed else ddp_rawbert
+
+                    run.log(
+                        {
+                            "val/acc1": val_acc1[0],
+                            "val/acc5": val_acc5[0],
+                            "val/step": global_step,
+                        }
+                    )
+                    save_checkpoint(
+                        {
+                            "step": global_step,
+                            "model": raw_model.state_dict(),
+                            "optimizer": optimizer.state_dict(),
+                            "model_args": {
+                                "dim": cfg.dim,
+                                "K": cfg.moco_queue_size,
+                                "m": cfg.moco_momentum,
+                                "T": cfg.moco_softmax_temp,
+                            },
+                        },
+                        checkpoint_dir,
+                        cfg,
+                        run.id,
+                    )
+                torch.distributed.barrier()
+                ddp_rawbert.train()
+
+            global_step += 1
 
 
 def accuracy(output, target, topk=(1,)):
@@ -262,6 +431,75 @@ def get_test_accuracy(
         # 3. Compute logits: (N_test, N_test)
         # Every row i is the query i compared against ALL keys
         logits = torch.matmul(all_q, all_k.T) / temperature
+
+        # 4. Create labels
+        # The positive for query i is at index i (the diagonal)
+        labels = torch.arange(all_q.shape[0]).to(local_rank)
+
+        # 5. Calculate Accuracy
+        acc1 = accuracy(logits, labels, topk=(1,))
+        acc5 = accuracy(logits, labels, topk=(5,))
+
+    return acc1, acc5
+
+
+def get_test_accuracy_new(
+    test_dataset_path,
+    num_queries,
+    num_keys,
+    batch_size,
+    model,
+    local_rank,
+    tokenizer,
+    augment_config,
+    temperature=0.07,
+):
+    par_tqdm_write("Evaluating test accuracy")
+    model.eval()
+
+    df = pl.read_parquet(test_dataset_path)
+    df = df.with_columns(
+        pl.col("query_seq").str.len_chars().alias("query_seq_len"),
+        pl.col("reference_seq").str.len_chars().alias("reference_seq_len"),
+    ).filter(
+        (pl.col("reference_seq_len") < augment_config.max_len)
+        & (pl.col("query_seq_len") < augment_config.max_len)
+    )
+    queries = df.head(num_queries)["query_seq"].to_list()
+    keys = df.head(num_keys)["reference_seq"].to_list()
+
+    with torch.no_grad():
+        # store all queries and keys
+        all_q = []
+        all_k = []
+
+        q = tokenizer(queries, return_tensors="pt", padding=True)
+        q = q.to(local_rank)
+        q = model.encode(q)
+        all_q.append(q)
+        # q = tokenizer(queries, return_tensors="pt", padding=True)
+        # q = q.to(local_rank)
+        # q = model._embed(model.bert_q, model.projector_q, q)
+        # q = F.normalize(q, dim=1)  # (B, D)
+        # all_q.append(q)
+
+        for batch in batched(keys, batch_size):
+            # k = tokenizer(batch, return_tensors="pt", padding=True)
+            # k = k.to(local_rank)
+            # k = model._embed(model.bert_q, model.projector_q, k)
+            # k = F.normalize(k, dim=1)  # (B, D)
+            k = tokenizer(batch, return_tensors="pt", padding=True)
+            k = k.to(local_rank)
+            k = model.encode(k)
+            all_k.append(k)
+
+        # Concatenate all features
+        all_q = torch.cat(all_q, dim=0)
+        all_k = torch.cat(all_k, dim=0)
+
+        # 3. Compute logits: (N_test_queries, N_test_keys)
+        # Every row i is the query i compared against ALL keys
+        logits = torch.matmul(all_q, all_k.T)
 
         # 4. Create labels
         # The positive for query i is at index i (the diagonal)

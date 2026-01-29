@@ -58,14 +58,17 @@ class AugmentConfig:
 
 @dataclass
 class TrainConfig:
+    supervised: bool = False
+    num_epochs: int = 1
     dataset_path: str | None = None
     test_dataset_path: str | None = None
     batch_size: int = 128
-    lr: float = 4e-6
+    lr: float = 1e-3
+    backbone_lr: float = 4e-6
     total_steps: int = 1_000_000
     moco_queue_size: int = 65536
     moco_momentum: float = 0.999
-    moco_softmax_temp: float = 0.05
+    moco_softmax_temp: float = 0.07
     checkpoint_dir: str | None = None
     checkpoint_interval: int = 1000
     num_val_queries: int = 100
