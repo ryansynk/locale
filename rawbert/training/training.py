@@ -330,16 +330,15 @@ def train_supervised(
 
                 if global_step % cfg.checkpoint_interval == 0 and global_step > 0:
                     if global_rank == 0:
-                        val_acc1, val_acc5 = get_test_accuracy_new(
+                        val_acc1, val_acc5 = get_test_accuracy(
                             cfg.test_dataset_path,
                             cfg.num_val_queries,
                             cfg.num_val_keys,
-                            cfg.batch_size,
+                            cfg.test_batch_size,
                             ddp_rawbert.module if is_distributed else ddp_rawbert,
                             local_rank,
                             tokenizer,
                             cfg.augment_config,
-                            temperature=cfg.moco_softmax_temp,
                         )
                         raw_model = (
                             ddp_rawbert.module if is_distributed else ddp_rawbert
@@ -407,12 +406,11 @@ def get_test_accuracy(
     local_rank,
     tokenizer,
     augment_config,
-    temperature=0.07,
 ):
     par_tqdm_write("Evaluating test accuracy")
     model.eval()
 
-    df = pl.read_parquet(test_dataset_path)
+    df = pl.read_parquet(test_dataset_path).sort("query_name")
     df = df.with_columns(
         pl.col("query_seq").str.len_chars().alias("query_seq_len"),
         pl.col("reference_seq").str.len_chars().alias("reference_seq_len"),
@@ -424,106 +422,21 @@ def get_test_accuracy(
     keys = df.head(num_keys)["reference_seq"].to_list()
 
     with torch.no_grad():
-        # store all queries and keys
         all_q = []
-        all_k = []
-
-        q = tokenizer(queries, return_tensors="pt", padding=True)
-        q = q.to(local_rank)
-        q = model._embed_q(q)
-        q = F.normalize(q, dim=1)  # (B, D)
-        all_q.append(q)
-
-        for batch in batched(keys, batch_size):
-            k = tokenizer(batch, return_tensors="pt", padding=True)
-            k = k.to(local_rank)
-            k = model._embed_q(k)
-            k = F.normalize(k, dim=1)  # (B, D)
-            all_k.append(k)
-
-        # Concatenate all features
-        all_q = torch.cat(all_q, dim=0)
-        all_k = torch.cat(all_k, dim=0)
-
-        # 3. Compute logits: (N_test, N_test)
-        # Every row i is the query i compared against ALL keys
-        logits = torch.matmul(all_q, all_k.T) / temperature
-
-        # 4. Create labels
-        # The positive for query i is at index i (the diagonal)
-        labels = torch.arange(all_q.shape[0]).to(local_rank)
-
-        # 5. Calculate Accuracy
-        acc1 = accuracy(logits, labels, topk=(1,))
-        acc5 = accuracy(logits, labels, topk=(5,))
-
-    return acc1, acc5
-
-
-def get_test_accuracy_new(
-    test_dataset_path,
-    num_queries,
-    num_keys,
-    batch_size,
-    model,
-    local_rank,
-    tokenizer,
-    augment_config,
-    temperature=0.07,
-):
-    par_tqdm_write("Evaluating test accuracy")
-    model.eval()
-
-    df = pl.read_parquet(test_dataset_path)
-    df = df.with_columns(
-        pl.col("query_seq").str.len_chars().alias("query_seq_len"),
-        pl.col("reference_seq").str.len_chars().alias("reference_seq_len"),
-    ).filter(
-        (pl.col("reference_seq_len") < augment_config.max_len)
-        & (pl.col("query_seq_len") < augment_config.max_len)
-    )
-    queries = df.head(num_queries)["query_seq"].to_list()
-    keys = df.head(num_keys)["reference_seq"].to_list()
-
-    with torch.no_grad():
-        # store all queries and keys
-        all_q = []
-        all_k = []
-
-        q = tokenizer(queries, return_tensors="pt", padding=True)
-        q = q.to(local_rank)
+        q = tokenizer(queries, return_tensors="pt", padding=True).to(local_rank)
         q = model.encode(q)
         all_q.append(q)
-        # q = tokenizer(queries, return_tensors="pt", padding=True)
-        # q = q.to(local_rank)
-        # q = model._embed(model.bert_q, model.projector_q, q)
-        # q = F.normalize(q, dim=1)  # (B, D)
-        # all_q.append(q)
 
+        all_k = []
         for batch in batched(keys, batch_size):
-            # k = tokenizer(batch, return_tensors="pt", padding=True)
-            # k = k.to(local_rank)
-            # k = model._embed(model.bert_q, model.projector_q, k)
-            # k = F.normalize(k, dim=1)  # (B, D)
-            k = tokenizer(batch, return_tensors="pt", padding=True)
-            k = k.to(local_rank)
+            k = tokenizer(batch, return_tensors="pt", padding=True).to(local_rank)
             k = model.encode(k)
             all_k.append(k)
 
-        # Concatenate all features
         all_q = torch.cat(all_q, dim=0)
         all_k = torch.cat(all_k, dim=0)
-
-        # 3. Compute logits: (N_test_queries, N_test_keys)
-        # Every row i is the query i compared against ALL keys
         logits = torch.matmul(all_q, all_k.T)
-
-        # 4. Create labels
-        # The positive for query i is at index i (the diagonal)
         labels = torch.arange(all_q.shape[0]).to(local_rank)
-
-        # 5. Calculate Accuracy
         acc1 = accuracy(logits, labels, topk=(1,))
         acc5 = accuracy(logits, labels, topk=(5,))
-
-    return acc1, acc5
+        return acc1, acc5
