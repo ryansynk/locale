@@ -271,6 +271,13 @@ def train_supervised(
     )
 
     total_steps = len(dataloader) * cfg.num_epochs
+    if getattr(cfg, "max_num_steps", None):
+        total_steps = cfg.total_steps
+        # Calculate required epochs to reach max_steps (ceiling division)
+        num_epochs = (total_steps + len(dataloader) - 1) // len(dataloader)
+    else:
+        num_epochs = cfg.num_epochs
+        total_steps = len(dataloader) * num_epochs
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
         num_warmup_steps=int(0.05 * total_steps),
@@ -362,6 +369,12 @@ def train_supervised(
                 ddp_rawbert.train()
 
             global_step += 1
+            if getattr(cfg, "total_steps", None) and global_step >= total_steps:
+                break
+
+        # Check for step-based termination (Outer Loop)
+        if getattr(cfg, "total_steps", None) and global_step >= total_steps:
+            break
 
 
 def accuracy(output, target, topk=(1,)):

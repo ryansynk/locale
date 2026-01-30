@@ -1,0 +1,26 @@
+name: rawbert-sweep
+program: train.py
+method: grid
+metric:
+  name: train/acc5 # Replace with your metric if different
+  goal: maximize 
+parameters:
+  backbone_lr:
+    values: [0.000004, 0.00001, 0.00003]
+  batch_size:
+    values: [64, 128, 256]
+  moco_softmax_temp:
+    values: [0.07, 0.1, 0.15]
+  moco_queue_size:
+    values: [1024, 4096, 65536]
+  moco_momentum:
+    values: [0.999, 0.99]
+command:
+  - torchrun
+  - --standalone
+  - --nnodes=1
+  - --nproc-per-node=8
+  - ${program}
+  - --config=configs/supervised_nexus.yaml
+  - --total_steps=1000
+  - ${args}
