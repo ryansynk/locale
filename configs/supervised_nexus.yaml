@@ -1,9 +1,9 @@
 supervised: true
 num_epochs: 1
 dataset_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/val_contigs.parquet
-test_dataset_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/test_contigs.parquet
+val_dataset_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/test_contigs.parquet
 batch_size: 128
-test_batch_size: 512
+val_batch_size: 512
 lr: 0.001
 backbone_lr: 4.0e-06
 total_steps: 1000000

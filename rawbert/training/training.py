@@ -108,7 +108,6 @@ def train(
         ddp_rawbert = rawbert
 
     reader = Batcher(cfg.dataset_path, cfg.augment_config)
-    # test_reader = Batcher(test_dataset_path)
     tokenizer = AutoTokenizer.from_pretrained(
         "zhihan1996/DNABERT-2-117M", trust_remote_code=True
     )
@@ -168,8 +167,8 @@ def train(
 
         if global_step % cfg.checkpoint_interval == 0 and global_step > 0:
             if global_rank == 0:
-                val_acc1, val_acc5 = get_test_accuracy(
-                    cfg.test_dataset_path,
+                val_acc1, val_acc5 = get_val_accuracy(
+                    cfg.val_dataset_path,
                     cfg.num_val_queries,
                     cfg.num_val_keys,
                     cfg.batch_size,
@@ -256,7 +255,6 @@ def train_supervised(
 
     reader = SupervisedBatcher(cfg.dataset_path, cfg.augment_config)
     sampler = DistributedSampler(reader) if is_distributed else None
-    # test_reader = Batcher(test_dataset_path)
     tokenizer = AutoTokenizer.from_pretrained(
         "zhihan1996/DNABERT-2-117M", trust_remote_code=True
     )
@@ -330,11 +328,11 @@ def train_supervised(
 
                 if global_step % cfg.checkpoint_interval == 0 and global_step > 0:
                     if global_rank == 0:
-                        val_acc1, val_acc5 = get_test_accuracy(
-                            cfg.test_dataset_path,
+                        val_acc1, val_acc5 = get_val_accuracy(
+                            cfg.val_dataset_path,
                             cfg.num_val_queries,
                             cfg.num_val_keys,
-                            cfg.test_batch_size,
+                            cfg.val_batch_size,
                             ddp_rawbert.module if is_distributed else ddp_rawbert,
                             local_rank,
                             tokenizer,
@@ -397,8 +395,8 @@ def accuracy(output, target, topk=(1,)):
         return res
 
 
-def get_test_accuracy(
-    test_dataset_path,
+def get_val_accuracy(
+    val_dataset_path,
     num_queries,
     num_keys,
     batch_size,
@@ -407,10 +405,10 @@ def get_test_accuracy(
     tokenizer,
     augment_config,
 ):
-    par_tqdm_write("Evaluating test accuracy")
+    par_tqdm_write("Evaluating val accuracy")
     model.eval()
 
-    df = pl.read_parquet(test_dataset_path).sort("query_name")
+    df = pl.read_parquet(val_dataset_path).sort("query_name")
     df = df.with_columns(
         pl.col("query_seq").str.len_chars().alias("query_seq_len"),
         pl.col("reference_seq").str.len_chars().alias("reference_seq_len"),

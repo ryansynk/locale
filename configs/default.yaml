@@ -1,5 +1,5 @@
 dataset_path: null
-test_dataset_path: null
+val_dataset_path: null
 batch_size: 128
 lr: 4.0e-06
 total_steps: 1000000
