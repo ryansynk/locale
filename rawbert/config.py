@@ -58,7 +58,7 @@ class AugmentConfig:
 
 @dataclass
 class TrainConfig:
-    supervised: bool = False
+    unsupervised: bool = False
     num_epochs: int = 1
     dataset_path: str | None = None
     val_dataset_path: str | None = None

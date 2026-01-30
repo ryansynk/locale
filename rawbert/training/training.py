@@ -2,7 +2,7 @@ import time
 import warnings
 from dataclasses import asdict
 from functools import partial
-from itertools import batched, islice  # ty: ignore unresolved-import
+from itertools import batched  # ty: ignore unresolved-import
 from pathlib import Path
 
 import polars as pl
@@ -90,8 +90,6 @@ def train(
     head_params = list(
         filter(lambda p: p.requires_grad, rawbert.projector_q.parameters())
     )
-
-    # 3. Create the optimizer with distinct dictionary entries
     optimizer = AdamW(
         [
             # Backbones usually need a much lower learning rate (e.g., 1e-5)
@@ -107,154 +105,14 @@ def train(
     else:
         ddp_rawbert = rawbert
 
-    reader = Batcher(cfg.dataset_path, cfg.augment_config)
-    tokenizer = AutoTokenizer.from_pretrained(
-        "zhihan1996/DNABERT-2-117M", trust_remote_code=True
-    )
-    collater = partial(collate, tokenizer=tokenizer)
-
-    dataloader = DataLoader(
-        reader,
-        batch_size=per_device_batch_size,
-        collate_fn=collater,
-        drop_last=True,
-    )
-
-    if cfg.checkpoint_dir:
-        checkpoint_dir = Path(cfg.checkpoint_dir)
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    if cfg.unsupervised:
+        par_print("Unsupervised Training Mode")
+        reader = Batcher(cfg.dataset_path, cfg.augment_config)
+        sampler = None
     else:
-        raise ValueError("No checkpoint_dir provided!")
-
-    start_time = time.time()
-    global_step = 0
-
-    ddp_rawbert.train()
-
-    if cfg.sanity_test:
-        par_print("Running in sanity test mode. Overfitting on a single batch.")
-        # Grab a single batch from the dataloader
-        single_batch = next(iter(dataloader))
-        # Create an iterator that yields the same batch indefinitely
-        data_iterator = (single_batch for _ in range(cfg.total_steps))
-    else:
-        data_iterator = islice(dataloader, cfg.total_steps)
-
-    for batch in tqdm(data_iterator, total=cfg.total_steps):
-        q, k = batch
-        q = q.to(local_rank)
-        k = k.to(local_rank)
-        optimizer.zero_grad()
-        logits, labels = ddp_rawbert(q, k, is_distributed)
-        loss = F.cross_entropy(logits, labels)
-        loss.backward()
-        optimizer.step()
-        elapsed = float(time.time() - start_time)
-        acc1, acc5 = accuracy(logits, labels, topk=(1, 5))
-
-        if global_rank == 0:
-            assert run
-            run.log(
-                {
-                    "train/loss": loss.item(),
-                    "train/acc1": acc1[0],
-                    "train/acc5": acc5[0],
-                    "train/lr": cfg.lr,
-                    "train/time_elapsed": elapsed,
-                    "train/step": global_step,
-                }
-            )
-
-        if global_step % cfg.checkpoint_interval == 0 and global_step > 0:
-            if global_rank == 0:
-                val_acc1, val_acc5 = get_val_accuracy(
-                    cfg.val_dataset_path,
-                    cfg.num_val_queries,
-                    cfg.num_val_keys,
-                    cfg.batch_size,
-                    ddp_rawbert.module if is_distributed else ddp_rawbert,
-                    local_rank,
-                    tokenizer,
-                    cfg.augment_config,
-                    temperature=cfg.moco_softmax_temp,
-                )
-                raw_model = ddp_rawbert.module if is_distributed else ddp_rawbert
-
-                run.log(
-                    {
-                        "val/acc1": val_acc1[0],
-                        "val/acc5": val_acc5[0],
-                        "val/step": global_step,
-                    }
-                )
-                save_checkpoint(
-                    {
-                        "step": global_step,
-                        "model": raw_model.state_dict(),
-                        "optimizer": optimizer.state_dict(),
-                        "model_args": {
-                            "dim": cfg.dim,
-                            "K": cfg.moco_queue_size,
-                            "m": cfg.moco_momentum,
-                            "T": cfg.moco_softmax_temp,
-                        },
-                    },
-                    checkpoint_dir,
-                    cfg,
-                    run.id,
-                )
-            torch.distributed.barrier()
-            ddp_rawbert.train()
-
-        global_step += 1
-
-
-def train_supervised(
-    cfg: TrainConfig,
-    per_device_batch_size: int,
-    run: Run | None,
-    local_rank: int,
-    global_rank: int,
-    world_size: int,
-    is_distributed: bool,
-):
-    par_print("Supervised Training Mode")
-    warnings.filterwarnings("ignore", message=".*Increasing alibi size.*")
-    warnings.filterwarnings("ignore", message=".*Unable to import Triton.*")
-    transformers_logging.set_verbosity_error()
-    # Set the device for this process
-    torch.cuda.set_device(local_rank)
-
-    # Instantiate model and move to the correct GPU
-    rawbert = RawBERT(
-        dim=cfg.dim, K=cfg.moco_queue_size, m=cfg.moco_momentum, T=cfg.moco_softmax_temp
-    )
-    rawbert = rawbert.to(local_rank)
-    rawbert.train()
-
-    backbone_params = list(
-        filter(lambda p: p.requires_grad, rawbert.bert_q.parameters())
-    )
-    head_params = list(
-        filter(lambda p: p.requires_grad, rawbert.projector_q.parameters())
-    )
-    optimizer = AdamW(
-        [
-            # Backbones usually need a much lower learning rate (e.g., 1e-5)
-            {"params": backbone_params, "lr": cfg.backbone_lr},
-            # Heads need a higher learning rate to learn quickly (e.g., 1e-3 or cfg.lr)
-            {"params": head_params, "lr": cfg.lr},
-        ]
-    )
-
-    # Wrap model with DDP only if distributed
-    if is_distributed:
-        ddp_rawbert = DDP(rawbert, device_ids=[local_rank])
-    else:
-        ddp_rawbert = rawbert
-
-    reader = SupervisedBatcher(cfg.dataset_path, cfg.augment_config)
-    sampler = DistributedSampler(reader) if is_distributed else None
+        par_print("Supervised Training Mode")
+        reader = SupervisedBatcher(cfg.dataset_path, cfg.augment_config)
+        sampler = DistributedSampler(reader) if is_distributed else None
     tokenizer = AutoTokenizer.from_pretrained(
         "zhihan1996/DNABERT-2-117M", trust_remote_code=True
     )
@@ -291,9 +149,6 @@ def train_supervised(
     global_step = 0
 
     ddp_rawbert.train()
-
-    if cfg.sanity_test:
-        raise NotImplementedError
 
     with tqdm(total=total_steps, desc="Training", unit="step") as pbar:
         for epoch in range(cfg.num_epochs):

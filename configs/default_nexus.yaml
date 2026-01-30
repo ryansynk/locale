@@ -1,7 +1,7 @@
 supervised: false
 num_epochs: 1
 dataset_path: /fs/nexus-projects/sra_search/data/train/shards/
-test_dataset_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/val_contigs.parquet
+val_dataset_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/val_contigs.parquet
 batch_size: 128
 lr: 4.0e-06
 total_steps: 10000
