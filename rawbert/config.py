@@ -63,6 +63,7 @@ class TrainConfig:
     dataset_path: str | None = None
     test_dataset_path: str | None = None
     batch_size: int = 128
+    test_batch_size: int = 512
     lr: float = 1e-3
     backbone_lr: float = 4e-6
     total_steps: int = 1_000_000
