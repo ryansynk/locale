@@ -270,14 +270,14 @@ def train_supervised(
         drop_last=True,
     )
 
-    total_steps = len(dataloader) * cfg.num_epochs
-    if getattr(cfg, "max_num_steps", None):
+    if getattr(cfg, "total_steps", None):
         total_steps = cfg.total_steps
         # Calculate required epochs to reach max_steps (ceiling division)
         num_epochs = (total_steps + len(dataloader) - 1) // len(dataloader)
     else:
         num_epochs = cfg.num_epochs
         total_steps = len(dataloader) * num_epochs
+
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
         num_warmup_steps=int(0.05 * total_steps),
@@ -297,84 +297,88 @@ def train_supervised(
     if cfg.sanity_test:
         raise NotImplementedError
 
-    for epoch in range(cfg.num_epochs):
-        par_tqdm_write(f"Training epoch = {epoch + 1}/{cfg.num_epochs}")
-        for batch in tqdm(dataloader):
-            q, k = batch
-            q = q.to(local_rank)
-            k = k.to(local_rank)
-            optimizer.zero_grad()
-            logits, labels = ddp_rawbert(q, k, is_distributed)
-            loss = F.cross_entropy(logits, labels)
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
-            elapsed = float(time.time() - start_time)
-            acc1, acc5 = accuracy(logits, labels, topk=(1, 5))
+    with tqdm(total=total_steps, desc="Training", unit="step") as pbar:
+        for epoch in range(cfg.num_epochs):
+            par_tqdm_write(f"Training epoch = {epoch + 1}/{cfg.num_epochs}")
+            for batch in dataloader:
+                q, k = batch
+                q = q.to(local_rank)
+                k = k.to(local_rank)
+                optimizer.zero_grad()
+                logits, labels = ddp_rawbert(q, k, is_distributed)
+                loss = F.cross_entropy(logits, labels)
+                loss.backward()
+                optimizer.step()
+                scheduler.step()
+                elapsed = float(time.time() - start_time)
+                acc1, acc5 = accuracy(logits, labels, topk=(1, 5))
 
-            if global_rank == 0:
-                assert run
-                lrs = scheduler.get_last_lr()
-                run.log(
-                    {
-                        "train/loss": loss.item(),
-                        "train/acc1": acc1[0],
-                        "train/acc5": acc5[0],
-                        "train/lr": lrs[1],
-                        "train/backbone_lr": lrs[0],
-                        "train/time_elapsed": elapsed,
-                        "train/step": global_step,
-                    }
-                )
-
-            if global_step % cfg.checkpoint_interval == 0 and global_step > 0:
                 if global_rank == 0:
-                    val_acc1, val_acc5 = get_test_accuracy_new(
-                        cfg.test_dataset_path,
-                        cfg.num_val_queries,
-                        cfg.num_val_keys,
-                        cfg.batch_size,
-                        ddp_rawbert.module if is_distributed else ddp_rawbert,
-                        local_rank,
-                        tokenizer,
-                        cfg.augment_config,
-                        temperature=cfg.moco_softmax_temp,
-                    )
-                    raw_model = ddp_rawbert.module if is_distributed else ddp_rawbert
-
+                    assert run
+                    lrs = scheduler.get_last_lr()
                     run.log(
                         {
-                            "val/acc1": val_acc1[0],
-                            "val/acc5": val_acc5[0],
-                            "val/step": global_step,
+                            "train/loss": loss.item(),
+                            "train/acc1": acc1[0],
+                            "train/acc5": acc5[0],
+                            "train/lr": lrs[1],
+                            "train/backbone_lr": lrs[0],
+                            "train/time_elapsed": elapsed,
+                            "train/step": global_step,
                         }
                     )
-                    save_checkpoint(
-                        {
-                            "step": global_step,
-                            "model": raw_model.state_dict(),
-                            "optimizer": optimizer.state_dict(),
-                            "model_args": {
-                                "dim": cfg.dim,
-                                "K": cfg.moco_queue_size,
-                                "m": cfg.moco_momentum,
-                                "T": cfg.moco_softmax_temp,
-                            },
-                        },
-                        checkpoint_dir,
-                        cfg,
-                        run.id,
-                    )
-                torch.distributed.barrier()
-                ddp_rawbert.train()
 
-            global_step += 1
+                if global_step % cfg.checkpoint_interval == 0 and global_step > 0:
+                    if global_rank == 0:
+                        val_acc1, val_acc5 = get_test_accuracy_new(
+                            cfg.test_dataset_path,
+                            cfg.num_val_queries,
+                            cfg.num_val_keys,
+                            cfg.batch_size,
+                            ddp_rawbert.module if is_distributed else ddp_rawbert,
+                            local_rank,
+                            tokenizer,
+                            cfg.augment_config,
+                            temperature=cfg.moco_softmax_temp,
+                        )
+                        raw_model = (
+                            ddp_rawbert.module if is_distributed else ddp_rawbert
+                        )
+
+                        run.log(
+                            {
+                                "val/acc1": val_acc1[0],
+                                "val/acc5": val_acc5[0],
+                                "val/step": global_step,
+                            }
+                        )
+                        save_checkpoint(
+                            {
+                                "step": global_step,
+                                "model": raw_model.state_dict(),
+                                "optimizer": optimizer.state_dict(),
+                                "model_args": {
+                                    "dim": cfg.dim,
+                                    "K": cfg.moco_queue_size,
+                                    "m": cfg.moco_momentum,
+                                    "T": cfg.moco_softmax_temp,
+                                },
+                            },
+                            checkpoint_dir,
+                            cfg,
+                            run.id,
+                        )
+                    torch.distributed.barrier()
+                    ddp_rawbert.train()
+
+                global_step += 1
+                pbar.update(1)
+                if getattr(cfg, "total_steps", None) and global_step >= total_steps:
+                    break
+
+            # Check for step-based termination (Outer Loop)
             if getattr(cfg, "total_steps", None) and global_step >= total_steps:
                 break
-
-        # Check for step-based termination (Outer Loop)
-        if getattr(cfg, "total_steps", None) and global_step >= total_steps:
-            break
 
 
 def accuracy(output, target, topk=(1,)):
