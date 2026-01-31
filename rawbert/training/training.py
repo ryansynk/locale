@@ -112,7 +112,13 @@ def train(
     else:
         par_print("Supervised Training Mode")
         reader = SupervisedBatcher(cfg.dataset_path, cfg.augment_config)
-        sampler = DistributedSampler(reader) if is_distributed else None
+        sampler = (
+            DistributedSampler(
+                reader, num_replicas=world_size, rank=global_rank, shuffle=True
+            )
+            if is_distributed
+            else None
+        )
     tokenizer = AutoTokenizer.from_pretrained(
         "zhihan1996/DNABERT-2-117M", trust_remote_code=True
     )
@@ -124,6 +130,7 @@ def train(
         collate_fn=collater,
         sampler=sampler,
         drop_last=True,
+        shuffle=False,
     )
 
     if getattr(cfg, "total_steps", None):

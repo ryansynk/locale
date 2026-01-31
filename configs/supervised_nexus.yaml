@@ -1,7 +1,7 @@
 supervised: true
 num_epochs: 1
-dataset_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/val_contigs.parquet
-val_dataset_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/test_contigs.parquet
+dataset_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/train_contigs.parquet
+val_dataset_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/val_contigs.parquet
 batch_size: 128
 val_batch_size: 512
 lr: 0.001
