@@ -110,11 +110,12 @@ class RawBERT(nn.Module):
     @torch.no_grad()
     def _momentum_update_key_encoder(self) -> None:
         # Update both the Encoder and the Projector
-        for param_q, param_k in zip(self.bert_q.parameters(), self.bert_k.parameters()):
+        for param_q, param_k in zip(self.bert_q.parameters(), self.bert_k.parameters()):  # ty: ignore possibly-missing-attribute
             param_k.data = param_k.data * self.m + param_q.data * (1.0 - self.m)
 
         for param_q, param_k in zip(
-            self.projector_q.parameters(), self.projector_k.parameters()
+            self.projector_q.parameters(),
+            self.projector_k.parameters(),  # ty: ignore possibly-missing-attribute
         ):
             param_k.data = param_k.data * self.m + param_q.data * (1.0 - self.m)
 
@@ -170,7 +171,7 @@ class RawBERT(nn.Module):
             if is_distributed:
                 # We need all keys to compare our local queries against
                 # torch.distributed.nn.all_gather is differentiable
-                k_global_list = torch.distributed.nn.all_gather(k)
+                k_global_list = torch.distributed.nn.all_gather(k)  # ty: ignore possibly-missing-attribute
                 k_global = torch.cat(k_global_list, dim=0)  # (N*b, D)
             else:
                 k_global = k
@@ -185,7 +186,7 @@ class RawBERT(nn.Module):
             # If we assume k_global is ordered by rank, the positive key for the
             # i-th local query is at index: (rank * b) + i
 
-            rank = torch.distributed.get_rank() if is_distributed else 0
+            rank = torch.distributed.get_rank() if is_distributed else 0  # ty: ignore possibly-missing-attribute
             b = query.shape[0]
 
             # Labels are simply the indices in the global array corresponding to local samples
