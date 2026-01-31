@@ -30,58 +30,63 @@ class RawBERT(nn.Module):
         self, dim: int = 128, K: int = 4096, m: float = 0.999, T: float = 0.07
     ):
         super().__init__()
-        assert K > 0, f"Expected positive queue size, got K = {K}"
         self.config = BertConfig.from_pretrained("zhihan1996/DNABERT-2-117M")
+        self.dim = dim
+        self.K = K
+        self.m = m
+        self.T = T
+
+        self.is_moco = K > 0
 
         # 1. Load Encoders
         self.bert_q = AutoModel.from_pretrained(
             "zhihan1996/DNABERT-2-117M", trust_remote_code=True
         )
-        self.bert_k = AutoModel.from_pretrained(
-            "zhihan1996/DNABERT-2-117M", trust_remote_code=True
-        )
-
-        # Remove unused pooler layers
-        if hasattr(self.bert_q, "pooler") and self.bert_q.pooler is not None:
-            del self.bert_q.pooler
-            self.bert_q.pooler = None
-        if hasattr(self.bert_k, "pooler") and self.bert_k.pooler is not None:
-            del self.bert_k.pooler
-            self.bert_k.pooler = None
-
+        self._remove_pooler(self.bert_q)
         if FLASH_ATTN_AVAILABLE:
             patch_with_flash_lib(self.bert_q)
 
-        # 2. Define Projection Head (MoCo v2 Style: MLP)
-        # Note: We do NOT replace bert.pooler. We act on the hidden states directly.
         prev_dim = self.config.hidden_size
         self.projector_q = nn.Sequential(
             nn.Linear(prev_dim, prev_dim), nn.ReLU(), nn.Linear(prev_dim, dim)
         )
-        self.projector_k = nn.Sequential(
-            nn.Linear(prev_dim, prev_dim), nn.ReLU(), nn.Linear(prev_dim, dim)
-        )
 
-        # 3. Initialize Key Encoder
-        for param_q, param_k in zip(self.bert_q.parameters(), self.bert_k.parameters()):
-            param_k.data.copy_(param_q.data)
-            param_k.requires_grad = False
+        if self.is_moco:
+            self.bert_k = AutoModel.from_pretrained(
+                "zhihan1996/DNABERT-2-117M", trust_remote_code=True
+            )
+            self._remove_pooler(self.bert_k)
 
-        # Initialize Key Projector
-        for param_q, param_k in zip(
-            self.projector_q.parameters(), self.projector_k.parameters()
-        ):
-            param_k.data.copy_(param_q.data)
-            param_k.requires_grad = False
+            self.projector_k = nn.Sequential(
+                nn.Linear(prev_dim, prev_dim), nn.ReLU(), nn.Linear(prev_dim, dim)
+            )
 
-        # Queue setup (unchanged)
-        self.register_buffer("queue", torch.randn(dim, K))
-        self.queue = nn.functional.normalize(self.queue, dim=0)
-        self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
-        self.dim = dim
-        self.K = K
-        self.m = m
-        self.T = T
+            for param_q, param_k in zip(
+                self.bert_q.parameters(), self.bert_k.parameters()
+            ):
+                param_k.data.copy_(param_q.data)
+                param_k.requires_grad = False
+
+            # Initialize Key Projector
+            for param_q, param_k in zip(
+                self.projector_q.parameters(), self.projector_k.parameters()
+            ):
+                param_k.data.copy_(param_q.data)
+                param_k.requires_grad = False
+
+            # Queue setup (unchanged)
+            self.register_buffer("queue", torch.randn(dim, K))
+            self.queue = nn.functional.normalize(self.queue, dim=0)
+            self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
+        else:
+            self.bert_k = None
+            self.projector_k = None
+
+    def _remove_pooler(self, model):
+        # Remove unused pooler layers
+        if hasattr(model, "pooler") and model.pooler is not None:
+            del model.pooler
+            model.pooler = None
 
     @property
     def device(self):
@@ -133,28 +138,58 @@ class RawBERT(nn.Module):
         q = self._embed(self.bert_q, self.projector_q, query.to(self.device))
         q = nn.functional.normalize(q, dim=1)
 
-        with torch.no_grad():
-            self._momentum_update_key_encoder()
+        if self.is_moco:
+            with torch.no_grad():
+                self._momentum_update_key_encoder()
 
-            # Calculate Key Embedding
-            k = self._embed(self.bert_k, self.projector_k, key.to(self.device))
-            k = nn.functional.normalize(k, dim=1)
+                # Calculate Key Embedding
+                k = self._embed(self.bert_k, self.projector_k, key.to(self.device))
+                k = nn.functional.normalize(k, dim=1)
 
-        # Positive logits: B x 1
-        l_pos = einops.einsum(q, k, "B D, B D -> B").unsqueeze(-1)
+            # Positive logits: B x 1
+            l_pos = einops.einsum(q, k, "B D, B D -> B").unsqueeze(-1)
 
-        # Negative logits: B x K
-        l_neg = einops.einsum(q, self.queue.clone().detach(), "B D, D K -> B K")
+            # Negative logits: B x K
+            l_neg = einops.einsum(q, self.queue.clone().detach(), "B D, D K -> B K")
 
-        # Logits: B x (1 + K)
-        logits = torch.cat([l_pos, l_neg], dim=1)
+            # Logits: B x (1 + K)
+            logits = torch.cat([l_pos, l_neg], dim=1)
 
-        # apply temperature
-        logits /= self.T
+            # apply temperature
+            logits /= self.T
 
-        labels = torch.zeros(logits.shape[0], dtype=torch.long, device=self.device)
+            labels = torch.zeros(logits.shape[0], dtype=torch.long, device=self.device)
 
-        self._dequeue_and_enqueue(k, is_distributed)
+            self._dequeue_and_enqueue(k, is_distributed)
+
+        else:
+            k = self._embed(self.bert_q, self.projector_q, key.to(self.device))
+            k = nn.functional.normalize(k, dim=1)  # (b, D)
+
+            # 2. Gather Global Keys ONLY (or both if doing symmetric loss)
+            if is_distributed:
+                # We need all keys to compare our local queries against
+                # torch.distributed.nn.all_gather is differentiable
+                k_global_list = torch.distributed.nn.all_gather(k)
+                k_global = torch.cat(k_global_list, dim=0)  # (N*b, D)
+            else:
+                k_global = k
+
+            # 3. Compute Partial Logits (Memory Saving Step)
+            # Instead of (N*b x N*b), we compute (b x N*b)
+            # We only calculate logits for the queries sitting on THIS GPU
+            logits = torch.matmul(q, k_global.T) / self.T  # Shape: (b, N*b)
+
+            # 4. Correct Labels
+            # The positive key for q_local[i] is at a specific index in k_global.
+            # If we assume k_global is ordered by rank, the positive key for the
+            # i-th local query is at index: (rank * b) + i
+
+            rank = torch.distributed.get_rank() if is_distributed else 0
+            b = query.shape[0]
+
+            # Labels are simply the indices in the global array corresponding to local samples
+            labels = torch.arange(b, dtype=torch.long, device=self.device) + (rank * b)
 
         return logits, labels
 
