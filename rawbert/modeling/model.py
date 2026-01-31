@@ -187,7 +187,7 @@ class RawBERT(nn.Module):
             # i-th local query is at index: (rank * b) + i
 
             rank = torch.distributed.get_rank() if is_distributed else 0  # ty: ignore possibly-missing-attribute
-            b = query.shape[0]
+            b = q.shape[0]
 
             # Labels are simply the indices in the global array corresponding to local samples
             labels = torch.arange(b, dtype=torch.long, device=self.device) + (rank * b)

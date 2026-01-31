@@ -1,4 +1,4 @@
-supervised: true
+unsupervised: false
 num_epochs: 1
 dataset_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/train_contigs.parquet
 val_dataset_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/val_contigs.parquet
