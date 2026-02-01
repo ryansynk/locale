@@ -1,4 +1,4 @@
-import time
+import os
 import warnings
 from dataclasses import asdict
 from functools import partial
@@ -131,6 +131,7 @@ def train(
         sampler=sampler,
         drop_last=True,
         shuffle=False,
+        num_workers=int(os.environ["OMP_NUM_THREADS"]),
     )
 
     if getattr(cfg, "total_steps", None):
@@ -152,14 +153,12 @@ def train(
     else:
         raise ValueError("No checkpoint_dir provided!")
 
-    start_time = time.time()
     global_step = 0
-
     ddp_rawbert.train()
 
     with tqdm(total=total_steps, desc="Training", unit="step") as pbar:
-        for epoch in range(cfg.num_epochs):
-            par_tqdm_write(f"Training epoch = {epoch + 1}/{cfg.num_epochs}")
+        for epoch in range(num_epochs):
+            par_tqdm_write(f"Training epoch = {epoch + 1}/{num_epochs}")
             for batch in dataloader:
                 q, k = batch
                 q = q.to(local_rank)
@@ -170,7 +169,6 @@ def train(
                 loss.backward()
                 optimizer.step()
                 scheduler.step()
-                elapsed = float(time.time() - start_time)
                 acc1, acc5 = accuracy(logits, labels, topk=(1, 5))
 
                 if global_rank == 0:
@@ -183,7 +181,6 @@ def train(
                             "train/acc5": acc5[0],
                             "train/lr": lrs[1],
                             "train/backbone_lr": lrs[0],
-                            "train/time_elapsed": elapsed,
                             "train/step": global_step,
                         }
                     )
@@ -283,11 +280,12 @@ def get_val_accuracy(
 
     with torch.no_grad():
         all_q = []
+        all_k = []
+
         q = tokenizer(queries, return_tensors="pt", padding=True).to(local_rank)
         q = model.encode(q)
         all_q.append(q)
 
-        all_k = []
         for batch in batched(keys, batch_size):
             k = tokenizer(batch, return_tensors="pt", padding=True).to(local_rank)
             k = model.encode(k)
@@ -297,6 +295,9 @@ def get_val_accuracy(
         all_k = torch.cat(all_k, dim=0)
         logits = torch.matmul(all_q, all_k.T)
         labels = torch.arange(all_q.shape[0]).to(local_rank)
-        acc1 = accuracy(logits, labels, topk=(1,))
-        acc5 = accuracy(logits, labels, topk=(5,))
-        return acc1, acc5
+
+    acc1 = accuracy(logits, labels, topk=(1,))
+    acc5 = accuracy(logits, labels, topk=(5,))
+
+    torch.cuda.empty_cache()
+    return acc1, acc5
