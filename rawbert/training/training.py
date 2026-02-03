@@ -93,9 +93,9 @@ def train(
     optimizer = AdamW(
         [
             # Backbones usually need a much lower learning rate (e.g., 1e-5)
-            {"params": backbone_params, "lr": cfg.backbone_lr},
+            {"params": backbone_params, "lr": cfg.backbone_lr, "name": "backbone"},
             # Heads need a higher learning rate to learn quickly (e.g., 1e-3 or cfg.lr)
-            {"params": head_params, "lr": cfg.lr},
+            {"params": head_params, "lr": cfg.lr, "name": "head"},
         ]
     )
 
@@ -112,6 +112,7 @@ def train(
     else:
         par_print("Supervised Training Mode")
         reader = SupervisedBatcher(cfg.dataset_path, cfg.augment_config)
+        val_reader = SupervisedBatcher(cfg.val_dataset_path, cfg.augment_config)
         sampler = (
             DistributedSampler(
                 reader, num_replicas=world_size, rank=global_rank, shuffle=True
@@ -131,6 +132,15 @@ def train(
         sampler=sampler,
         drop_last=True,
         shuffle=False,
+        num_workers=int(os.environ["OMP_NUM_THREADS"]),
+    )
+    val_dataloader = DataLoader(
+        val_reader,
+        batch_size=cfg.val_batch_size,
+        collate_fn=collater,
+        sampler=None,
+        drop_last=True,
+        shuffle=True,
         num_workers=int(os.environ["OMP_NUM_THREADS"]),
     )
 
@@ -174,24 +184,27 @@ def train(
                 if global_rank == 0:
                     assert run
                     lrs = scheduler.get_last_lr()
-                    run.log(
-                        {
-                            "train/loss": loss.item(),
-                            "train/acc1": acc1[0],
-                            "train/acc5": acc5[0],
-                            "train/lr": lrs[1],
-                            "train/backbone_lr": lrs[0],
-                            "train/step": global_step,
-                        }
-                    )
+                    metrics = {
+                        "train/loss": loss.item(),
+                        "train/acc1": acc1[0],
+                        "train/acc5": acc5[0],
+                        "train/lr": lrs[1],
+                        "train/backbone_lr": lrs[0],
+                        "train/step": global_step,
+                    }
+                    for i, group in enumerate(optimizer.param_groups):
+                        norm = torch.nn.utils.get_total_norm(
+                            [p.grad for p in group["params"]]
+                        )
+                        metrics[f"metrics/grad_norm_{group['name']}"] = norm
+                    run.log(metrics)
 
                 if global_step % cfg.checkpoint_interval == 0 and global_step > 0:
                     if global_rank == 0:
                         val_acc1, val_acc5 = get_val_accuracy(
-                            cfg.val_dataset_path,
+                            val_dataloader,
                             cfg.num_val_queries,
                             cfg.num_val_keys,
-                            cfg.val_batch_size,
                             ddp_rawbert.module if is_distributed else ddp_rawbert,
                             local_rank,
                             tokenizer,
@@ -255,10 +268,9 @@ def accuracy(output, target, topk=(1,)):
 
 
 def get_val_accuracy(
-    val_dataset_path,
+    val_dataloader,
     num_queries,
     num_keys,
-    batch_size,
     model,
     local_rank,
     tokenizer,
@@ -267,27 +279,19 @@ def get_val_accuracy(
     par_tqdm_write("Evaluating val accuracy")
     model.eval()
 
-    df = pl.read_parquet(val_dataset_path).sort("query_name")
-    df = df.with_columns(
-        pl.col("query_seq").str.len_chars().alias("query_seq_len"),
-        pl.col("reference_seq").str.len_chars().alias("reference_seq_len"),
-    ).filter(
-        (pl.col("reference_seq_len") < augment_config.max_len)
-        & (pl.col("query_seq_len") < augment_config.max_len)
-    )
-    queries = df.head(num_queries)["query_seq"].to_list()
-    keys = df.head(num_keys)["reference_seq"].to_list()
-
     with torch.no_grad():
         all_q = []
         all_k = []
 
-        q = tokenizer(queries, return_tensors="pt", padding=True).to(local_rank)
-        q = model.encode(q)
-        all_q.append(q)
+        for batch in val_dataloader:
+            q, k = batch
+            len_q = sum([embedded_q.shape[0] for embedded_q in all_q])
+            if len_q < num_queries:
+                q = q.to(local_rank)
+                q = model.encode(q)
+                all_q.append(q)
 
-        for batch in batched(keys, batch_size):
-            k = tokenizer(batch, return_tensors="pt", padding=True).to(local_rank)
+            k = k.to(local_rank)
             k = model.encode(k)
             all_k.append(k)
 
