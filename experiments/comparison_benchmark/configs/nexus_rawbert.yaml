@@ -1,0 +1,12 @@
+dataset_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/test_contigs.parquet
+num_keys: 10000
+num_queries: 100
+max_seq_len: 1024
+min_coverage: 0.1
+topk: 5
+model:
+  name: rawbert
+  checkpoint_path: /fs/nexus-scratch/ryansynk/rawbert/checkpoints/q44y9dbc/checkpoint.pth.tar
+  batch_size: 128
+  device: cuda
+  pooling: max

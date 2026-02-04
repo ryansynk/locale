@@ -256,6 +256,7 @@ def train(
                                 "model": raw_model.state_dict(),
                                 "optimizer": optimizer.state_dict(),
                                 "model_args": {
+                                    "pooling": cfg.pooling,
                                     "dim": cfg.dim,
                                     "K": cfg.moco_queue_size,
                                     "m": cfg.moco_momentum,
