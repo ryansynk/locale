@@ -2,16 +2,14 @@ import os
 import warnings
 from dataclasses import asdict
 from functools import partial
-from itertools import batched  # ty: ignore unresolved-import
 from pathlib import Path
 
-import polars as pl
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 import yaml
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.optim import AdamW
+from torch.optim import AdamW, lr_scheduler
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
@@ -63,6 +61,15 @@ def collate(batch, tokenizer):
     return query_tokens, key_tokens
 
 
+def get_linear_warmup_with_hold_schedule(optimizer, num_warmup_steps, last_epoch=-1):
+    def lr_lambda(current_step: int):
+        if current_step < num_warmup_steps:
+            return float(current_step) / float(max(1, num_warmup_steps))
+        return 1.0
+
+    return lr_scheduler.LambdaLR(optimizer, lr_lambda, last_epoch)
+
+
 def train(
     cfg: TrainConfig,
     per_device_batch_size: int,
@@ -80,7 +87,11 @@ def train(
 
     # Instantiate model and move to the correct GPU
     rawbert = RawBERT(
-        dim=cfg.dim, K=cfg.moco_queue_size, m=cfg.moco_momentum, T=cfg.moco_softmax_temp
+        pooling=cfg.pooling,
+        dim=cfg.dim,
+        K=cfg.moco_queue_size,
+        m=cfg.moco_momentum,
+        T=cfg.moco_softmax_temp,
     )
     rawbert = rawbert.to(local_rank)
     rawbert.train()
@@ -152,11 +163,27 @@ def train(
         num_epochs = cfg.num_epochs
         total_steps = len(dataloader) * num_epochs
 
-    scheduler = get_cosine_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=int(0.05 * total_steps),
-        num_training_steps=total_steps,
+    assert not (cfg.warmup_steps is not None and cfg.warmup_fraction is not None), (
+        "warmup_steps and warmup_fraction cannot be set simultaneously"
     )
+    if cfg.warmup_steps:
+        num_warmup_steps = cfg.warmup_steps
+    elif cfg.warmup_fraction:
+        num_warmup_steps = int(cfg.warmup_fraction * total_steps)
+
+    if cfg.schedule == "cosine":
+        scheduler = get_cosine_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=total_steps,
+        )
+    elif cfg.schedule == "hold":
+        scheduler = get_linear_warmup_with_hold_schedule(optimizer, num_warmup_steps)
+    else:
+        raise ValueError(
+            f"Expected schedule to be one of 'cosine', 'hold', got: {cfg.schedule}"
+        )
+
     if cfg.checkpoint_dir:
         checkpoint_dir = Path(cfg.checkpoint_dir)
         checkpoint_dir.mkdir(parents=True, exist_ok=True)

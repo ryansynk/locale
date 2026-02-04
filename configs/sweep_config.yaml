@@ -4,12 +4,12 @@ dataset_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/train_contigs.parquet
 val_dataset_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/val_contigs.parquet
 batch_size: 256
 val_batch_size: 512
-schedule: cosine
+schedule: hold
 lr: 0.001
 backbone_lr: 4.0e-06
-total_steps: 1000000
-warmup_fraction: 0.05
-warmup_steps: null
+total_steps: 1010
+warmup_fraction: null
+warmup_steps: 300
 moco_queue_size: 65536
 moco_momentum: 0.999
 moco_softmax_temp: 0.07

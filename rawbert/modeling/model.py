@@ -27,10 +27,21 @@ logger = logging.getLogger(__name__)
 
 class RawBERT(nn.Module):
     def __init__(
-        self, dim: int = 128, K: int = 4096, m: float = 0.999, T: float = 0.07
+        self,
+        pooling: str,
+        dim: int = 128,
+        K: int = 4096,
+        m: float = 0.999,
+        T: float = 0.07,
     ):
         super().__init__()
         self.config = BertConfig.from_pretrained("zhihan1996/DNABERT-2-117M")
+        if pooling not in ["class", "mean", "max"]:
+            raise ValueError(
+                f"Expected pooling to be one of class, mean, max. Got: {pooling}"
+            )
+        else:
+            self.pooling = pooling
         self.dim = dim
         self.K = K
         self.m = m
@@ -119,7 +130,7 @@ class RawBERT(nn.Module):
         ):
             param_k.data = param_k.data * self.m + param_q.data * (1.0 - self.m)
 
-    def _embed(self, model, projector, seq_ids):
+    def _embed(self, model, projector, seq_ids, pooling):
         # 1. Get Sequence Output (Batch, Seq_Len, Hidden)
         # Index [0] is last_hidden_state
         outputs = model(**seq_ids)[0]
@@ -129,14 +140,23 @@ class RawBERT(nn.Module):
         mask = seq_ids.attention_mask.unsqueeze(-1)
 
         # Sum masked embeddings and divide by valid token count
-        embeddings = (outputs * mask).sum(dim=1) / mask.sum(dim=1)
+        if pooling == "class":
+            embeddings = outputs[:, 0, :]
+        if pooling == "mean":
+            embeddings = (outputs * mask).sum(dim=1) / mask.sum(dim=1)
+        elif pooling == "max":
+            mask_expanded = mask.expand(outputs.size())
+            outputs[mask_expanded == 0] = -1e9
+            embeddings, _ = outputs.max(dim=1)
 
         # 3. Apply MLP Projection Head
         return projector(embeddings)
 
     def forward(self, query, key, is_distributed=False):
         # Calculate Query Embedding
-        q = self._embed(self.bert_q, self.projector_q, query.to(self.device))
+        q = self._embed(
+            self.bert_q, self.projector_q, query.to(self.device), pooling=self.pooling
+        )
         q = nn.functional.normalize(q, dim=1)
 
         if self.is_moco:
@@ -144,7 +164,12 @@ class RawBERT(nn.Module):
                 self._momentum_update_key_encoder()
 
                 # Calculate Key Embedding
-                k = self._embed(self.bert_k, self.projector_k, key.to(self.device))
+                k = self._embed(
+                    self.bert_k,
+                    self.projector_k,
+                    key.to(self.device),
+                    pooling=self.pooling,
+                )
                 k = nn.functional.normalize(k, dim=1)
 
             # Positive logits: B x 1
@@ -164,7 +189,9 @@ class RawBERT(nn.Module):
             self._dequeue_and_enqueue(k, is_distributed)
 
         else:
-            k = self._embed(self.bert_q, self.projector_q, key.to(self.device))
+            k = self._embed(
+                self.bert_q, self.projector_q, key.to(self.device), pooling=self.pooling
+            )
             k = nn.functional.normalize(k, dim=1)  # (b, D)
 
             # 2. Gather Global Keys ONLY (or both if doing symmetric loss)
@@ -209,7 +236,15 @@ class RawBERT(nn.Module):
 
         # 2. Mean Pooling
         mask = sequences.attention_mask.unsqueeze(-1)
-        embeddings = (outputs * mask).sum(dim=1) / mask.sum(dim=1)
+        # Sum masked embeddings and divide by valid token count
+        if self.pooling == "class":
+            embeddings = outputs[:, 0, :]
+        if self.pooling == "mean":
+            embeddings = (outputs * mask).sum(dim=1) / mask.sum(dim=1)
+        elif self.pooling == "max":
+            mask_expanded = mask.expand(outputs.size())
+            outputs[mask_expanded == 0] = -1e9
+            embeddings, _ = outputs.max(dim=1)
 
         # 3. Normalize (Optional but recommended for cosine similarity tasks)
         embeddings = nn.functional.normalize(embeddings, dim=1)

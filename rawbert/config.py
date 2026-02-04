@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Dict
+from typing import Dict, Literal
 
 import numpy as np
 import yaml
@@ -8,12 +8,13 @@ import yaml
 @dataclass
 class AugmentConfig:
     # Crop settings
-    max_len: int = 5000
+    max_len: int = 1024
     min_seq_len: int = 150
     containment_prob: float = 0.66
     overlap_prob: float = 0.34
     min_alignment_len: int = 149
     max_alignment_ratio: float = 1.0
+    min_coverage: float = 0.1
 
     # Mutation rates
     insertion_rate: float = 0.005
@@ -62,11 +63,14 @@ class TrainConfig:
     num_epochs: int = 1
     dataset_path: str | None = None
     val_dataset_path: str | None = None
-    batch_size: int = 128
+    batch_size: int = 256
     val_batch_size: int = 512
+    schedule: Literal["cosine", "hold"] = "cosine"
     lr: float = 1e-3
     backbone_lr: float = 4e-6
     total_steps: int = 1_000_000
+    warmup_fraction: float | None = 0.05
+    warmup_steps: int | None = None
     moco_queue_size: int = 65536
     moco_momentum: float = 0.999
     moco_softmax_temp: float = 0.07
@@ -75,5 +79,6 @@ class TrainConfig:
     num_val_queries: int = 100
     num_val_keys: int = 100_000
     dim: int = 128
+    pooling: str = "mean"
     sanity_test: bool = False
     augment_config: AugmentConfig = field(default_factory=AugmentConfig)
