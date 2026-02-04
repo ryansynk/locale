@@ -6,7 +6,7 @@ from torch.utils.data import Dataset
 
 
 class SupervisedBatcher(Dataset):
-    def __init__(self, dataset_path, augment_config):
+    def __init__(self, dataset_path, augment_config, num_examples=None):
         dataset_path = Path(dataset_path).resolve()
         self.cfg = augment_config
 
@@ -19,8 +19,13 @@ class SupervisedBatcher(Dataset):
             .with_columns(
                 pl.max_horizontal("query_len", "reference_len").alias("max_len")
             )
-            .filter(pl.col("max_len") < self.cfg.max_len)
+            .filter(
+                (pl.col("max_len") < self.cfg.max_len)
+                & (pl.col("coverage") > self.cfg.min_coverage)
+            )
         )
+        if num_examples is not None:
+            self.df = self.df.head(num_examples)
 
     def __len__(self):
         return len(self.df)

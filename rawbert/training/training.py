@@ -123,7 +123,9 @@ def train(
     else:
         par_print("Supervised Training Mode")
         reader = SupervisedBatcher(cfg.dataset_path, cfg.augment_config)
-        val_reader = SupervisedBatcher(cfg.val_dataset_path, cfg.augment_config)
+        val_reader = SupervisedBatcher(
+            cfg.val_dataset_path, cfg.augment_config, num_examples=cfg.num_val_keys
+        )
         sampler = (
             DistributedSampler(
                 reader, num_replicas=world_size, rank=global_rank, shuffle=True
@@ -152,7 +154,7 @@ def train(
         sampler=None,
         drop_last=True,
         shuffle=True,
-        num_workers=int(os.environ["OMP_NUM_THREADS"]),
+        num_workers=1,
     )
 
     if getattr(cfg, "total_steps", None):
@@ -309,7 +311,6 @@ def get_val_accuracy(
     with torch.no_grad():
         all_q = []
         all_k = []
-
         for batch in val_dataloader:
             q, k = batch
             len_q = sum([embedded_q.shape[0] for embedded_q in all_q])
