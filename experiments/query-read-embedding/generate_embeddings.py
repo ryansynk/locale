@@ -18,17 +18,16 @@ from rawbert import RawBERT
 from rawbert.utils.patch import patch_with_flash_lib
 
 
-def embed_accs(accs, tokenizer, model, device, outfile, batch_size):
+def embed_accs(acc_paths, tokenizer, model, device, outfile, batch_size):
     model = model.to(device)
-    print(f"Embedding {len(accs)} accessions")
+    print(f"Embedding {len(acc_paths)} accessions")
     dctx = zstd.ZstdDecompressor()
     global_idx = 0
     range_data = []
 
     with open(outfile, "wb") as f_out:
-        for acc_row in accs.iter_rows(named=True):
-            acc_id = acc_row["accession"]
-            acc_path = acc_row["path"]
+        for acc_path in acc_paths:
+            acc_id = acc_path.name.split(".")[0]
             print(f"Processing {acc_id}")
             with open(acc_path, "rb") as compressed_file:
                 # 1. Create a stream reader for the zstd data
@@ -70,7 +69,9 @@ def embed_accs(accs, tokenizer, model, device, outfile, batch_size):
 
 
 def main(
-    accessions_csv: str,
+    test_dataset: str,
+    accessions_path: str,
+    reads_type: Literal["unitigs", "contigs"],
     output_bin: str,
     model_str: Literal["rawbert", "dnabert"],
     checkpoint_path: str = None,
@@ -78,9 +79,13 @@ def main(
     dim: int = 128,
     K: int = 131072,
 ):
+    df = pl.read_ndjson(test_dataset)
+    accs = df.explode("accession_list")["accession_list"].unique().sort().to_list()
+    acc_paths = [Path(accessions_path) / f"{acc}.{reads_type}.fa.zst" for acc in accs]
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     assert device == "cuda"
-    output_bin = Path(output_bin).resolve()
+    output_bin: Path = Path(output_bin).resolve()
     assert output_bin.parent.exists(), (
         f"Provided output dir = {output_bin.parent} does not exist!"
     )
@@ -88,7 +93,7 @@ def main(
         print("Loading rawbert checkpoint...")
         model = RawBERT(dim=dim, K=K)
         assert checkpoint_path, "No checkpoint_path provided!"
-        checkpoint_path = Path(checkpoint_path).resolve()
+        checkpoint_path: Path = Path(checkpoint_path).resolve()
         assert checkpoint_path.is_file()
         checkpoint = torch.load(checkpoint_path)
         model.load_state_dict(checkpoint["model"])
@@ -111,9 +116,7 @@ def main(
     else:
         raise ValueError(f"Expected rawbert or dnabert for model, got {model}")
 
-    accs = pl.read_csv(accessions_csv)
-    accs = accs.sort(by="accession")
-    embed_accs(accs, tokenizer, model, device, output_bin, batch_size)
+    embed_accs(acc_paths, tokenizer, model, device, output_bin, batch_size)
 
 
 if __name__ == "__main__":

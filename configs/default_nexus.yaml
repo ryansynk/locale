@@ -1,0 +1,49 @@
+supervised: false
+num_epochs: 1
+dataset_path: /fs/nexus-projects/sra_search/data/train/shards/
+val_dataset_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/val_contigs.parquet
+batch_size: 128
+lr: 4.0e-06
+total_steps: 10000
+moco_queue_size: 65536
+moco_momentum: 0.999
+moco_softmax_temp: 0.05
+checkpoint_dir: /fs/nexus-scratch/ryansynk/rawbert/checkpoints/
+checkpoint_interval: 1000
+num_val_queries: 100
+num_val_keys: 10000
+dim: 128
+sanity_test: false
+augment_config:
+  max_len: 5000
+  min_seq_len: 150
+  containment_prob: 0.66
+  overlap_prob: 0.34
+  min_alignment_len: 149
+  max_alignment_ratio: 1.0
+  insertion_rate: 0.005
+  deletion_rate: 0.005
+  substitution_rate: 0.02
+  average_insertion_length: 10
+  average_deletion_length: 10
+  substitution_matrix:
+    A:
+    - 0.0
+    - 0.15
+    - 0.77
+    - 0.08
+    C:
+    - 0.13
+    - 0.0
+    - 0.17
+    - 0.7
+    G:
+    - 0.7
+    - 0.17
+    - 0.0
+    - 0.13
+    T:
+    - 0.08
+    - 0.78
+    - 0.14
+    - 0.0

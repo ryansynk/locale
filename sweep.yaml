@@ -1,0 +1,25 @@
+name: rawbert-sweep
+program: train.py
+method: grid
+metric:
+  name: val/acc5 # Replace with your metric if different
+  goal: maximize 
+parameters:
+  backbone_lr:
+    values: [0.000004, 0.00001, 0.00003]
+  pooling:
+    values: ["max", "mean"]
+  moco_softmax_temp:
+    values: [0.07, 0.1, 0.15]
+  moco_queue_size:
+    values: [4096, 8192, 65536]
+  moco_momentum:
+    values: [0.999, 0.99]
+command:
+  - torchrun
+  - --standalone
+  - --nnodes=1
+  - --nproc-per-node=8
+  - ${program}
+  - --config=configs/sweep_config.yaml
+  - ${args}
