@@ -1,0 +1,56 @@
+augment_config:
+  average_deletion_length: 10
+  average_insertion_length: 10
+  containment_prob: 0.66
+  deletion_rate: 0.005
+  insertion_rate: 0.005
+  max_alignment_ratio: 1.0
+  max_len: 1024
+  min_alignment_len: 149
+  min_coverage: 0.1
+  min_seq_len: 150
+  overlap_prob: 0.34
+  substitution_matrix:
+    A:
+    - 0.0
+    - 0.15
+    - 0.77
+    - 0.08
+    C:
+    - 0.13
+    - 0.0
+    - 0.17
+    - 0.7
+    G:
+    - 0.7
+    - 0.17
+    - 0.0
+    - 0.13
+    T:
+    - 0.08
+    - 0.78
+    - 0.14
+    - 0.0
+  substitution_rate: 0.02
+backbone_lr: 3.0e-05
+batch_size: 256
+checkpoint_dir: /fs/nexus-scratch/ryansynk/rawbert/checkpoints/
+checkpoint_interval: 1000
+dataset_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/train_contigs.parquet
+dim: 128
+lr: 0.001
+moco_momentum: 0.999
+moco_queue_size: 65536
+moco_softmax_temp: 0.1
+num_epochs: 1
+num_val_keys: 10000
+num_val_queries: 100
+pooling: max
+sanity_test: false
+schedule: cosine
+total_steps: 4010
+unsupervised: false
+val_batch_size: 512
+val_dataset_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/val_contigs.parquet
+warmup_fraction: null
+warmup_steps: 300

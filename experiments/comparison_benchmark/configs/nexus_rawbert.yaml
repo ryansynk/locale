@@ -6,7 +6,7 @@ min_coverage: 0.1
 topk: 5
 model:
   name: rawbert
-  checkpoint_path: /fs/nexus-scratch/ryansynk/rawbert/checkpoints/q44y9dbc/checkpoint.pth.tar
+  checkpoint_path: /fs/nexus-scratch/ryansynk/rawbert/checkpoints/z62snlgj/checkpoint.pth.tar
   batch_size: 128
   device: cuda
   pooling: max
