@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Literal, Optional, Union, List
+from typing import List, Literal, Optional, Union
 
 
 @dataclass
@@ -11,7 +11,10 @@ class AlgorithmConfig:
 
 @dataclass
 class SourMashConfig(AlgorithmConfig):
-    pass
+    name: str = "sourmash"
+    k: int = 31
+    scaled: int = 1
+    threshold: float = 0.0
 
 
 @dataclass
@@ -28,6 +31,7 @@ class DenseConfig(AlgorithmConfig):
 
 @dataclass
 class ExperimentConfig:
+    model: Union[DenseConfig, SourMashConfig]
     dataset_path: str = (
         "/fs/nexus-scratch/ryansynk/rawbert_data/data/test_contigs.parquet"
     )
@@ -36,4 +40,3 @@ class ExperimentConfig:
     max_seq_len: int = 1024
     min_coverage: float = 0.1
     topks: List[int] = field(default_factory=lambda: [1, 5])
-    model: Union[DenseConfig, SourMashConfig] = field(default_factory=DenseConfig)

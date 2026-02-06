@@ -1,9 +1,8 @@
 model:
-  name: dnabert
-  checkpoint_path: null
-  batch_size: 128
-  device: cuda
-  pooling: max
+  name: sourmash
+  k: 31
+  scaled: 1
+  threshold: 0.0
 dataset_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/test_contigs.parquet
 num_keys: 10000
 num_queries: 100

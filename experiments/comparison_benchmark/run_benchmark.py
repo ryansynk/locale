@@ -42,7 +42,7 @@ def main(cfg: ExperimentConfig):
 
     if isinstance(cfg.model, SourMashConfig):
         encoder = SourMashEncoder(cfg.model)
-        indexer = SourMashIndexer()
+        indexer = SourMashIndexer(cfg.model)
     elif isinstance(cfg.model, DenseConfig):
         encoder = DenseEncoder(cfg.model)
         indexer = DenseIndexer()

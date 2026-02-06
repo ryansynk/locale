@@ -1,3 +1,9 @@
+model:
+  name: rawbert
+  checkpoint_path: null
+  batch_size: 128
+  device: cuda
+  pooling: max
 dataset_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/test_contigs.parquet
 num_keys: 10000
 num_queries: 100
@@ -6,9 +12,3 @@ min_coverage: 0.1
 topks:
 - 1
 - 5
-model:
-  name: rawbert
-  checkpoint_path: null
-  batch_size: 128
-  device: cuda
-  pooling: max

@@ -2,7 +2,9 @@ import math
 from itertools import batched  # ty: ignore unresolved-import
 from pathlib import Path
 
+import sourmash
 import torch
+from sourmash import MinHash, SourmashSignature
 from torch import nn
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
@@ -11,7 +13,7 @@ from transformers.utils import logging as transformers_logging
 from rawbert.modeling.model import RawBERT
 from rawbert.utils.patch import patch_with_flash_lib
 
-from .config import DenseConfig
+from .config import DenseConfig, SourMashConfig
 
 
 class BaseEncoder:
@@ -91,8 +93,45 @@ class DenseEncoder(BaseEncoder):
 
 
 class SourMashEncoder(BaseEncoder):
-    def __init__(self, k=6, num_perm=128):
-        raise NotImplementedError
+    def __init__(self, cfg: SourMashConfig):
+        """
+        Constructor for encoder
+
+        Args:
+            k (int): K-mer size.
+            scaled (int): Compression factor. 1000 means 1 hash kept per 1000 k-mers.
+            moltype (str): 'DNA' or 'protein'.
+        """
+        self.k = cfg.k
+        self.scaled = cfg.scaled
 
     def encode(self, sequences):
-        raise NotImplementedError
+        """
+        Takes a list of strings corresponding to sequences, and encodes their sourmash hash representations.
+        Returns a list of SourmashSignature objects.
+        """
+        signatures = []
+
+        for i, seq in tqdm(
+            enumerate(sequences), total=len(sequences), desc="Hashing..."
+        ):
+            # Create a MinHash object
+            # track_abundance=False is standard for simple search
+            mh = MinHash(
+                n=0,
+                ksize=self.k,
+                scaled=self.scaled,
+                is_protein=False,
+                track_abundance=False,
+            )
+
+            # Add sequence to the MinHash
+            # Sourmash requires bytes or string depending on version, usually handles string fine in v4+
+            mh.add_sequence(seq, force=True)
+
+            # Wrap in a Signature.
+            # We assign a temporary name; the Indexer will overwrite this with the real ID.
+            sig = SourmashSignature(mh, name=str(i))
+            signatures.append(sig)
+
+        return signatures
