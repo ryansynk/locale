@@ -26,6 +26,7 @@ def load_data(
 
 
 def calculate_hit_at_k(predictions, ground_truth_map, k):
+    predictions = predictions[..., :k]
     is_hit = (predictions == ground_truth_map.unsqueeze(1)).any(dim=1)
     return is_hit.float().mean().item()
 
@@ -52,9 +53,15 @@ def main(cfg: ExperimentConfig):
     indexer.build(target_features, target_ids)
 
     query_features = encoder.encode(queries)
-    predictions = indexer.search(query_features, topk=cfg.topk)  # (num_queries, k)
-    recall = calculate_hit_at_k(predictions, ground_truth_map, k=cfg.topk)
-    print(f"Recall @{cfg.topk} for {cfg.model}: {(recall * 100):.2f}%")
+
+    predictions = indexer.search(
+        query_features, topk=max(cfg.topks)
+    )  # (num_queries, k)
+    recalls = [
+        calculate_hit_at_k(predictions, ground_truth_map, k=topk) for topk in cfg.topks
+    ]
+    for recall, topk in zip(recalls, cfg.topks):
+        print(f"Recall @{topk} for {cfg.model}: {(recall * 100):.2f}%")
 
 
 if __name__ == "__main__":

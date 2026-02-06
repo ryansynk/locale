@@ -3,10 +3,12 @@ num_keys: 10000
 num_queries: 100
 max_seq_len: 1024
 min_coverage: 0.1
-topk: 5
+topks:
+- 1
+- 5
 model:
   name: rawbert
-  checkpoint_path: /fs/nexus-scratch/ryansynk/rawbert/checkpoints/z62snlgj/checkpoint.pth.tar
+  checkpoint_path: null
   batch_size: 128
   device: cuda
   pooling: max

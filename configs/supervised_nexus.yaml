@@ -6,19 +6,19 @@ batch_size: 256
 val_batch_size: 512
 schedule: cosine
 lr: 0.001
-backbone_lr: 4.0e-06
-total_steps: 1000000
-warmup_fraction: 0.05
+backbone_lr: 0.00003
+total_steps: null
+warmup_fraction: 0.08
 warmup_steps: null
-moco_queue_size: 65536
-moco_momentum: 0.999
+moco_queue_size: 8192
+moco_momentum: 0.99
 moco_softmax_temp: 0.07
 checkpoint_dir: /fs/nexus-scratch/ryansynk/rawbert/checkpoints/
 checkpoint_interval: 1000
 num_val_queries: 100
 num_val_keys: 10000
 dim: 128
-pooling: mean
+pooling: max
 sanity_test: false
 augment_config:
   max_len: 1024
@@ -27,7 +27,7 @@ augment_config:
   overlap_prob: 0.34
   min_alignment_len: 149
   max_alignment_ratio: 1.0
-  min_coverage: 0.1
+  min_coverage: 0.3
   insertion_rate: 0.005
   deletion_rate: 0.005
   substitution_rate: 0.02

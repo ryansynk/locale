@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Literal, Optional, Union
+from typing import Literal, Optional, Union, List
 
 
 @dataclass
@@ -35,5 +35,5 @@ class ExperimentConfig:
     num_queries: int = 100
     max_seq_len: int = 1024
     min_coverage: float = 0.1
-    topk: int = 5
+    topks: List[int] = field(default_factory=lambda: [1, 5])
     model: Union[DenseConfig, SourMashConfig] = field(default_factory=DenseConfig)
