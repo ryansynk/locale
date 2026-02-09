@@ -4,6 +4,7 @@ from dataclasses import asdict
 from functools import partial
 from pathlib import Path
 
+import edlib
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
@@ -58,7 +59,7 @@ def collate(batch, tokenizer):
     queries, keys = zip(*batch)
     query_tokens = tokenizer(queries, return_tensors="pt", padding=True)
     key_tokens = tokenizer(keys, return_tensors="pt", padding=True)
-    return query_tokens, key_tokens
+    return query_tokens, queries, key_tokens, keys
 
 
 def get_linear_warmup_with_hold_schedule(optimizer, num_warmup_steps, last_epoch=-1):
@@ -152,7 +153,7 @@ def train(
         batch_size=cfg.val_batch_size,
         collate_fn=collater,
         sampler=None,
-        drop_last=True,
+        drop_last=False,
         shuffle=True,
         num_workers=1,
     )
@@ -199,11 +200,19 @@ def train(
         for epoch in range(num_epochs):
             par_tqdm_write(f"Training epoch = {epoch + 1}/{num_epochs}")
             for batch in dataloader:
-                q, k = batch
+                q, query_seqs, k, key_seqs = batch
                 q = q.to(local_rank)
                 k = k.to(local_rank)
                 optimizer.zero_grad()
-                logits, labels = ddp_rawbert(q, k, is_distributed)
+                logits, labels = ddp_rawbert(
+                    q,
+                    k,
+                    is_distributed,
+                    query_seqs=query_seqs,
+                    key_seqs=key_seqs,
+                    alignment_threshold=cfg.augment_config.min_coverage,
+                    filter_aligned=True,
+                )
                 loss = F.cross_entropy(logits, labels)
                 loss.backward()
                 optimizer.step()
@@ -267,7 +276,8 @@ def train(
                             cfg,
                             run.id,
                         )
-                    torch.distributed.barrier()
+                    if is_distributed:
+                        torch.distributed.barrier()
                     ddp_rawbert.train()
 
                 global_step += 1
@@ -312,21 +322,33 @@ def get_val_accuracy(
     with torch.no_grad():
         all_q = []
         all_k = []
+        all_query_seqs = []
+        all_key_seqs = []
+
         for batch in val_dataloader:
-            q, k = batch
+            q_tokens, query_seqs, k_tokens, key_seqs = batch
             len_q = sum([embedded_q.shape[0] for embedded_q in all_q])
             if len_q < num_queries:
-                q = q.to(local_rank)
-                q = model.encode(q)
+                q_tokens = q_tokens.to(local_rank)
+                q = model.encode(q_tokens)
                 all_q.append(q)
+                all_query_seqs.extend(query_seqs)
 
-            k = k.to(local_rank)
-            k = model.encode(k)
+            k_tokens = k_tokens.to(local_rank)
+            k = model.encode(k_tokens)
             all_k.append(k)
+            all_key_seqs.extend(key_seqs)
 
         all_q = torch.cat(all_q, dim=0)
         all_k = torch.cat(all_k, dim=0)
         logits = torch.matmul(all_q, all_k.T)
+
+        # Filter out aligned sequences from consideration
+        alignment_threshold = augment_config.min_coverage
+        logits = _filter_aligned_sequences(
+            logits, all_query_seqs, all_key_seqs, alignment_threshold
+        )
+
         labels = torch.arange(all_q.shape[0]).to(local_rank)
 
     acc1 = accuracy(logits, labels, topk=(1,))
@@ -334,3 +356,54 @@ def get_val_accuracy(
 
     torch.cuda.empty_cache()
     return acc1, acc5
+
+
+def _filter_aligned_sequences(logits, query_seqs, key_seqs, alignment_threshold):
+    """
+    Filter out aligned sequences from validation logits.
+
+    Args:
+        logits: Tensor of shape (num_queries, num_keys) with similarity scores
+        query_seqs: List of query DNA sequences
+        key_seqs: List of key DNA sequences
+        alignment_threshold: Minimum similarity to consider sequences aligned
+
+    Returns:
+        Filtered logits with aligned non-diagonal entries set to -1e9
+    """
+    num_queries = len(query_seqs)
+    num_keys = len(key_seqs)
+    total_filtered = []
+    for i in range(num_queries):
+        query_seq = query_seqs[i]
+
+        num_filtered = 0
+        for j in range(num_keys):
+            # Skip the diagonal (true positive pair)
+            if i == j:
+                continue
+
+            key_seq = key_seqs[j]
+
+            # Check if sequences are aligned using edlib
+            result = edlib.align(query=query_seq, target=key_seq, task="distance")
+            edit_distance = result["editDistance"]
+
+            # Calculate similarity
+            max_length = max(len(query_seq), len(key_seq))
+            similarity = 1.0 - (edit_distance / max_length)
+
+            # If aligned, mask out this logit
+            if similarity >= alignment_threshold:
+                num_filtered += 1
+                logits[i, j] = -1e9
+
+        total_filtered.append(num_filtered)
+
+    avg_filtered = sum(total_filtered) / num_queries
+    max_filtered = max(total_filtered)
+    min_filtered = min(total_filtered)
+    par_tqdm_write(
+        f"Val filtering stats: mean = {avg_filtered:.2f}, max = {max_filtered}, min = {min_filtered}"
+    )
+    return logits

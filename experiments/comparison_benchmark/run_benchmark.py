@@ -1,9 +1,11 @@
+import edlib
 import polars as pl
 import torch
 from jsonargparse import CLI
 from src.config import DenseConfig, ExperimentConfig, SourMashConfig
 from src.encoders import DenseEncoder, SourMashEncoder
 from src.indexers import DenseIndexer, SourMashIndexer
+from tqdm import tqdm
 
 
 def load_data(
@@ -25,6 +27,57 @@ def load_data(
     return queries, query_ids, targets, target_ids, torch.arange(num_queries)
 
 
+def filter_aligned_sequences(query_seqs, target_seqs, target_ids, alignment_threshold):
+    """
+    Filter out target sequences that are aligned above threshold on a per-query basis.
+
+    Args:
+        query_seqs: List of query DNA sequences
+        target_seqs: List of target DNA sequences
+        target_ids: List of target IDs
+        alignment_threshold: Minimum similarity to consider sequences aligned
+
+    Returns:
+        Tuple of (target_seqs, target_ids, valid_targets_mask)
+        where valid_targets_mask is a boolean tensor of shape (num_queries, num_targets)
+    """
+    num_queries = len(query_seqs)
+    num_targets = len(target_seqs)
+
+    # Track which targets are valid for each query
+    valid_targets_mask = torch.ones(num_queries, num_targets, dtype=torch.bool)
+
+    total_filtered = 0
+    for i in tqdm(range(num_queries), total=num_queries, desc="Filtering..."):
+        query_seq = query_seqs[i]
+
+        for j in range(num_targets):
+            # Skip the diagonal (true positive pair)
+            if i == j:
+                continue
+
+            target_seq = target_seqs[j]
+
+            # Check if sequences are aligned using edlib
+            result = edlib.align(query=query_seq, target=target_seq, task="distance")
+            edit_distance = result["editDistance"]
+
+            # Calculate similarity
+            max_length = max(len(query_seq), len(target_seq))
+            similarity = 1.0 - (edit_distance / max_length)
+
+            # If aligned above threshold, mark as invalid for this query
+            if similarity >= alignment_threshold:
+                valid_targets_mask[i, j] = False
+                total_filtered += 1
+
+    print(
+        f"Filtered {total_filtered} query-target pairs (avg {total_filtered / num_queries:.1f} per query)"
+    )
+
+    return target_seqs, target_ids, valid_targets_mask
+
+
 def calculate_hit_at_k(predictions, ground_truth_map, k):
     predictions = predictions[..., :k]
     is_hit = (predictions == ground_truth_map.unsqueeze(1)).any(dim=1)
@@ -40,6 +93,14 @@ def main(cfg: ExperimentConfig):
         cfg.min_coverage,
     )
 
+    # Filter out targets that are aligned above threshold to queries (per-query basis)
+    valid_targets_mask = None
+    print(f"Filtering targets with alignment threshold: {cfg.min_coverage}")
+    targets, target_ids, valid_targets_mask = filter_aligned_sequences(
+        queries, targets, target_ids, cfg.min_coverage
+    )
+    # Ground truth map stays the same - no need to update indices
+
     if isinstance(cfg.model, SourMashConfig):
         encoder = SourMashEncoder(cfg.model)
         indexer = SourMashIndexer(cfg.model)
@@ -49,14 +110,16 @@ def main(cfg: ExperimentConfig):
     else:
         raise ValueError("Unknown model config")
 
+    print(len(targets))
     target_features = encoder.encode(targets)
     indexer.build(target_features, target_ids)
 
     query_features = encoder.encode(queries)
 
     predictions = indexer.search(
-        query_features, topk=max(cfg.topks)
+        query_features, topk=max(cfg.topks), valid_targets_mask=valid_targets_mask
     )  # (num_queries, k)
+
     recalls = [
         calculate_hit_at_k(predictions, ground_truth_map, k=topk) for topk in cfg.topks
     ]

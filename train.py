@@ -84,7 +84,8 @@ def main(cfg: TrainConfig):
     if global_rank == 0:
         run.finish()  # ty: ignore possibly-missing-attribute
 
-    dist.destroy_process_group()  # ty: ignore possibly-missing-attribute
+    if is_distributed:
+        dist.destroy_process_group()  # ty: ignore possibly-missing-attribute
 
 
 if __name__ == "__main__":

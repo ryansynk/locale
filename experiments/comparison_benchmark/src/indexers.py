@@ -1,6 +1,6 @@
 import torch
-from tqdm import tqdm
 from sourmash.index import LinearIndex
+from tqdm import tqdm
 
 from .config import SourMashConfig
 
@@ -9,7 +9,7 @@ class BaseIndexer:
     def build(self, features, ids):
         raise NotImplementedError
 
-    def search(self, query_features, topk):
+    def search(self, query_features, topk, valid_targets_mask):
         raise NotImplementedError
 
 
@@ -22,8 +22,9 @@ class DenseIndexer(BaseIndexer):
         self.ids = ids  # Keep track of mapping if needed
 
     @torch.no_grad()
-    def search(self, query_features, topk):
+    def search(self, query_features, topk, valid_targets_mask):
         logits = torch.matmul(query_features, self.index.T)  # (num_queries, num_keys)
+        logits[~valid_targets_mask] = -1e9
         _, indices = logits.topk(k=topk, dim=1)  # (num_queries, k)
         return indices.cpu()
 
@@ -54,7 +55,7 @@ class SourMashIndexer:
 
         self.index = LinearIndex(features)
 
-    def search(self, query_features, topk):
+    def search(self, query_features, topk, valid_targets_mask):
         """
         Given representation of query sequences and a topk, returns the topk INDICES.
 

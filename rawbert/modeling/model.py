@@ -9,7 +9,9 @@ Code has been modified for DNA sequence data
 """
 
 import logging
+from typing import List, Optional
 
+import edlib
 import einops
 import torch
 import torch.nn as nn
@@ -89,6 +91,10 @@ class RawBERT(nn.Module):
             self.register_buffer("queue", torch.randn(dim, K))
             self.queue = nn.functional.normalize(self.queue, dim=0)
             self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
+
+            # Queue for storing actual DNA sequence strings
+            # Using a Python list since strings can't be stored in tensors
+            self.queue_seqs: List[Optional[str]] = [None] * K
         else:
             self.bert_k = None
             self.projector_k = None
@@ -104,7 +110,9 @@ class RawBERT(nn.Module):
         return next(self.parameters()).device
 
     @torch.no_grad()
-    def _dequeue_and_enqueue(self, keys, is_distributed) -> None:
+    def _dequeue_and_enqueue(
+        self, keys, is_distributed=False, sequences: Optional[List[str]] = None
+    ) -> None:
         if is_distributed:
             keys = concat_all_gather(keys)
         batch_size = keys.shape[0]
@@ -114,9 +122,55 @@ class RawBERT(nn.Module):
 
         # replace the keys at ptr (dequeue and enqueue)
         self.queue[:, ptr : ptr + batch_size] = keys.T
+
+        # Store sequence strings if provided
+        if sequences is not None:
+            for i, seq in enumerate(sequences):
+                self.queue_seqs[ptr + i] = seq
+
         ptr = (ptr + batch_size) % self.K  # move pointer
 
         self.queue_ptr[0] = ptr  # ty: ignore
+
+    def _check_alignments(
+        self, batch_sequences: List[str], alignment_threshold: float = 0.8
+    ) -> torch.Tensor:
+        """
+        Check if any sequences in the batch are aligned to sequences in the queue.
+
+        Args:
+            batch_sequences: List of DNA sequences in the current batch
+            alignment_threshold: Minimum similarity (1 - edit_distance/length) to consider aligned
+
+        Returns:
+            Boolean mask of shape (K,) where True indicates the queue sequence is aligned
+            to at least one sequence in the batch (should be excluded from negatives)
+        """
+        if not any(seq is not None for seq in self.queue_seqs):
+            # Queue not yet populated with sequences
+            return torch.zeros(self.K, dtype=torch.bool, device=self.device)
+
+        aligned_mask = torch.zeros(self.K, dtype=torch.bool, device=self.device)
+
+        for i, queue_seq in enumerate(self.queue_seqs):
+            if queue_seq is None:
+                continue
+
+            # Check if this queue sequence aligns with any sequence in the batch
+            for batch_seq in batch_sequences:
+                # Use edlib for fast alignment
+                result = edlib.align(query=batch_seq, target=queue_seq, task="distance")
+                edit_distance = result["editDistance"]
+
+                # Calculate similarity as 1 - (edit_distance / max_length)
+                max_length = max(len(batch_seq), len(queue_seq))
+                similarity = 1.0 - (edit_distance / max_length)
+
+                if similarity >= alignment_threshold:
+                    aligned_mask[i] = True
+                    break  # No need to check other batch sequences for this queue seq
+
+        return aligned_mask
 
     @torch.no_grad()
     def _momentum_update_key_encoder(self) -> None:
@@ -152,7 +206,16 @@ class RawBERT(nn.Module):
         # 3. Apply MLP Projection Head
         return projector(embeddings)
 
-    def forward(self, query, key, is_distributed=False):
+    def forward(
+        self,
+        query,
+        key,
+        is_distributed=False,
+        query_seqs: Optional[List[str]] = None,
+        key_seqs: Optional[List[str]] = None,
+        alignment_threshold: float = 0.8,
+        filter_aligned: bool = True,
+    ):
         # Calculate Query Embedding
         q = self._embed(
             self.bert_q, self.projector_q, query.to(self.device), pooling=self.pooling
@@ -178,6 +241,12 @@ class RawBERT(nn.Module):
             # Negative logits: B x K
             l_neg = einops.einsum(q, self.queue.clone().detach(), "B D, D K -> B K")
 
+            # Check for aligned sequences and mask them out from negatives
+            if filter_aligned and query_seqs is not None:
+                aligned_mask = self._check_alignments(query_seqs, alignment_threshold)
+                # Set logits for aligned sequences to a very negative value (will be ignored)
+                l_neg[:, aligned_mask] = -1e9
+
             # Logits: B x (1 + K)
             logits = torch.cat([l_pos, l_neg], dim=1)
 
@@ -186,7 +255,7 @@ class RawBERT(nn.Module):
 
             labels = torch.zeros(logits.shape[0], dtype=torch.long, device=self.device)
 
-            self._dequeue_and_enqueue(k, is_distributed)
+            self._dequeue_and_enqueue(k, is_distributed, sequences=key_seqs)
 
         else:
             k = self._embed(
