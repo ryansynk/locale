@@ -4,7 +4,7 @@ from dataclasses import asdict
 from functools import partial
 from pathlib import Path
 
-import edlib
+import edlib  # ty: ignore unresolved-import
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F

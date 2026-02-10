@@ -1,6 +1,5 @@
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from pathlib import Path
 
 import altair as alt
 import edlib  # ty: ignore unresolved-import

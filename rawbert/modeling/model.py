@@ -11,7 +11,7 @@ Code has been modified for DNA sequence data
 import logging
 from typing import List, Optional
 
-import edlib
+import edlib  # ty: ignore unresolved-import
 import einops
 import torch
 import torch.nn as nn
