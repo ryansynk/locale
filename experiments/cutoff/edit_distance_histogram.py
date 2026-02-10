@@ -3,7 +3,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import altair as alt
-import edlib
+import edlib  # ty: ignore unresolved-import
 import numpy as np
 import polars as pl
 from jsonargparse import CLI

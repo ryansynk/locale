@@ -1,4 +1,4 @@
-import edlib
+import edlib  # ty: ignore unresolved-import
 import polars as pl
 import torch
 from jsonargparse import CLI

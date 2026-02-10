@@ -133,7 +133,7 @@ class RawBERT(nn.Module):
         self.queue_ptr[0] = ptr  # ty: ignore
 
     def _check_alignments(
-        self, batch_sequences: List[str], alignment_threshold: float = 0.8
+        self, batch_sequences: List[str], alignment_threshold: float
     ) -> torch.Tensor:
         """
         Check if any sequences in the batch are aligned to sequences in the queue.
@@ -159,12 +159,17 @@ class RawBERT(nn.Module):
             # Check if this queue sequence aligns with any sequence in the batch
             for batch_seq in batch_sequences:
                 # Use edlib for fast alignment
-                result = edlib.align(query=batch_seq, target=queue_seq, task="distance")
+                if len(batch_seq) <= len(queue_seq):
+                    q = batch_seq
+                    t = queue_seq
+                else:
+                    q = queue_seq
+                    t = batch_seq
+                result = edlib.align(query=q, target=t, mode="HW", task="distance")
                 edit_distance = result["editDistance"]
 
                 # Calculate similarity as 1 - (edit_distance / max_length)
-                max_length = max(len(batch_seq), len(queue_seq))
-                similarity = 1.0 - (edit_distance / max_length)
+                similarity = 1.0 - (edit_distance / len(q))
 
                 if similarity >= alignment_threshold:
                     aligned_mask[i] = True
@@ -210,10 +215,10 @@ class RawBERT(nn.Module):
         self,
         query,
         key,
+        alignment_threshold: float,
         is_distributed=False,
         query_seqs: Optional[List[str]] = None,
         key_seqs: Optional[List[str]] = None,
-        alignment_threshold: float = 0.8,
         filter_aligned: bool = True,
     ):
         # Calculate Query Embedding

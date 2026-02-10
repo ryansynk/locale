@@ -28,6 +28,7 @@ augment_config:
   min_alignment_len: 149
   max_alignment_ratio: 1.0
   min_coverage: 0.3
+  alignment_threshold: 0.6
   insertion_rate: 0.005
   deletion_rate: 0.005
   substitution_rate: 0.02

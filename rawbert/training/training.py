@@ -210,7 +210,7 @@ def train(
                     is_distributed,
                     query_seqs=query_seqs,
                     key_seqs=key_seqs,
-                    alignment_threshold=cfg.augment_config.min_coverage,
+                    alignment_threshold=cfg.augment_config.alignment_threshold,
                     filter_aligned=True,
                 )
                 loss = F.cross_entropy(logits, labels)

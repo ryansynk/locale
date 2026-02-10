@@ -15,6 +15,7 @@ class AugmentConfig:
     min_alignment_len: int = 149
     max_alignment_ratio: float = 1.0
     min_coverage: float = 0.1
+    alignment_threshold: float = 0.6
 
     # Mutation rates
     insertion_rate: float = 0.005
