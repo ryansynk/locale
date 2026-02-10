@@ -212,3 +212,4 @@ nexus_scripts
 output
 checkpoints
 *.parquet
+*.png

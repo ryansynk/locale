@@ -39,4 +39,5 @@ class ExperimentConfig:
     num_queries: int = 100
     max_seq_len: int = 1024
     min_coverage: float = 0.1
+    similarity_threshold: float = 0.6
     topks: List[int] = field(default_factory=lambda: [1, 5])

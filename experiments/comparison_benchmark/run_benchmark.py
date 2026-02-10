@@ -59,12 +59,18 @@ def filter_aligned_sequences(query_seqs, target_seqs, target_ids, alignment_thre
             target_seq = target_seqs[j]
 
             # Check if sequences are aligned using edlib
-            result = edlib.align(query=query_seq, target=target_seq, task="distance")
+            # short query, long target
+            if len(query_seq) <= len(target_seq):
+                q = query_seq
+                t = target_seq
+            else:
+                q = target_seq
+                t = query_seq
+            result = edlib.align(query=q, target=t, mode="HW", task="distance")
             edit_distance = result["editDistance"]
 
             # Calculate similarity
-            max_length = max(len(query_seq), len(target_seq))
-            similarity = 1.0 - (edit_distance / max_length)
+            similarity = 1.0 - (edit_distance / len(q))
 
             # If aligned above threshold, mark as invalid for this query
             if similarity >= alignment_threshold:
@@ -95,9 +101,9 @@ def main(cfg: ExperimentConfig):
 
     # Filter out targets that are aligned above threshold to queries (per-query basis)
     valid_targets_mask = None
-    print(f"Filtering targets with alignment threshold: {cfg.min_coverage}")
+    print(f"Filtering targets with alignment threshold: {cfg.similarity_threshold}")
     targets, target_ids, valid_targets_mask = filter_aligned_sequences(
-        queries, targets, target_ids, cfg.min_coverage
+        queries, targets, target_ids, cfg.similarity_threshold
     )
     # Ground truth map stays the same - no need to update indices
 
@@ -110,7 +116,6 @@ def main(cfg: ExperimentConfig):
     else:
         raise ValueError("Unknown model config")
 
-    print(len(targets))
     target_features = encoder.encode(targets)
     indexer.build(target_features, target_ids)
 

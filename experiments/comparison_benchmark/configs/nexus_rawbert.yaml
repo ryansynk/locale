@@ -9,6 +9,7 @@ num_keys: 10000
 num_queries: 100
 max_seq_len: 1024
 min_coverage: 0.1
+similarity_threshold: 0.6
 topks:
 - 1
 - 5
