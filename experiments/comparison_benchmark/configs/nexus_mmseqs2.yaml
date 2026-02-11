@@ -1,9 +1,9 @@
 model:
-  name: dnabert
-  checkpoint_path: null
-  batch_size: 128
-  device: cuda
-  pooling: max
+  name: mmseqs2
+  sensitivity: 7.5
+  search_type: 3
+  threads: 4
+  mmseqs_binary: mmseqs
 dataset_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/test_contigs.parquet
 num_keys: 10000
 num_queries: 100

@@ -30,14 +30,26 @@ class DenseConfig(AlgorithmConfig):
 
 
 @dataclass
+class MMSeqs2Config(AlgorithmConfig):
+    name: str = "mmseqs2"
+    sensitivity: float = 7.5  # -s parameter (1.0=fast, 7.5=sensitive)
+    search_type: int = 3  # 3 = nucleotide-nucleotide
+    threads: int = 4
+    mmseqs_binary: str = "mmseqs"  # path to mmseqs binary
+
+    def __str__(self):
+        return f"{self.name}"
+
+
+@dataclass
 class ExperimentConfig:
-    model: Union[DenseConfig, SourMashConfig]
+    model: Union[DenseConfig, SourMashConfig, MMSeqs2Config]
     dataset_path: str = (
         "/fs/nexus-scratch/ryansynk/rawbert_data/data/test_contigs.parquet"
     )
     num_keys: int = 10000
     num_queries: int = 100
     max_seq_len: int = 1024
-    min_coverage: float = 0.1
+    min_coverage: float = 0.65
     similarity_threshold: float = 0.6
     topks: List[int] = field(default_factory=lambda: [1, 5])

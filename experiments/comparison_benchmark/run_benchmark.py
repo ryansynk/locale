@@ -2,9 +2,10 @@ import edlib  # ty: ignore unresolved-import
 import polars as pl
 import torch
 from jsonargparse import CLI
-from src.config import DenseConfig, ExperimentConfig, SourMashConfig
+from src.config import DenseConfig, ExperimentConfig, MMSeqs2Config, SourMashConfig
 from src.encoders import DenseEncoder, SourMashEncoder
 from src.indexers import DenseIndexer, SourMashIndexer
+from src.mmseqs2 import MMSeqs2Searcher
 from tqdm import tqdm
 
 
@@ -107,23 +108,35 @@ def main(cfg: ExperimentConfig):
     )
     # Ground truth map stays the same - no need to update indices
 
-    if isinstance(cfg.model, SourMashConfig):
-        encoder = SourMashEncoder(cfg.model)
-        indexer = SourMashIndexer(cfg.model)
-    elif isinstance(cfg.model, DenseConfig):
-        encoder = DenseEncoder(cfg.model)
-        indexer = DenseIndexer()
+    if isinstance(cfg.model, MMSeqs2Config):
+        # mmseqs2 is a monolithic CLI tool — no separate encode/index steps
+        searcher = MMSeqs2Searcher(cfg.model)
+        predictions = searcher.search(
+            query_seqs=queries,
+            query_ids=query_ids,
+            target_seqs=targets,
+            target_ids=target_ids,
+            topk=max(cfg.topks),
+            valid_targets_mask=valid_targets_mask,
+        )
     else:
-        raise ValueError("Unknown model config")
+        if isinstance(cfg.model, SourMashConfig):
+            encoder = SourMashEncoder(cfg.model)
+            indexer = SourMashIndexer(cfg.model)
+        elif isinstance(cfg.model, DenseConfig):
+            encoder = DenseEncoder(cfg.model)
+            indexer = DenseIndexer()
+        else:
+            raise ValueError("Unknown model config")
 
-    target_features = encoder.encode(targets)
-    indexer.build(target_features, target_ids)
+        target_features = encoder.encode(targets)
+        indexer.build(target_features, target_ids)
 
-    query_features = encoder.encode(queries)
+        query_features = encoder.encode(queries)
 
-    predictions = indexer.search(
-        query_features, topk=max(cfg.topks), valid_targets_mask=valid_targets_mask
-    )  # (num_queries, k)
+        predictions = indexer.search(
+            query_features, topk=max(cfg.topks), valid_targets_mask=valid_targets_mask
+        )  # (num_queries, k)
 
     recalls = [
         calculate_hit_at_k(predictions, ground_truth_map, k=topk) for topk in cfg.topks
