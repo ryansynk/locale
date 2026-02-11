@@ -27,7 +27,7 @@ augment_config:
   overlap_prob: 0.34
   min_alignment_len: 149
   max_alignment_ratio: 1.0
-  min_coverage: 0.3
+  min_coverage: 0.65
   alignment_threshold: 0.6
   insertion_rate: 0.005
   deletion_rate: 0.005

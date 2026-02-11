@@ -29,7 +29,7 @@ def get_similarities_for_query(q, ref_seqs):
     return [get_similarity(q, ref_seq) for ref_seq in ref_seqs]
 
 
-def main(cfg_file: TrainConfig):
+def main(cfg: TrainConfig, output_path: str):
     """
     Exploratory data analysis. Gets histogram of edit distance similarities between
     aligned and unaligned sequences in order to get a background noise level.
@@ -119,9 +119,17 @@ def main(cfg_file: TrainConfig):
             color=alt.Color("type:N"),
         )
     )
-    chart.save("similarity_hist.png")
+    chart.save(output_path)
 
 
 if __name__ == "__main__":
+    import sys
+
+    output_path = "similarity_hist.png"
+    if "--output_path" in sys.argv:
+        idx = sys.argv.index("--output_path")
+        output_path = sys.argv.pop(idx + 1)
+        sys.argv.pop(idx)
+
     cfg = CLI(TrainConfig, as_positional=False)
-    main(cfg)
+    main(cfg, output_path)
