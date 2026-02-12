@@ -1,4 +1,4 @@
-import edlib  # ty: ignore unresolved-import
+import edlib
 import polars as pl
 import torch
 from jsonargparse import CLI
@@ -9,26 +9,7 @@ from src.mmseqs2 import MMSeqs2Searcher
 from tqdm import tqdm
 
 
-def load_data(
-    dataset_path: str,
-    num_keys: int,
-    num_queries: int,
-    max_seq_len: int,
-    min_coverage: float,
-):
-    df = pl.read_parquet(dataset_path)
-    df = df.filter(
-        (pl.col("max_len") < max_seq_len) & (pl.col("coverage") > min_coverage)
-    )
-    df = df.head(num_keys)
-    query_ids = df["query_name"].head(num_queries).to_list()
-    queries = df["query_seq"].head(num_queries).to_list()
-    target_ids = df["reference_name"].to_list()
-    targets = df["reference_seq"].to_list()
-    return queries, query_ids, targets, target_ids, torch.arange(num_queries)
-
-
-def filter_aligned_sequences(query_seqs, target_seqs, target_ids, alignment_threshold):
+def filter_aligned_sequences(query_seqs, target_seqs, alignment_threshold):
     """
     Filter out target sequences that are aligned above threshold on a per-query basis.
 
@@ -82,29 +63,49 @@ def filter_aligned_sequences(query_seqs, target_seqs, target_ids, alignment_thre
         f"Filtered {total_filtered} query-target pairs (avg {total_filtered / num_queries:.1f} per query)"
     )
 
-    return target_seqs, target_ids, valid_targets_mask
+    return valid_targets_mask
 
 
-def calculate_hit_at_k(predictions, ground_truth_map, k):
-    predictions = predictions[..., :k]
-    is_hit = (predictions == ground_truth_map.unsqueeze(1)).any(dim=1)
-    return is_hit.float().mean().item()
+def combine_data(alignments, distractors, num_distractors):
+    queries = alignments["query_seq"].to_list()
+    query_ids = alignments["query_name"].to_list()
+    keys = alignments["reference_seq"].to_list()
+    similarities = alignments["similarity"].to_list()
+    distractor_keys = distractors["seq"].to_list()
+    all_keys = keys + distractor_keys[:num_distractors]
+    return queries, all_keys, torch.arange(len(queries)), similarities, query_ids
+
+
+def get_results(predictions, ground_truth_map, topks, similarities, query_ids):
+    cols = {}
+    cols["query_id"] = query_ids
+    cols["similarity"] = similarities
+    for k in topks:
+        top_k_preds = predictions[..., :k]
+        is_hit = (top_k_preds == ground_truth_map.unsqueeze(1)).any(dim=1)
+        cols[f"hit_at_{k}"] = is_hit.to(torch.int).tolist()
+    return pl.from_dict(cols)
 
 
 def main(cfg: ExperimentConfig):
-    queries, query_ids, targets, target_ids, ground_truth_map = load_data(
-        cfg.dataset_path,
-        cfg.num_keys,
-        cfg.num_queries,
-        cfg.max_seq_len,
-        cfg.min_coverage,
-    )
+    assert cfg.alignments_path is not None
+    assert cfg.distractors_path is not None
+    assert cfg.results_dir is not None
 
-    # Filter out targets that are aligned above threshold to queries (per-query basis)
-    valid_targets_mask = None
-    print(f"Filtering targets with alignment threshold: {cfg.similarity_threshold}")
-    targets, target_ids, valid_targets_mask = filter_aligned_sequences(
-        queries, targets, target_ids, cfg.similarity_threshold
+    alignments = pl.read_parquet(cfg.alignments_path)
+    distractors = pl.read_parquet(cfg.distractors_path)
+    queries, keys, ground_truth_map, similarities, query_ids = combine_data(
+        alignments, distractors, cfg.num_distractors
+    )
+    valid_targets_mask = filter_aligned_sequences(
+        queries, keys[: len(queries)], cfg.similarity_threshold
+    )
+    valid_targets_mask = torch.cat(
+        [
+            valid_targets_mask,
+            torch.zeros(len(queries), len(keys) - len(queries), dtype=torch.bool),
+        ],
+        dim=1,
     )
     # Ground truth map stays the same - no need to update indices
 
@@ -113,11 +114,8 @@ def main(cfg: ExperimentConfig):
         searcher = MMSeqs2Searcher(cfg.model)
         predictions = searcher.search(
             query_seqs=queries,
-            query_ids=query_ids,
-            target_seqs=targets,
-            target_ids=target_ids,
+            target_seqs=keys,
             topk=max(cfg.topks),
-            valid_targets_mask=valid_targets_mask,
         )
     else:
         if isinstance(cfg.model, SourMashConfig):
@@ -129,8 +127,8 @@ def main(cfg: ExperimentConfig):
         else:
             raise ValueError("Unknown model config")
 
-        target_features = encoder.encode(targets)
-        indexer.build(target_features, target_ids)
+        target_features = encoder.encode(keys)
+        indexer.build(target_features)
 
         query_features = encoder.encode(queries)
 
@@ -138,11 +136,31 @@ def main(cfg: ExperimentConfig):
             query_features, topk=max(cfg.topks), valid_targets_mask=valid_targets_mask
         )  # (num_queries, k)
 
-    recalls = [
-        calculate_hit_at_k(predictions, ground_truth_map, k=topk) for topk in cfg.topks
-    ]
-    for recall, topk in zip(recalls, cfg.topks):
-        print(f"Recall @{topk} for {cfg.model}: {(recall * 100):.2f}%")
+    results = get_results(
+        predictions, ground_truth_map, cfg.topks, similarities, query_ids
+    )
+    results = (
+        results.with_columns(
+            pl.col("similarity")
+            .cut([0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0])
+            .alias("similarity_bin")
+        )
+        .group_by("similarity_bin")
+        .agg(pl.col(f"hit_at_{k}").mean() for k in cfg.topks)
+    )
+    results = results.with_columns(
+        pl.lit(cfg.model.name).alias("model"),
+        pl.lit(cfg.num_distractors, dtype=pl.Int64),
+    )
+    fname = cfg.results_dir / f"{cfg.model.name}.parquet"
+    if fname.exists():
+        existing_results = pl.read_parquet(fname)
+        combined = existing_results.vstack(results)
+        combined.write_parquet(fname)
+    else:
+        if not cfg.results_dir.is_dir():
+            cfg.results_dir.mkdir()
+        results.write_parquet(cfg.results_dir / f"{cfg.model.name}.parquet")
 
 
 if __name__ == "__main__":

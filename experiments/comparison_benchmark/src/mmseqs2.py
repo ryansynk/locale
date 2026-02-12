@@ -35,20 +35,15 @@ class MMSeqs2Searcher:
     def search(
         self,
         query_seqs: list[str],
-        query_ids: list[str],
         target_seqs: list[str],
-        target_ids: list[str],
         topk: int,
-        valid_targets_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Run mmseqs2 easy-search and return top-k target indices per query.
 
         Args:
             query_seqs: List of query DNA sequences.
-            query_ids: List of query identifiers.
             target_seqs: List of target DNA sequences.
-            target_ids: List of target identifiers.
             topk: Number of top hits to return per query.
             valid_targets_mask: Boolean tensor (num_queries, num_targets).
                 If provided, hits to masked-out targets are skipped.
@@ -77,7 +72,6 @@ class MMSeqs2Searcher:
             # --search-type 3 = nucleotide search
             # --format-output query,target,evalue = minimal output for parsing
             # --max-seqs N = max results per query (request extra to account for masking)
-            max_seqs = topk * 5 if valid_targets_mask is not None else topk
             cmd = [
                 self.mmseqs_binary,
                 "easy-search",
@@ -92,7 +86,7 @@ class MMSeqs2Searcher:
                 "--threads",
                 str(self.threads),
                 "--max-seqs",
-                str(max_seqs),
+                str(topk),
                 "--format-output",
                 "query,target,evalue",
             ]
@@ -123,8 +117,6 @@ class MMSeqs2Searcher:
         for q_idx in range(num_queries):
             count = 0
             for t_idx in hits.get(q_idx, []):
-                if valid_targets_mask is not None and not valid_targets_mask[q_idx, t_idx]:
-                    continue
                 predictions[q_idx, count] = t_idx
                 count += 1
                 if count >= topk:

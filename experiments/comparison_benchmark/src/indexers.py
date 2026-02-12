@@ -1,12 +1,14 @@
+from typing import List
+
 import torch
-from sourmash.index import LinearIndex
+from sourmash.index import IndexSearchResult, LinearIndex
 from tqdm import tqdm
 
 from .config import SourMashConfig
 
 
 class BaseIndexer:
-    def build(self, features, ids):
+    def build(self, features):
         raise NotImplementedError
 
     def search(self, query_features, topk, valid_targets_mask):
@@ -17,14 +19,14 @@ class DenseIndexer(BaseIndexer):
     def __init__(self):
         pass
 
-    def build(self, features, ids):
+    def build(self, features):
         self.index = features
-        self.ids = ids  # Keep track of mapping if needed
 
     @torch.no_grad()
     def search(self, query_features, topk, valid_targets_mask):
         logits = torch.matmul(query_features, self.index.T)  # (num_queries, num_keys)
-        logits[~valid_targets_mask] = -1e9
+        if valid_targets_mask is not None:
+            logits[~valid_targets_mask] = -1e9
         _, indices = logits.topk(k=topk, dim=1)  # (num_queries, k)
         return indices.cpu()
 
@@ -40,7 +42,7 @@ class SourMashIndexer:
         self.threshold = cfg.threshold
         self.num_targets = 0
 
-    def build(self, features, ids=None):
+    def build(self, features):
         """
         Given set of hashes from sourmash and the ids of the sequences, creates an index.
 
@@ -73,13 +75,27 @@ class SourMashIndexer:
             enumerate(query_features), total=num_queries, desc="Searching queries..."
         ):
             # sourmash search returns list of (score, signature, filename)
-            results = self.index.search(query_sig, threshold=self.threshold)
+            results: List[IndexSearchResult] = self.index.search(
+                query_sig, threshold=self.threshold
+            )
+            filtered_results: List[IndexSearchResult] = []
+            # Mask out invalid targets by setting their score to -1e9
+            if valid_targets_mask is not None:
+                for j, res in enumerate(results):
+                    # target_idx = int(res.signature.name)
+                    if valid_targets_mask[i, j]:
+                        filtered_res = IndexSearchResult(
+                            -1e9, res.signature, res.location
+                        )
+                        filtered_results.append(filtered_res)
+                    else:
+                        filtered_results.append(res)
 
             # Sort by similarity (score) descending
-            results.sort(key=lambda x: x.score, reverse=True)
+            filtered_results.sort(key=lambda x: x.score, reverse=True)
 
             # Keep only topk results
-            top_results = results[:topk]
+            top_results = filtered_results[:topk]
 
             # Extract the integer indices stored in signature names
             # We iterate only up to len(top_results) in case we found fewer than k matches

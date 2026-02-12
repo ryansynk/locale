@@ -4,9 +4,10 @@ model:
   batch_size: 128
   device: cuda
   pooling: max
-dataset_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/test_contigs.parquet
-num_keys: 10000
-num_queries: 100
+alignments_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/test_data/queries.parquet
+distractors_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/test_data/filtered_distractors.parquet
+num_distractors: 10000
+results_dir_str: ./results
 max_seq_len: 1024
 min_coverage: 0.65
 similarity_threshold: 0.6
