@@ -9,13 +9,16 @@ Code has been modified for DNA sequence data
 """
 
 import logging
+from copy import deepcopy
 from typing import List, Optional
 
 import edlib  # ty: ignore unresolved-import
 import einops
 import torch
 import torch.nn as nn
-from transformers import AutoModel, BertConfig
+from transformers import BertConfig
+
+from rawbert.modeling.bert_layers import BertModel as DNABertModel
 
 # Try to import the specific varlen function from flash_attn
 try:
@@ -38,6 +41,8 @@ class RawBERT(nn.Module):
     ):
         super().__init__()
         self.config = BertConfig.from_pretrained("zhihan1996/DNABERT-2-117M")
+        if not hasattr(self.config, "pad_token_id") or self.config.pad_token_id is None:
+            self.config.pad_token_id = 3  # DNABERT Tokenizer [PAD] token id
         if pooling not in ["class", "mean", "max"]:
             raise ValueError(
                 f"Expected pooling to be one of class, mean, max. Got: {pooling}"
@@ -52,8 +57,10 @@ class RawBERT(nn.Module):
         self.is_moco = K > 0
 
         # 1. Load Encoders
-        self.bert_q = AutoModel.from_pretrained(
-            "zhihan1996/DNABERT-2-117M", trust_remote_code=True
+        self.bert_q = DNABertModel.from_pretrained(
+            "zhihan1996/DNABERT-2-117M",
+            trust_remote_code=True,
+            config=self.config,
         )
         self._remove_pooler(self.bert_q)
         if FLASH_ATTN_AVAILABLE:
@@ -65,9 +72,7 @@ class RawBERT(nn.Module):
         )
 
         if self.is_moco:
-            self.bert_k = AutoModel.from_pretrained(
-                "zhihan1996/DNABERT-2-117M", trust_remote_code=True
-            )
+            self.bert_k = deepcopy(self.bert_q)
             self._remove_pooler(self.bert_k)
 
             self.projector_k = nn.Sequential(

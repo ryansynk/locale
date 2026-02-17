@@ -1,4 +1,3 @@
-import os
 import warnings
 from dataclasses import asdict
 from functools import partial
@@ -146,7 +145,7 @@ def train(
         sampler=sampler,
         drop_last=True,
         shuffle=False,
-        num_workers=int(os.environ["OMP_NUM_THREADS"]),
+        num_workers=cfg.num_workers,
     )
     val_dataloader = DataLoader(
         val_reader,
@@ -207,11 +206,11 @@ def train(
                 logits, labels = ddp_rawbert(
                     q,
                     k,
-                    is_distributed,
+                    cfg.augment_config.alignment_threshold,
+                    is_distributed=is_distributed,
                     query_seqs=query_seqs,
                     key_seqs=key_seqs,
-                    alignment_threshold=cfg.augment_config.alignment_threshold,
-                    filter_aligned=True,
+                    filter_aligned=False,
                 )
                 loss = F.cross_entropy(logits, labels)
                 loss.backward()

@@ -81,5 +81,6 @@ class TrainConfig:
     num_val_keys: int = 100_000
     dim: int = 128
     pooling: str = "mean"
+    num_workers: int = 4
     sanity_test: bool = False
     augment_config: AugmentConfig = field(default_factory=AugmentConfig)
