@@ -21,8 +21,8 @@ def main(results_dir: str, plots_dir: str = "plots"):
             .mark_bar()
             .encode(
                 x=alt.X(
-                    "similarity_bin",
-                    title="Sequence Similarity",
+                    "identity_bin",
+                    title="Sequence Identity",
                     axis=alt.Axis(labelAngle=-45),
                 ),
                 y=alt.Y(metric, title=title),

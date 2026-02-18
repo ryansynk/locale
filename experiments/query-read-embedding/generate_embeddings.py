@@ -1,6 +1,6 @@
 import io
-import itertools
 import math
+from itertools import islice
 from pathlib import Path
 from typing import Literal
 
@@ -16,6 +16,16 @@ from transformers import AutoModel, AutoTokenizer
 
 from rawbert import RawBERT
 from rawbert.utils.patch import patch_with_flash_lib
+
+
+def batched(iterable, n):
+    """Batch data into lists of length n. The last batch may be shorter."""
+    it = iter(iterable)
+    while True:
+        batch = list(islice(it, n))
+        if not batch:
+            return
+        yield batch
 
 
 def embed_accs(acc_paths, tokenizer, model, device, outfile, batch_size):
@@ -46,7 +56,7 @@ def embed_accs(acc_paths, tokenizer, model, device, outfile, batch_size):
                         all_embeds = []
                         total_batches = math.ceil(num_reads / batch_size)
                         for batch in tqdm(
-                            itertools.batched(records, batch_size), total=total_batches
+                            batched(records, batch_size), total=total_batches
                         ):
                             batch = list(batch)
                             batch_seqs = [str(record.seq) for record in batch]

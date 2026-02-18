@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Literal, Optional, Union
+from typing import List, Literal, Optional, Tuple, Union
 
 
 @dataclass
@@ -45,24 +45,24 @@ class MMSeqs2Config(AlgorithmConfig):
 @dataclass
 class ExperimentConfig:
     model: Union[DenseConfig, SourMashConfig, MMSeqs2Config]
-    # dataset_path: str = (
-    #    "/fs/nexus-scratch/ryansynk/rawbert_data/data/test_contigs.parquet"
-    # )
-    alignments_path: str | None = None
-    distractors_path: str | None = None
+    reference_path: str | None = None
+    dataset_path: str | None = None
     num_distractors: int = 10000
-    results_dir_str: str | None = None
-    results_dir: Path | None = None
+    results_dir: Path | str | None = None
 
-    # num_keys: int = 10000
-    # num_queries: int = 100
-    max_seq_len: int = 1024
-    min_coverage: float = 0.65
-    similarity_threshold: float = 0.6
+    max_seq_len: int = 6000
     topks: List[int] = field(default_factory=lambda: [1, 5])
+    identity_bins: List[Tuple[float, float]] = field(
+        default_factory=lambda: [
+            (0.7, 0.75),
+            (0.75, 0.8),
+            (0.8, 0.85),
+            (0.9, 0.95),
+        ]
+    )
 
     def __post_init__(self):
-        if self.results_dir_str is not None:
-            self.results_dir = Path(self.results_dir_str)
+        if self.results_dir is not None:
+            self.results_dir = Path(self.results_dir)
         else:
             raise ValueError("No results dir provided")

@@ -1,16 +1,23 @@
 model:
-  name: dnabert 
+  name: dnabert
   checkpoint_path: null
   batch_size: 128
   device: cuda
   pooling: max
-alignments_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/test_data/queries.parquet
-distractors_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/test_data/filtered_distractors.parquet
+reference_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/GCF_009914755.1_T2T-CHM13v2.0_genomic.fna
+dataset_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/long_reads.test.parquet
 num_distractors: 10000
-results_dir_str: ./results
-max_seq_len: 1024
-min_coverage: 0.65
-similarity_threshold: 0.6
+results_dir: /fs/nexus-scratch/ryansynk/rawbert/experiments/comparison_benchmark/results
+max_seq_len: 6000
 topks:
 - 1
 - 5
+identity_bins:
+- - 0.7
+  - 0.75
+- - 0.75
+  - 0.8
+- - 0.8
+  - 0.85
+- - 0.9
+  - 0.95

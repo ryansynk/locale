@@ -1,19 +1,29 @@
 import math
-from itertools import batched  # ty: ignore unresolved-import
+from itertools import islice
 from pathlib import Path
 
-import sourmash
 import torch
 from sourmash import MinHash, SourmashSignature
 from torch import nn
 from tqdm import tqdm
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoTokenizer, BertConfig
 from transformers.utils import logging as transformers_logging
 
+from rawbert.modeling.bert_layers import BertModel as DNABertModel
 from rawbert.modeling.model import RawBERT
 from rawbert.utils.patch import patch_with_flash_lib
 
 from .config import DenseConfig, SourMashConfig
+
+
+def batched(iterable, n):
+    """Batch data into lists of length n. The last batch may be shorter."""
+    it = iter(iterable)
+    while True:
+        batch = list(islice(it, n))
+        if not batch:
+            return
+        yield batch
 
 
 class BaseEncoder:
@@ -27,6 +37,10 @@ class DenseEncoder(BaseEncoder):
     def __init__(self, cfg: DenseConfig, device: str = "cuda"):
         transformers_logging.set_verbosity_error()
         # Load your PyTorch model or DNABERT here
+        bert_config = BertConfig.from_pretrained("zhihan1996/DNABERT-2-117M")
+        if not hasattr(bert_config, "pad_token_id") or bert_config.pad_token_id is None:
+            bert_config.pad_token_id = 3  # DNABERT Tokenizer [PAD] token id
+
         if cfg.name == "rawbert":
             assert cfg.checkpoint_path, "No checkpoint provided!"
             checkpoint_path = Path(cfg.checkpoint_path).resolve()
@@ -43,9 +57,14 @@ class DenseEncoder(BaseEncoder):
             model = model.eval().to(device)
             forward = model.bert_q
         elif cfg.name == "dnabert":
-            model = AutoModel.from_pretrained(
-                "zhihan1996/DNABERT-2-117M", trust_remote_code=True
+            model = DNABertModel.from_pretrained(
+                "zhihan1996/DNABERT-2-117M",
+                trust_remote_code=True,
+                config=bert_config,
             )
+            if hasattr(model, "pooler") and model.pooler is not None:
+                del model.pooler
+                model.pooler = None
             patch_with_flash_lib(model)
             model = model.eval().to(device)
             forward = model
@@ -78,12 +97,14 @@ class DenseEncoder(BaseEncoder):
             mask = tokens.attention_mask.unsqueeze(-1)
             if self.pooling == "class":
                 embeddings = outputs[:, 0, :]
-            if self.pooling == "mean":
+            elif self.pooling == "mean":
                 embeddings = (outputs * mask).sum(dim=1) / mask.sum(dim=1)
             elif self.pooling == "max":
                 mask_expanded = mask.expand(outputs.size())
                 outputs[mask_expanded == 0] = -1e9
                 embeddings, _ = outputs.max(dim=1)
+            else:
+                raise ValueError(f"self.pooling got unexpected value {self.pooling}")
 
             batch_embeds = nn.functional.normalize(embeddings, dim=1)
             embeds_list.append(batch_embeds)

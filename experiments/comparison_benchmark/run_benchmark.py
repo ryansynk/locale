@@ -1,85 +1,95 @@
-import edlib
+from pathlib import Path
+
 import polars as pl
 import torch
 from jsonargparse import CLI
+from pyfaidx import Fasta
 from src.config import DenseConfig, ExperimentConfig, MMSeqs2Config, SourMashConfig
 from src.encoders import DenseEncoder, SourMashEncoder
 from src.indexers import DenseIndexer, SourMashIndexer
 from src.mmseqs2 import MMSeqs2Searcher
-from tqdm import tqdm
 
 
-def filter_aligned_sequences(query_seqs, target_seqs, alignment_threshold):
-    """
-    Filter out target sequences that are aligned above threshold on a per-query basis.
+def remove_overlapping_distractors(
+    query_df, distractor_df, num_distractors, min_overlap: int = 100
+):
+    joined = distractor_df.join(query_df, on="chromosome", suffix="_query")
 
-    Args:
-        query_seqs: List of query DNA sequences
-        target_seqs: List of target DNA sequences
-        target_ids: List of target IDs
-        alignment_threshold: Minimum similarity to consider sequences aligned
+    overlap_start = pl.max_horizontal("reference_start", "reference_start_query")
+    overlap_end = pl.min_horizontal("reference_end", "reference_end_query")
+    overlap_bp = (overlap_end - overlap_start).clip(lower_bound=0)
 
-    Returns:
-        Tuple of (target_seqs, target_ids, valid_targets_mask)
-        where valid_targets_mask is a boolean tensor of shape (num_queries, num_targets)
-    """
-    num_queries = len(query_seqs)
-    num_targets = len(target_seqs)
-
-    # Track which targets are valid for each query
-    valid_targets_mask = torch.ones(num_queries, num_targets, dtype=torch.bool)
-
-    total_filtered = 0
-    for i in tqdm(range(num_queries), total=num_queries, desc="Filtering..."):
-        query_seq = query_seqs[i]
-
-        for j in range(num_targets):
-            # Skip the diagonal (true positive pair)
-            if i == j:
-                continue
-
-            target_seq = target_seqs[j]
-
-            # Check if sequences are aligned using edlib
-            # short query, long target
-            if len(query_seq) <= len(target_seq):
-                q = query_seq
-                t = target_seq
-            else:
-                q = target_seq
-                t = query_seq
-            result = edlib.align(query=q, target=t, mode="HW", task="distance")
-            edit_distance = result["editDistance"]
-
-            # Calculate similarity
-            similarity = 1.0 - (edit_distance / len(q))
-
-            # If aligned above threshold, mark as invalid for this query
-            if similarity >= alignment_threshold:
-                valid_targets_mask[i, j] = False
-                total_filtered += 1
-
-    print(
-        f"Filtered {total_filtered} query-target pairs (avg {total_filtered / num_queries:.1f} per query)"
+    matches = (
+        joined.filter(overlap_bp >= min_overlap)
+        .select(
+            "read",
+            "chromosome",
+            "strand",
+            "reference_start",
+            "reference_end",
+            "length",
+            "free_length",
+            "identity",
+        )
+        .unique()
     )
 
-    return valid_targets_mask
+    distractor_df = distractor_df.join(matches, on=distractor_df.columns, how="anti")
+    return distractor_df.sample(num_distractors)
 
 
-def combine_data(alignments, distractors, num_distractors):
-    queries = alignments["query_seq"].to_list()
-    query_ids = alignments["query_name"].to_list()
-    keys = alignments["reference_seq"].to_list()
-    similarities = alignments["similarity"].to_list()
-    distractor_keys = distractors["seq"].to_list()
-    all_keys = keys + distractor_keys[:num_distractors]
-    return queries, all_keys, torch.arange(len(queries)), similarities, query_ids
+def get_reference_seqs(reference_path, queries_df):
+    reference_path: Path = Path(reference_path).resolve()
+    reference = Fasta(reference_path)
+    ref_seqs = []
+    for row in queries_df.iter_rows(named=True):
+        ref_seqs.append(
+            str(
+                reference[row["chromosome"]][
+                    row["reference_start"] : row["reference_end"]
+                ]
+            ).upper()
+        )
+    return ref_seqs
 
 
-def get_results(predictions, ground_truth_map, topks, similarities, query_ids):
+def combine_data(
+    reference_path,
+    dataset_path,
+    max_seq_len,
+    num_distractors,
+    identity_bins,
+):
+    dataset_path: Path = Path(dataset_path).resolve()
+    df = pl.read_parquet(dataset_path).filter(
+        (pl.col("strand") == "+") & (pl.col("length") <= max_seq_len)
+    )
+    queries_df = pl.concat(
+        [
+            df.filter((pl.col("identity") > lo) & (pl.col("identity") <= hi))
+            .sample(n=100)
+            .with_columns(
+                pl.lit(f"({lo}, {hi}]").cast(pl.Categorical).alias("identity_bin")
+            )
+            for lo, hi in identity_bins
+        ]
+    )  # Remove exact rows of sampled from the original df
+    candidate_distractors = df.join(queries_df, on=df.columns, how="anti")
+
+    # Filter the rest of the rows by overlap of query df
+    distractors_df = remove_overlapping_distractors(
+        queries_df, candidate_distractors, num_distractors
+    )
+
+    queries = get_reference_seqs(reference_path, queries_df)
+    keys = queries_df["read"].to_list() + distractors_df["read"].to_list()
+    identities = queries_df["identity_bin"].to_list()
+    return queries, keys, torch.arange(len(queries)), identities
+
+
+def get_results(predictions, ground_truth_map, topks, identities):
     cols = {}
-    cols["query_id"] = query_ids
-    cols["similarity"] = similarities
+    cols["identity_bin"] = identities
     for k in topks:
         top_k_preds = predictions[..., :k]
         is_hit = (top_k_preds == ground_truth_map.unsqueeze(1)).any(dim=1)
@@ -88,27 +98,18 @@ def get_results(predictions, ground_truth_map, topks, similarities, query_ids):
 
 
 def main(cfg: ExperimentConfig):
-    assert cfg.alignments_path is not None
-    assert cfg.distractors_path is not None
+    assert cfg.reference_path is not None
+    assert cfg.dataset_path is not None
     assert cfg.results_dir is not None
 
-    alignments = pl.read_parquet(cfg.alignments_path)
-    distractors = pl.read_parquet(cfg.distractors_path)
-    queries, keys, ground_truth_map, similarities, query_ids = combine_data(
-        alignments, distractors, cfg.num_distractors
+    # identity_bins = ([(0.7, 0.75), (0.75, 0.8), (0.8, 0.85), (0.9, 0.95), (0.95, 1.0)],)
+    queries, keys, ground_truth_map, identities = combine_data(
+        cfg.reference_path,
+        cfg.dataset_path,
+        cfg.max_seq_len,
+        cfg.num_distractors,
+        cfg.identity_bins,
     )
-    valid_targets_mask = filter_aligned_sequences(
-        queries, keys[: len(queries)], cfg.similarity_threshold
-    )
-    valid_targets_mask = torch.cat(
-        [
-            valid_targets_mask,
-            torch.zeros(len(queries), len(keys) - len(queries), dtype=torch.bool),
-        ],
-        dim=1,
-    )
-    # Ground truth map stays the same - no need to update indices
-
     if isinstance(cfg.model, MMSeqs2Config):
         # mmseqs2 is a monolithic CLI tool — no separate encode/index steps
         searcher = MMSeqs2Searcher(cfg.model)
@@ -133,20 +134,12 @@ def main(cfg: ExperimentConfig):
         query_features = encoder.encode(queries)
 
         predictions = indexer.search(
-            query_features, topk=max(cfg.topks), valid_targets_mask=valid_targets_mask
+            query_features, topk=max(cfg.topks)
         )  # (num_queries, k)
 
-    results = get_results(
-        predictions, ground_truth_map, cfg.topks, similarities, query_ids
-    )
-    results = (
-        results.with_columns(
-            pl.col("similarity")
-            .cut([0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0])
-            .alias("similarity_bin")
-        )
-        .group_by("similarity_bin")
-        .agg(pl.col(f"hit_at_{k}").mean() for k in cfg.topks)
+    results = get_results(predictions, ground_truth_map, cfg.topks, identities)
+    results = results.group_by("identity_bin").agg(
+        pl.col(f"hit_at_{k}").mean() for k in cfg.topks
     )
     results = results.with_columns(
         pl.lit(cfg.model.name).alias("model"),

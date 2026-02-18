@@ -1,8 +1,8 @@
 import io
-import itertools
 import math
 import warnings
 from argparse import ArgumentParser
+from itertools import islice
 from pathlib import Path
 
 import polars as pl
@@ -15,6 +15,16 @@ from transformers.utils import logging as transformers_logging
 
 from rawbert import RawBERT
 from rawbert.utils.patch import patch_with_flash_lib
+
+
+def batched(iterable, n):
+    """Batch data into lists of length n. The last batch may be shorter."""
+    it = iter(iterable)
+    while True:
+        batch = list(islice(it, n))
+        if not batch:
+            return
+        yield batch
 
 
 def get_rawbert_model(args):
@@ -70,7 +80,7 @@ def get_embeds_of_acc(num_reads, batch_size, records, device):
         all_embeds = []
         total_batches = math.ceil(num_reads / batch_size)
         for batch in tqdm(
-            itertools.batched(records, batch_size), total=total_batches, leave=False
+            batched(records, batch_size), total=total_batches, leave=False
         ):
             batch = list(batch)
             batch_seqs = [str(record.seq) for record in batch]
