@@ -45,12 +45,13 @@ class MMSeqs2Config(AlgorithmConfig):
 @dataclass
 class ExperimentConfig:
     model: Union[DenseConfig, SourMashConfig, MMSeqs2Config]
-    reference_path: str | None = None
     dataset_path: str | None = None
     num_distractors: int = 10000
+    num_queries: int = 100
     results_dir: Path | str | None = None
 
     max_seq_len: int = 6000
+    k: int = 31
     topks: List[int] = field(default_factory=lambda: [1, 5])
     identity_bins: List[Tuple[float, float]] = field(
         default_factory=lambda: [

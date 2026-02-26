@@ -29,7 +29,11 @@ dependencies = [
     "wandb",
     "pyyaml",
     "zstandard",
-    "flash-attn"
+    "flash-attn",
+    "ipython>=9.10.0",
+    "ipdb>=0.13.13",
+    "pyfaidx>=0.9.0.3",
+    "vl-convert-python>=1.9.0.post1",
 ]
 
 [project.optional-dependencies]

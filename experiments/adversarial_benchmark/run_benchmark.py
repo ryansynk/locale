@@ -1,3 +1,4 @@
+import random
 from pathlib import Path
 
 import polars as pl
@@ -53,43 +54,41 @@ def get_reference_seqs(reference_path, queries_df):
     return ref_seqs
 
 
+def apply_periodic_substitution(contigs, k):
+    """
+    Applies a random substitution every k base pairs
+    """
+    alphabet = set("ACGT")
+    modified_contigs = []
+    identities = []
+    for contig in contigs:
+        result = list(contig)
+        num_subs = 0
+        for i in range(k - 1, len(contig), k):
+            choices = list(alphabet - {result[i]})
+            result[i] = random.choice(choices)
+            num_subs += 1
+        modified_contigs.append("".join(result))
+        identities.append(1 - num_subs / len(contig))
+
+    return modified_contigs, identities
+
+
 def combine_data(
-    reference_path,
-    dataset_path,
-    max_seq_len,
-    num_distractors,
-    identity_bins,
+    dataset_path: str, max_seq_len: int, num_distractors: int, num_queries: int, k: int
 ):
     dataset_path: Path = Path(dataset_path).resolve()
     df = pl.read_parquet(dataset_path).filter(
         (pl.col("strand") == "+") & (pl.col("length") <= max_seq_len)
     )
-    queries_df = pl.concat(
-        [
-            df.filter((pl.col("identity") > lo) & (pl.col("identity") <= hi))
-            .sample(n=100)
-            .with_columns(
-                pl.lit(f"({lo}, {hi}]").cast(pl.Categorical).alias("identity_bin")
-            )
-            for lo, hi in identity_bins
-        ]
-    )  # Remove exact rows of sampled from the original df
-    candidate_distractors = df.join(queries_df, on=df.columns, how="anti")
+    keys = df["read"].to_list()[:num_distractors]
+    queries, identities = apply_periodic_substitution(keys[:num_queries], k=k)
 
-    # Filter the rest of the rows by overlap of query df
-    distractors_df = remove_overlapping_distractors(
-        queries_df, candidate_distractors, num_distractors
-    )
-
-    queries = get_reference_seqs(reference_path, queries_df)
-    keys = queries_df["read"].to_list() + distractors_df["read"].to_list()
-    identities = queries_df["identity_bin"].to_list()
     return queries, keys, torch.arange(len(queries)), identities
 
 
 def get_results(predictions, ground_truth_map, topks, identities):
     cols = {}
-    cols["identity_bin"] = identities
     for k in topks:
         top_k_preds = predictions[..., :k]
         is_hit = (top_k_preds == ground_truth_map.unsqueeze(1)).any(dim=1)
@@ -98,18 +97,12 @@ def get_results(predictions, ground_truth_map, topks, identities):
 
 
 def main(cfg: ExperimentConfig):
-    assert cfg.reference_path is not None
     assert cfg.dataset_path is not None
     assert cfg.results_dir is not None
     cfg.results_dir = Path(cfg.results_dir)
 
-    # identity_bins = ([(0.7, 0.75), (0.75, 0.8), (0.8, 0.85), (0.9, 0.95), (0.95, 1.0)],)
     queries, keys, ground_truth_map, identities = combine_data(
-        cfg.reference_path,
-        cfg.dataset_path,
-        cfg.max_seq_len,
-        cfg.num_distractors,
-        cfg.identity_bins,
+        cfg.dataset_path, cfg.max_seq_len, cfg.num_distractors, cfg.num_queries, cfg.k
     )
     if isinstance(cfg.model, MMSeqs2Config):
         # mmseqs2 is a monolithic CLI tool — no separate encode/index steps
@@ -139,13 +132,15 @@ def main(cfg: ExperimentConfig):
         )  # (num_queries, k)
 
     results = get_results(predictions, ground_truth_map, cfg.topks, identities)
-    results = results.group_by("identity_bin").agg(
-        pl.col(f"hit_at_{k}").mean() for k in cfg.topks
-    )
     results = results.with_columns(
         pl.lit(cfg.model.name).alias("model"),
-        pl.lit(cfg.num_distractors, dtype=pl.Int64),
+        pl.lit(cfg.num_distractors, dtype=pl.Int64).alias("num_distractors"),
     )
+    results = results.select(
+        [pl.col(f"hit_at_{k}").mean() for k in cfg.topks]
+        + [pl.col("model").first(), pl.col("num_distractors").first()]
+    )
+    print(results)
     fname = cfg.results_dir / f"{cfg.model.name}.parquet"
     if fname.exists():
         existing_results = pl.read_parquet(fname)

@@ -4,11 +4,12 @@ model:
   batch_size: 128
   device: cuda
   pooling: max
-reference_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/GCF_009914755.1_T2T-CHM13v2.0_genomic.fna
 dataset_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/long_reads.test.parquet
 num_distractors: 10000
-results_dir: /fs/nexus-scratch/ryansynk/rawbert/experiments/comparison_benchmark/results
+num_queries: 100
+results_dir: /fs/nexus-scratch/ryansynk/rawbert/experiments/adversarial_benchmark/results
 max_seq_len: 6000
+k: 31
 topks:
 - 1
 - 5
