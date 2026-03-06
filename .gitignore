@@ -215,3 +215,4 @@ checkpoints
 *.png
 logs
 *.old
+experiments/sra_recall/indexes
