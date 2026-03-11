@@ -42,6 +42,16 @@ class MetagraphIndex(BaseIndex):
     def build(self, accessions: list[Path]):
         raise NotImplementedError
 
+    def merge(self, listy):
+        b = []
+        for begin in sorted(listy):
+            end = begin + self.k
+            if b and b[-1][1] >= begin - 1:
+                b[-1][1] = max(b[-1][1], end)
+            else:
+                b.append([begin, end])
+        return b
+
     def search(self, queries: pl.DataFrame) -> pl.DataFrame:
         queries = queries.with_row_index()
         queries = queries.with_columns(
@@ -51,73 +61,59 @@ class MetagraphIndex(BaseIndex):
             queries["query_sequence"].to_list(), query_coords=True
         )
         df = pl.from_pandas(results)
-        breakpoint()
-        result_df = (
-            df.with_row_index("row_id")
-            .explode("kmer_coords")
-            .with_columns(pl.col("kmer_coords").str.split("-").alias("parts"))
-            .with_columns(
-                # Extract query start (index 0)
-                pl.col("parts").list.get(0).cast(pl.Int64).alias("q_start"),
-                # Extract graph start and end to compute the number of k-mers in this block
-                pl.col("parts").list.get(1).cast(pl.Int64).alias("g_start"),
-                pl.col("parts")
-                .list.get(2, null_on_oob=True)
-                .cast(pl.Int64)
-                .alias("g_end"),
-            )
-            .with_columns(pl.col("g_end").fill_null(pl.col("g_start")))
-            .with_columns(
-                # Calculate how many consecutive k-mers are matched in this specific block
-                (pl.col("g_start") - pl.col("g_end")).abs().add(1).alias("num_kmers")
-            )
-            .with_columns(
-                # A block starting at q_start with N k-mers covers bases: q_start to (q_start + N + k - 2)
-                # int_ranges is exclusive of the end point, so we use + k - 1
-                pl.int_ranges(
-                    pl.col("q_start"),
-                    pl.col("q_start") + pl.col("num_kmers") + self.k - 1,
-                ).alias("q_bases")
-            )
-            .explode("q_bases")
-            .group_by("row_id", maintain_order=True)
-            .agg(
-                # Count the unique query base coordinates covered by all matched k-mers
-                pl.when(pl.col("q_bases").drop_nulls().len() == 0)
-                .then(0)
-                .otherwise(pl.col("q_bases").drop_nulls().n_unique())
-                .alias("read_exact_matching_bp")
-            )
-            .join(df.with_row_index("row_id"), on="row_id", how="right")
-            .drop("row_id")
-        )
-        result_df = (
-            result_df.with_columns(pl.col("seq_description").cast(pl.Int64))
-            .join(
-                queries.select(["index", "accession", "read_id", "query_length"]),
-                left_on="seq_description",
-                right_on="index",
-            )
-            .with_columns(
-                (pl.col("read_exact_matching_bp") / pl.col("query_length")).alias(
-                    "identity"
+        # Merge query k-mer intervals and sum lengths to get base pair exact matches
+        splits = pl.element().str.split("-")
+        query_kmer_idx = splits.list.get(0).cast(pl.Int64)
+        df = (
+            df.with_columns(
+                pl.col("kmer_coords")
+                .list.eval(query_kmer_idx)
+                .list.eval(
+                    pl.element().diff().fill_null(self.k).clip(upper_bound=self.k)
                 )
+                .list.sum()
+                .alias("exact_matches"),
+                pl.col("sample")
+                .str.split("/")
+                .list.get(-2)
+                .alias("retrieved_accession"),
+            )
+            .cast({"seq_description": pl.Int64})
+            .select(["retrieved_accession", "exact_matches", "seq_description"])
+        )
+        results_w_identity = (
+            df.join(queries, left_on="seq_description", right_on="index", how="full")
+            .select(
+                [
+                    "read_id",
+                    "accession",
+                    "retrieved_accession",
+                    "exact_matches",
+                    "query_length",
+                ]
+            )
+            .with_columns(
+                (pl.col("exact_matches") / pl.col("query_length")).alias("identity")
+            )
+            .rename({"read_id": "query_read", "accession": "query_accession"})
+            .select(
+                ["query_read", "query_accession", "retrieved_accession", "identity"]
+            )
+            .with_columns(
+                pl.col("identity").fill_null(0.0),
+                pl.col("retrieved_accession").fill_null(""),
             )
         )
 
-        result_df = result_df.select(["read_id", "accession", "sample", "identity"])
-
-        # Post-process 'sample' string to extract accession
-        result_df = result_df.with_columns(
-            pl.col("sample").str.split("/").list.get(-2).alias("retrieved_accession")
+        results_w_identity = (
+            results_w_identity.with_columns(
+                pl.struct("retrieved_accession", "identity").alias("retrievals")
+            )
+            .group_by("query_read")
+            .agg(pl.col("query_accession").first(), pl.col("retrievals"))
         )
-        result_df = result_df.rename(
-            {"read_id": "query_read", "accession": "query_accession"}
-        )
-        self.query_server_proc.terminate()
-        return result_df.select(
-            ["query_read", "query_accession", "retrieved_accession", "identity"]
-        )
+        assert len(results_w_identity) == len(queries)
+        return results_w_identity
 
     def indexed_accessions(self) -> list[Path]:
         return []

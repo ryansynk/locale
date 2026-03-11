@@ -2,7 +2,7 @@ model:
   name: metagraph
   port: 13827
   graph_path: indexes/metagraph/graph.dbg
-  annotation_path: indexes/metagraph/annotation_relaxed.brwt_coord.annodbg
+  annotation_path: indexes/metagraph/transformed.row_diff_brwt_coord.annodbg
   k: 31
 accessions_dir: /pscratch/sd/r/rsynk/sra_accs/logan_contigs
 queries_path: /pscratch/sd/r/rsynk/rawbert_data/data/sra_recall/queries.parquet

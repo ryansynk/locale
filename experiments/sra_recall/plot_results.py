@@ -6,7 +6,7 @@ import polars as pl
 from jsonargparse import auto_cli
 
 
-def main(results_dir: str, plots_dir: str = "plots", num_identity_bins: int = 11):
+def main(results_dir: str, plots_dir: str = "plots", num_identity_bins: int = 101):
     results_dir: Path = Path(results_dir)
     plots_dir: Path = Path(plots_dir)
     if not plots_dir.is_dir():
@@ -16,8 +16,9 @@ def main(results_dir: str, plots_dir: str = "plots", num_identity_bins: int = 11
         {
             "query_read": pl.String,
             "query_accession": pl.String,
-            "retrieved_accession": pl.String,
-            "identity": pl.Float64,
+            "retrievals": pl.List(
+                pl.Struct({"retrieved_accession": pl.String, "identity": pl.Float64})
+            ),
             "model": pl.String,
             "mutation_rate": pl.Float64,
         }
@@ -26,11 +27,6 @@ def main(results_dir: str, plots_dir: str = "plots", num_identity_bins: int = 11
         df = pl.read_parquet(f, schema=schema)
         data.append(df)
     data = pl.concat(data)
-    data = data.with_columns(
-        (pl.col("query_accession") == pl.col("retrieved_accession"))
-        .cast(pl.Int64)
-        .alias("correct")
-    )
 
     identity_cutoffs = np.linspace(0.0, 1.0, num=num_identity_bins)
 
@@ -39,19 +35,33 @@ def main(results_dir: str, plots_dir: str = "plots", num_identity_bins: int = 11
         model = name[0]
         mutation_rate = name[1]
         recalls = []
+        num_queries = len(df["query_read"].unique())
         for c in identity_cutoffs:
-            recall = (
-                df.filter(pl.col("identity") > c)
+            num_correct = (
+                df.explode("retrievals")
+                .unnest("retrievals")
+                .filter(pl.col("identity") >= c)
+                .with_columns(
+                    (pl.col("query_accession") == pl.col("retrieved_accession")).alias(
+                        "correct"
+                    )
+                )
                 .group_by("query_read")
-                .agg(pl.col("correct").any().cast(pl.Int64))["correct"]
-                .mean()
+                .agg(pl.col("correct").any())
+                .select(pl.col("correct").sum())
+                .item()
             )
+            recall = num_correct / num_queries
             recalls.append(recall)
-        df = pl.DataFrame({"identity_cutoff": identity_cutoffs, "recall": recalls})
-        df = df.with_columns(
-            pl.lit(model).alias("model"), pl.lit(mutation_rate).alias("mutation_rate")
+        recall_df = pl.DataFrame(
+            {
+                "identity_cutoff": identity_cutoffs,
+                "recall": recalls,
+                "model": model,
+                "mutation_rate": mutation_rate,
+            }
         )
-        dfs.append(df)
+        dfs.append(recall_df)
 
     recall_df = pl.concat(dfs).fill_null(0.0)
     chart = (
