@@ -18,8 +18,8 @@ from transformers.utils import logging as transformers_logging
 
 from rawbert.config import TrainConfig
 from rawbert.modeling.model import RawBERT
-from rawbert.training.batcher import Batcher
 from rawbert.training.supervised_batcher import SupervisedBatcher
+from rawbert.training.unsupervised_batcher import UnsupervisedBatcher
 from wandb import Run
 
 
@@ -118,8 +118,17 @@ def train(
 
     if cfg.unsupervised:
         par_print("Unsupervised Training Mode")
-        reader = Batcher(cfg.dataset_path, cfg.augment_config)
-        sampler = None
+        reader = UnsupervisedBatcher(cfg.dataset_path, cfg.augment_config)
+        val_reader = UnsupervisedBatcher(
+            cfg.val_dataset_path, cfg.augment_config, num_examples=cfg.num_val_keys
+        )
+        sampler = (
+            DistributedSampler(
+                reader, num_replicas=world_size, rank=global_rank, shuffle=True
+            )
+            if is_distributed
+            else None
+        )
     else:
         par_print("Supervised Training Mode")
         reader = SupervisedBatcher(cfg.dataset_path, cfg.augment_config)
@@ -238,6 +247,7 @@ def train(
 
                 if global_step % cfg.checkpoint_interval == 0 and global_step > 0:
                     if global_rank == 0:
+                        assert run
                         val_acc1, val_acc5 = get_val_accuracy(
                             val_dataloader,
                             cfg.num_val_queries,
@@ -246,9 +256,6 @@ def train(
                             local_rank,
                             tokenizer,
                             cfg.augment_config,
-                        )
-                        raw_model = (
-                            ddp_rawbert.module if is_distributed else ddp_rawbert
                         )
 
                         run.log(
@@ -261,7 +268,7 @@ def train(
                         save_checkpoint(
                             {
                                 "step": global_step,
-                                "model": raw_model.state_dict(),
+                                "model": ddp_rawbert.state_dict(),
                                 "optimizer": optimizer.state_dict(),
                                 "model_args": {
                                     "pooling": cfg.pooling,

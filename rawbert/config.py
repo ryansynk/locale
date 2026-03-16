@@ -9,13 +9,19 @@ import yaml
 class AugmentConfig:
     # Crop settings
     max_len: int = 1024
+    max_seq_len: int = 1024
     min_seq_len: int = 150
-    containment_prob: float = 0.66
-    overlap_prob: float = 0.34
+    min_overlap_percent: float = 0.2
+    containment_prob: float = 0.4
+    overlap_prob: float = 0.6
     min_alignment_len: int = 149
     max_alignment_ratio: float = 1.0
     min_coverage: float = 0.1
     alignment_threshold: float = 0.6
+
+    identity_mean: float = 95
+    identity_max: float = 99
+    identity_stdev: float = 2.5
 
     # Mutation rates
     insertion_rate: float = 0.005
@@ -45,6 +51,13 @@ class AugmentConfig:
         for _, probs in self.substitution_matrix.items():
             if not np.isclose(sum(probs), 1.0):
                 raise ValueError("Probabilities must sum to 1.0")
+
+        if self.min_seq_len >= self.max_seq_len:
+            raise ValueError("min_seq_len must be strictly less than max_seq_len")
+
+        # Validate overlap percent
+        if not (0.0 < self.min_overlap_percent < 1.0):
+            raise ValueError("min_overlap_percent must be between 0.0 and 1.0")
 
     @classmethod
     def from_yaml(cls, path):
