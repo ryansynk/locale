@@ -349,12 +349,6 @@ def get_val_accuracy(
         all_k = torch.cat(all_k, dim=0)
         logits = torch.matmul(all_q, all_k.T)
 
-        # Filter out aligned sequences from consideration
-        alignment_threshold = augment_config.min_coverage
-        logits = _filter_aligned_sequences(
-            logits, all_query_seqs, all_key_seqs, alignment_threshold
-        )
-
         labels = torch.arange(all_q.shape[0]).to(local_rank)
 
     acc1 = accuracy(logits, labels, topk=(1,))

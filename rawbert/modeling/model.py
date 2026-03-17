@@ -246,7 +246,8 @@ class RawBERT(nn.Module):
                 k = nn.functional.normalize(k, dim=1)
 
             # Positive logits: B x 1
-            l_pos = einops.einsum(q, k, "B D, B D -> B").unsqueeze(-1)
+            # l_pos = einops.einsum(q, k, "B D, B D -> B").unsqueeze(-1)
+            l_pos = (q * k).sum(dim=-1, keepdim=True)
 
             # Negative logits: B x K
             l_neg = einops.einsum(q, self.queue.clone().detach(), "B D, D K -> B K")
