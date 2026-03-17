@@ -15,9 +15,6 @@ class UnsupervisedBatcher(Dataset):
         self.cfg = augment_config
         self.augmenter = Augmenter(augment_config)
         self.df = pl.read_parquet(dataset_path)
-        self.df = self.df.with_columns(
-            pl.col("sequence").str.len_chars().alias("sequence_len")
-        )
         self.df = self.df.filter(pl.col("sequence_len") >= self.cfg.min_seq_len)
         if num_examples is not None:
             self.df = self.df.head(num_examples)
