@@ -248,11 +248,19 @@ def train(
                 if global_step % cfg.checkpoint_interval == 0 and global_step > 0:
                     if global_rank == 0:
                         assert run
+                        if is_distributed:
+                            module = ddp_rawbert.module
+                        else:
+                            module = ddp_rawbert
+
+                        assert isinstance(module, torch.nn.Module)
+                        model_state_dict = module.state_dict()
+
                         val_acc1, val_acc5 = get_val_accuracy(
                             val_dataloader,
                             cfg.num_val_queries,
                             cfg.num_val_keys,
-                            ddp_rawbert.module if is_distributed else ddp_rawbert,
+                            module,
                             local_rank,
                             tokenizer,
                             cfg.augment_config,
@@ -268,7 +276,7 @@ def train(
                         save_checkpoint(
                             {
                                 "step": global_step,
-                                "model": ddp_rawbert.state_dict(),
+                                "model": model_state_dict,
                                 "optimizer": optimizer.state_dict(),
                                 "model_args": {
                                     "pooling": cfg.pooling,
@@ -294,6 +302,51 @@ def train(
             # Check for step-based termination (Outer Loop)
             if getattr(cfg, "total_steps", None) and global_step >= total_steps:
                 break
+
+    if global_rank == 0:
+        assert run
+        if is_distributed:
+            module = ddp_rawbert.module
+        else:
+            module = ddp_rawbert
+
+        assert isinstance(module, torch.nn.Module)
+        model_state_dict = module.state_dict()
+
+        val_acc1, val_acc5 = get_val_accuracy(
+            val_dataloader,
+            cfg.num_val_queries,
+            cfg.num_val_keys,
+            module,
+            local_rank,
+            tokenizer,
+            cfg.augment_config,
+        )
+
+        run.log(
+            {
+                "val/acc1": val_acc1[0],
+                "val/acc5": val_acc5[0],
+                "val/step": global_step,
+            }
+        )
+        save_checkpoint(
+            {
+                "step": global_step,
+                "model": model_state_dict,
+                "optimizer": optimizer.state_dict(),
+                "model_args": {
+                    "pooling": cfg.pooling,
+                    "dim": cfg.dim,
+                    "K": cfg.moco_queue_size,
+                    "m": cfg.moco_momentum,
+                    "T": cfg.moco_softmax_temp,
+                },
+            },
+            checkpoint_dir,
+            cfg,
+            run.id,
+        )
 
 
 def accuracy(output, target, topk=(1,)):

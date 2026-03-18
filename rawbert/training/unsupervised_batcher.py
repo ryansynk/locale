@@ -16,6 +16,7 @@ class UnsupervisedBatcher(Dataset):
         self.augmenter = Augmenter(augment_config)
         self.df = pl.read_parquet(dataset_path)
         self.df = self.df.filter(pl.col("sequence_len") >= self.cfg.min_seq_len)
+        self.disable_mutations = self.cfg.disable_mutations
         if num_examples is not None:
             self.df = self.df.head(num_examples)
 
@@ -232,22 +233,27 @@ class Augmenter:
                     seq, crop_len_1, crop_len_2
                 )
 
-        seq1_overlap_start, seq1_overlap_end = seq1_overlap_range
-        seq2_overlap_start, seq2_overlap_end = seq2_overlap_range
+        if self.cfg.disable_mutations is False:
+            seq1_overlap_start, seq1_overlap_end = seq1_overlap_range
+            seq2_overlap_start, seq2_overlap_end = seq2_overlap_range
 
-        identity = self._sample_identity()
-        augmented_overlap = self._augment(
-            seq1[seq1_overlap_start:seq1_overlap_end], identity
-        )
+            identity = self._sample_identity()
+            augmented_overlap = self._augment(
+                seq1[seq1_overlap_start:seq1_overlap_end], identity
+            )
 
-        if torch.rand(size=(1,)).item() < 0.5:
-            seq1 = (
-                seq1[:seq1_overlap_start] + augmented_overlap + seq1[seq1_overlap_end:]
-            )
-        else:
-            seq2 = (
-                seq2[:seq2_overlap_start] + augmented_overlap + seq2[seq2_overlap_end:]
-            )
+            if torch.rand(size=(1,)).item() < 0.5:
+                seq1 = (
+                    seq1[:seq1_overlap_start]
+                    + augmented_overlap
+                    + seq1[seq1_overlap_end:]
+                )
+            else:
+                seq2 = (
+                    seq2[:seq2_overlap_start]
+                    + augmented_overlap
+                    + seq2[seq2_overlap_end:]
+                )
 
         if torch.rand(size=(1,)).item() < 0.5:
             query = seq1

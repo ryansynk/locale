@@ -24,6 +24,7 @@ class AugmentConfig:
     identity_stdev: float = 2.5
 
     # Mutation rates
+    disable_mutations: bool = False
     insertion_rate: float = 0.005
     deletion_rate: float = 0.005
     substitution_rate: float = 0.02
