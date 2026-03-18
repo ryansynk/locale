@@ -26,6 +26,9 @@ class DenseConfig(AlgorithmConfig):
     device: str = "cuda"
     pooling: str = "max"
     k: int = 100
+    max_seq_len: int = 1024
+    min_seq_len: int = 150
+    min_overlap_percent: float = 0.6
 
     def __str__(self):
         return f"{self.name}"
@@ -34,9 +37,7 @@ class DenseConfig(AlgorithmConfig):
 @dataclass
 class MetagraphConfig(AlgorithmConfig):
     name: str = "metagraph"
-    port: int = -1
-    graph_path: Path | None = None
-    annotation_path: Path | None = None
+    executable: str = "metagraph"
     k: int = 31
 
     def __str__(self):

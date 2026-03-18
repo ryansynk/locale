@@ -1,122 +1,154 @@
+import os
+import shlex
+import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 import polars as pl
-from .config import ExperimentConfig, MetagraphConfig
 from metagraph.client import GraphClient
 
 from .base_index import BaseIndex
+from .config import ExperimentConfig, MetagraphConfig
 
 
 class MetagraphIndex(BaseIndex):
     def __init__(self, cfg: ExperimentConfig):
         assert isinstance(cfg.model, MetagraphConfig)
-        assert cfg.model.graph_path is not None
-        assert cfg.model.annotation_path is not None
-        self.port: int = cfg.model.port
-        self.graph_path: Path = cfg.model.graph_path
-        self.annotation_path: Path = cfg.model.annotation_path
-        self.k: int = cfg.model.k
+        self.port: int = get_free_port()
+        self.graph_path: Path | None = None
+        self.annotation_path: Path | None = None
+        self.model_cfg: MetagraphConfig = cfg.model
+        self.executable: str = self.model_cfg.executable
+        self.k = self.model_cfg.k
+        print(f"Running metagraph with executable = {self.executable}")
 
     def load(self, index_path: Path):
-        self.query_server_proc = subprocess.Popen(
-            [
-                "shifter",
-                "metagraph",
-                "server_query",
-                "-i",
-                str(self.graph_path),
-                "-a",
-                str(self.annotation_path),
-                "--port",
-                str(self.port),
-            ]
-        )
+        self.manifest_path = index_path / "contig_manifest.txt"
+        self.graph_path = index_path / "graph_primary.dbg"
+        self.annotation_path = index_path / "annotation.relaxed.row_diff_brwt.annodbg"
+
+        base_metagraph_cmd = shlex.split(self.executable)
+        full_cmd = base_metagraph_cmd + [
+            "server_query",
+            "-i",
+            str(self.graph_path),
+            "-a",
+            str(self.annotation_path),
+            "--port",
+            str(self.port),
+        ]
+
+        self.query_server_proc = subprocess.Popen(full_cmd)
         # Good ol reliable sleep
         # Kludge -- I need to wait for server to start but don't want to figure out how
         # to communicate with metagraph process to see if its ready
         time.sleep(5)
         self.graph_client = GraphClient("127.0.0.1", self.port, api_path="")
 
-    def build(self, accessions: list[Path]):
-        raise NotImplementedError
+    def build(self, accessions: list[Path], index_path: Path):
+        index_path: Path = index_path.resolve()
+        index_path.mkdir(exist_ok=True, parents=True)
+        bash_script_path = Path(__file__).parent / "build_metagraph.sh"
+        num_threads = os.cpu_count()
+        if not Path(bash_script_path).is_file():
+            print(
+                f"Error: Bash script not found at {bash_script_path}", file=sys.stderr
+            )
+            sys.exit(1)
 
-    def merge(self, listy):
-        b = []
-        for begin in sorted(listy):
-            end = begin + self.k
-            if b and b[-1][1] >= begin - 1:
-                b[-1][1] = max(b[-1][1], end)
+        manifest_path = index_path / "contig_manifest.txt"
+        with open(manifest_path, "w") as f:
+            for path in accessions:
+                f.write(f"{str(path)}\n")
+
+        command = [
+            "bash",
+            str(bash_script_path),
+            str(self.model_cfg.executable),
+            str(self.k),
+            str(num_threads),
+            str(manifest_path),
+            str(index_path),
+        ]
+
+        print(f"Executing command: {' '.join(command)}")
+
+        try:
+            process = subprocess.Popen(
+                command, stdout=sys.stdout, stderr=sys.stderr, text=True
+            )
+            process.wait()
+
+            if process.returncode == 0:
+                print("\nPipeline completed successfully.")
             else:
-                b.append([begin, end])
-        return b
+                print(
+                    f"\nPipeline failed with exit code {process.returncode}.",
+                    file=sys.stderr,
+                )
+                sys.exit(process.returncode)
+
+        except Exception as e:
+            print(f"An error occurred while executing the script: {e}", file=sys.stderr)
+            sys.exit(1)
+
+        self.manifest_path = manifest_path
+        self.graph_path = index_path / "graph_primary.dbg"
+        self.annotation_path = index_path / "annotation.relaxed.row_diff_brwt.annodbg"
+        self.load(index_path)
 
     def search(self, queries: pl.DataFrame) -> pl.DataFrame:
         queries = queries.with_row_index()
         queries = queries.with_columns(
             pl.col("query_sequence").str.len_chars().alias("query_length")
         )
-        results = self.graph_client.search(
-            queries["query_sequence"].to_list(), query_coords=True
-        )
+        results = self.graph_client.search(queries["query_sequence"].to_list())
         df = pl.from_pandas(results)
-        # Merge query k-mer intervals and sum lengths to get base pair exact matches
-        splits = pl.element().str.split("-")
-        query_kmer_idx = splits.list.get(0).cast(pl.Int64)
-        df = (
-            df.with_columns(
-                pl.col("kmer_coords")
-                .list.eval(query_kmer_idx)
-                .list.eval(
-                    pl.element().diff().fill_null(self.k).clip(upper_bound=self.k)
-                )
-                .list.sum()
-                .alias("exact_matches"),
-                pl.col("sample")
-                .str.split("/")
-                .list.get(-2)
-                .alias("retrieved_accession"),
-            )
-            .cast({"seq_description": pl.Int64})
-            .select(["retrieved_accession", "exact_matches", "seq_description"])
-        )
-        results_w_identity = (
-            df.join(queries, left_on="seq_description", right_on="index", how="full")
-            .select(
-                [
-                    "read_id",
-                    "accession",
-                    "retrieved_accession",
-                    "exact_matches",
-                    "query_length",
-                ]
-            )
-            .with_columns(
-                (pl.col("exact_matches") / pl.col("query_length")).alias("identity")
-            )
-            .rename({"read_id": "query_read", "accession": "query_accession"})
-            .select(
-                ["query_read", "query_accession", "retrieved_accession", "identity"]
-            )
-            .with_columns(
-                pl.col("identity").fill_null(0.0),
-                pl.col("retrieved_accession").fill_null(""),
-            )
-        )
+        df = df.with_columns(
+            pl.col("sample").str.split("/").list.get(-2).alias("accession")
+        ).drop("sample")
 
-        results_w_identity = (
-            results_w_identity.with_columns(
-                pl.struct("retrieved_accession", "identity").alias("retrievals")
+        df = (
+            df.rename({"kmer_count": "score"})
+            .with_columns(pl.col("score").cast(pl.Float64))
+            .select(
+                pl.col("seq_description"),
+                pl.struct("accession", "score").alias("result"),
             )
-            .group_by("query_read")
-            .agg(pl.col("query_accession").first(), pl.col("retrievals"))
+            .group_by("seq_description")
+            .agg(pl.col("result").alias("results"))
         )
-        assert len(results_w_identity) == len(queries)
-        return results_w_identity
+        df = df.with_columns(pl.col("seq_description").cast(pl.Int32))
+        df = queries.join(
+            df, left_on="index", right_on="seq_description", how="left"
+        ).select("read_id", "accession", "results")
+        df = df.with_columns(
+            pl.col("results").fill_null(pl.lit([], dtype=df.schema["results"]))
+        )
+        df = df.rename({"read_id": "query_read", "accession": "query_accession"})
+
+        assert len(df) == len(queries)
+        return df
 
     def indexed_accessions(self) -> list[Path]:
-        return []
+        with open(self.manifest_path) as f:
+            contig_paths = [Path(line.strip()) for line in f if line.strip()]
+        return contig_paths
 
     def save(self, output_path: Path):
         pass
+
+
+def get_free_port():
+    # Create a new socket using IPv4 and TCP
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        # Bind to all interfaces ('') on port 0.
+        # The OS will automatically find an available port.
+        s.bind(("", 0))
+
+        # Retrieve the assigned port number
+        port = s.getsockname()[1]
+
+    return port

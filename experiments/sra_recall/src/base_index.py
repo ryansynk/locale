@@ -10,7 +10,7 @@ class BaseIndex(ABC):
         pass
 
     @abstractmethod
-    def build(self, accessions: list[Path]):
+    def build(self, accessions: list[Path], index_path: Path):
         pass
 
     @abstractmethod

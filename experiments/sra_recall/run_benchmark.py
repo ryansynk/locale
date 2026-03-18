@@ -32,12 +32,9 @@ def main(cfg: ExperimentConfig):
         # indexed_accs = index.indexed_accessions()
         # assert Counter(indexed_accs) == Counter(accession_paths)
     else:
-        index.build(accession_paths)
+        index.build(accession_paths, index_path)
         index.save(index_path)
 
-    # queries: list[str] = sorted(
-    #    [str(rec.seq) for rec in SeqIO.parse(cfg.queries_path, "fasta")]
-    # )
     queries: pl.DataFrame = pl.read_parquet(cfg.queries_path)
     # queries = apply_mutations(queries, cfg.mutation_rate)
 
