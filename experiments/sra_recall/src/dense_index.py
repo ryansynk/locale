@@ -1,9 +1,11 @@
-# import base64
-# import io
+import copy
 import math
-
-# import os
-# from concurrent.futures import ThreadPoolExecutor
+import multiprocessing as mp
+import os
+import sys
+import traceback
+from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor, as_completed, process
 from itertools import islice
 from pathlib import Path
 
@@ -33,6 +35,46 @@ def batched(iterable, n):
         yield batch
 
 
+# Global variable to hold the model instance per worker process
+_worker_encoder = None
+
+
+def _init_worker(cfg, gpu_queue):
+    """Initializes the model once per worker process on a specific GPU."""
+    global _worker_encoder
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    device_id = gpu_queue.get()
+
+    local_cfg = copy.deepcopy(cfg)
+    local_cfg.model.device = f"cuda:{device_id}"
+
+    # Initialize and keep in memory
+    _worker_encoder = DenseEncoder(local_cfg.model)
+
+
+def _process_sequence_batch(batch):
+    """Encodes a batch of (srr_id, sequence) tuples."""
+    global _worker_encoder
+    assert isinstance(_worker_encoder, DenseEncoder)
+    try:
+        # Unzip the batch into IDs and sequences
+        srr_ids = [item[0] for item in batch]
+        sequences = [item[1] for item in batch]
+
+        # Encode the batch (encoder.encode handles its own internal batching if needed,
+        # but ideally this function's batch size matches your optimal GPU batch size)
+        embeddings = _worker_encoder.encode(sequences).cpu()
+
+        # Return the mapping to be re-assembled by the main process
+        return srr_ids, embeddings
+    except Exception as e:
+        # Print the full traceback directly to the console from the worker
+        print(f"\n--- WORKER ERROR ---\n", file=sys.stderr)
+        traceback.print_exc()
+        print(f"--------------------\n", file=sys.stderr)
+        raise e  # Re-raise so the main thread knows it failed
+
+
 class DenseIndex(BaseIndex):
     def __init__(self, cfg: ExperimentConfig):
         assert isinstance(cfg.model, DenseConfig)
@@ -47,7 +89,7 @@ class DenseIndex(BaseIndex):
         index_file = index_path / "index.pt"
         self.accessions_tensor_map = torch.load(index_file)
 
-    def build(self, accessions: list[Path], index_path: Path):
+    def build_serial(self, accessions: list[Path], index_path: Path):
         for accession in tqdm(accessions, desc="Indexing accessions..."):
             sequences = [str(record.seq) for record in SeqIO.parse(accession, "fasta")]
             chunked_sequences = []
@@ -72,9 +114,100 @@ class DenseIndex(BaseIndex):
             self.accessions_tensor_map[srr_id] = embeddings.cpu()
             self.indexed.append(accession)
 
+    def build(self, accessions: list[Path], index_path: Path):
+        os.environ["TOKENIZERS_PARALLELISM"] = "false"
+        num_gpus = torch.cuda.device_count()
+        if num_gpus == 0:
+            raise RuntimeError("No GPUs available for building the index.")
+
+        print(f"Parallelizing sequence-level build across {num_gpus} GPUs...")
+
+        # 1. Setup the GPU assignment queue for workers
+        ctx = mp.get_context("spawn")
+        m = ctx.Manager()
+        gpu_queue = m.Queue()
+        for i in range(num_gpus):
+            gpu_queue.put(i)
+
+        # 2. Define a generator to flatten all files into (srr_id, sequence) tuples
+        def sequence_generator():
+            for accession in accessions:
+                self.indexed.append(accession)
+                srr_id = accession.parent.stem
+
+                # Yield parsed and chunked sequences
+                for record in SeqIO.parse(accession, "fasta"):
+                    seq = str(record.seq)
+                    if len(seq) < self.model_cfg.min_seq_len:
+                        continue
+                    if len(seq) <= self.model_cfg.max_seq_len:
+                        yield (srr_id, seq)
+                    else:
+                        overlap = math.ceil(
+                            self.model_cfg.max_seq_len
+                            * self.model_cfg.min_overlap_percent
+                            / 2
+                        )
+                        chunks = chunk_sequence(
+                            seq, self.model_cfg.max_seq_len, overlap
+                        )
+                        for chunk in chunks:
+                            yield (srr_id, chunk)
+
+        # 3. Create a dictionary to hold lists of tensors per accession
+        temp_tensor_map = defaultdict(list)
+
+        # We will send work to the GPUs in chunks of N sequences.
+        # Make this a multiple of your model's batch_size for optimal throughput.
+        submission_batch_size = self.model_cfg.batch_size * 4
+
+        with ProcessPoolExecutor(
+            max_workers=num_gpus,
+            mp_context=ctx,
+            initializer=_init_worker,
+            initargs=(self.cfg, gpu_queue),
+        ) as executor:
+            # Submit batches to the workers
+            futures = []
+            for batch in batched(sequence_generator(), submission_batch_size):
+                futures.append(executor.submit(_process_sequence_batch, batch))
+
+            # 4. Collect results as they complete
+            for future in tqdm(
+                as_completed(futures),
+                total=len(futures),
+                desc="Processing Batches",
+            ):
+                try:
+                    srr_ids, embeddings = future.result()
+
+                    # Group the returned embeddings back by their original file
+                    for i, srr_id in enumerate(srr_ids):
+                        # Extract the single embedding vector and append
+                        temp_tensor_map[srr_id].append(embeddings[i].unsqueeze(0))
+                except process.BrokenProcessPool:
+                    # Catch the specific abrupt termination error
+                    print(
+                        "\n[!] A worker died abruptly (likely OOM or Segfault). Halting the pool to stop error spam."
+                    )
+                    # Cancel all remaining futures so they don't also print errors
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    break  # Exit the collection loop
+                except Exception as e:
+                    print(f"Worker failed: {e}")
+
+        # 5. Finalize by concatenating the lists of tensors into standard matrices
+        print("Finalizing tensor map...")
+        for srr_id, tensor_list in temp_tensor_map.items():
+            self.indexed.append(srr_id)
+            self.accessions_tensor_map[srr_id] = torch.cat(tensor_list, dim=0)
+
     @torch.no_grad()
     def search(self, queries: pl.DataFrame) -> pl.DataFrame:
-        query_features = self.model.encode(queries).to(self.model_cfg.device)
+        queries = queries.with_row_index()
+        query_features = self.model.encode(queries["query_sequence"].to_list()).to(
+            self.model_cfg.device
+        )
         all_scores = []
         accession_names = []
         for acc, acc_tensor in tqdm(
@@ -86,27 +219,42 @@ class DenseIndex(BaseIndex):
             per_accession_logits = torch.matmul(
                 query_features, acc_tensor.to(self.model_cfg.device).T
             )  # (num_queries, num_seqs_in_accession)
-            scores = per_accession_logits.max(dim=-1)
+            scores, _ = per_accession_logits.max(dim=-1)
             all_scores.append(scores)
 
-        scores = torch.cat(all_scores, dim=1)  # (num_queries, num_accessions)
+        scores = torch.stack(all_scores, dim=1)  # (num_queries, num_accessions)
         scores_cpu = scores.cpu().numpy()
-        scores_col = []
+        # scores_col = []
+        scores_df = []
         for i in range(scores_cpu.shape[0]):
-            query_scores = [
-                {"accession": accession_names[j], "score": float(scores_cpu[i, j])}
-                for j in range(len(accession_names))
-            ]
-            scores_col.append(query_scores)
+            for j in range(scores_cpu.shape[1]):
+                scores_df.append(
+                    {
+                        "query_idx": i,
+                        "accession": accession_names[j],
+                        "score": float(scores_cpu[i, j]),
+                    }
+                )
 
-        return pl.DataFrame(
-            {"query_sequence": queries["query_sequence"], "scores": scores_col}
+        scores_df = pl.from_dicts(scores_df)
+        scores_df = (
+            scores_df.with_columns(pl.struct("accession", "score").alias("result"))
+            .group_by("query_idx")
+            .agg(pl.col("result").alias("results"))
         )
+        df = queries.join(
+            scores_df, left_on="index", right_on="query_idx", how="left"
+        ).select("read_id", "accession", "results")
+
+        df = df.rename({"read_id": "query_read", "accession": "query_accession"})
+        assert len(df) == len(queries)
+        return df
 
     def indexed_accessions(self) -> list[Path]:
         return self.indexed
 
     def save(self, output_path: Path):
+        output_path.mkdir(exist_ok=True)
         output_file = output_path / "index.pt"
         cpu_map = {}
         for srr_id, embeddings in self.accessions_tensor_map.items():
@@ -185,13 +333,7 @@ class DenseEncoder:
     @torch.no_grad()
     def encode(self, sequences):
         embeds_list = []
-        num_batches = int(math.ceil(len(sequences) / self.batch_size))
-        for batch in tqdm(
-            batched(sequences, self.batch_size),
-            total=num_batches,
-            desc="Encoding...",
-            leave=False,
-        ):
+        for batch in batched(sequences, self.batch_size):
             tokens = self.tokenizer(batch, return_tensors="pt", padding=True).to(
                 self.device
             )
