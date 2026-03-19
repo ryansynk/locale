@@ -52,3 +52,7 @@ class ExperimentConfig:
     index_dir: Path
     results_dir: Path
     mutation_rate: float = 0.0
+    filter_query_lens: bool = True
+
+    def __post_init__(self):
+        self.results_dir.mkdir(exist_ok=True, parents=True)

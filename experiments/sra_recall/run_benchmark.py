@@ -9,11 +9,15 @@ from src.config import (
 )
 from src.dense_index import DenseIndex
 from src.metagraph_index import MetagraphIndex
-from collections import Counter
+from rawbert.training.unsupervised_batcher import Augmenter
 
 
-# def apply_mutations(queries: list[str], mutation_rate: float) -> list[str]:
-#    return ["a"]
+def apply_mutations(queries: pl.DataFrame, mutation_rate: float) -> pl.DataFrame:
+    return queries.with_columns(
+        pl.col("query_sequence").map_elements(
+            lambda query_seq: Augmenter.augment(query_seq, identity=1 - mutation_rate)
+        )
+    )
 
 
 def main(cfg: ExperimentConfig):
@@ -36,7 +40,16 @@ def main(cfg: ExperimentConfig):
         index.save(index_path)
 
     queries: pl.DataFrame = pl.read_parquet(cfg.queries_path)
-    # queries = apply_mutations(queries, cfg.mutation_rate)
+    if cfg.filter_query_lens:
+        queries = (
+            queries.with_columns(
+                pl.col("query_sequence").str.len_chars().alias("sequence_len")
+            )
+            .filter((pl.col("sequence_len") <= 1024) & (pl.col("sequence_len") >= 150))
+            .drop("sequence_len")
+        )
+    if cfg.mutation_rate > 0.0:
+        queries = apply_mutations(queries, cfg.mutation_rate)
 
     results: pl.DataFrame = index.search(queries)  # dataframe
     results = results.with_columns(pl.lit(str(cfg.model)).alias("model"))

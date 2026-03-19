@@ -49,9 +49,13 @@ def main(
     # 3. Calculate Precision@K and Recall@K per query
     # Note: Since true_accession is a single string per query, total_relevant = 1
     df_hits = df_exploded.with_columns(
-        k=pl.int_range(1, pl.len() + 1).over("query_read"),
+        k=pl.int_range(1, pl.len() + 1).over(["query_read", "mutation_rate", "model"]),
         is_relevant=(pl.col("accession") == pl.col("query_accession")).cast(pl.Float64),
-    ).with_columns(cum_hits=pl.col("is_relevant").cum_sum().over("query_read"))
+    ).with_columns(
+        cum_hits=pl.col("is_relevant")
+        .cum_sum()
+        .over(["query_read", "mutation_rate", "model"])
+    )
 
     max_k = df_hits.select(pl.col("k").max()).item()
     df_queries = df_hits.select("query_read", "model", "mutation_rate").unique()
@@ -59,12 +63,16 @@ def main(
     df_grid = df_queries.join(df_k_grid, how="cross")
     df_metrics = (
         df_grid.join(
-            df_hits.select("query_read", "k", "cum_hits"),
-            on=["query_read", "k"],
+            df_hits.select("query_read", "model", "mutation_rate", "k", "cum_hits"),
+            on=["query_read", "model", "mutation_rate", "k"],
             how="left",
         )
-        .sort(["query_read", "k"])
-        .with_columns(cum_hits=pl.col("cum_hits").forward_fill().over("query_read"))
+        .sort(["query_read", "model", "mutation_rate", "k"])
+        .with_columns(
+            cum_hits=pl.col("cum_hits")
+            .forward_fill()
+            .over(["query_read", "model", "mutation_rate"])
+        )
         .with_columns(
             cum_hits=pl.col("cum_hits").fill_null(
                 0.0
@@ -110,70 +118,63 @@ def main(
     )
     print(df_auprc)
 
-    # 6. Join AUPRC back to the PR Curve to create a descriptive legend label
-    df_plot = df_pr_curve.join(df_auprc, on=["model", "mutation_rate"]).with_columns(
-        legend_label=pl.concat_str(
-            [
-                pl.col("model"),
-                pl.lit(" (Mut: "),
-                pl.col("mutation_rate").cast(pl.String),
-                pl.lit(") - AUPRC: "),
-                pl.col("auprc").round(3).cast(pl.String),
-            ]
+    for name, data in df_pr_curve.group_by("mutation_rate"):
+        mut_rate = name[0]
+        chart = (
+            alt.Chart(data)
+            .mark_line(point=True)
+            .encode(
+                x=alt.X(
+                    "mean_recall:Q",
+                    title="Mean Recall@K",
+                    scale=alt.Scale(domain=[0, 1.0]),
+                ),
+                y=alt.Y(
+                    "mean_precision:Q",
+                    title="Mean Precision@K",
+                    scale=alt.Scale(domain=[0, 1.05]),
+                ),
+                color=alt.Color(
+                    "model:N",
+                    title="Model",
+                ),
+                strokeDash=alt.StrokeDash(
+                    "mutation_rate:N"
+                ),  # Optional: visually separate mutation rates by line style
+            )
+            .properties(
+                width=650,
+                height=450,
+            )
+            .configure_axis(labelFontSize=15, titleFontSize=20)
+            .configure_legend(labelFontSize=14, titleFontSize=16)
         )
-    )
+        chart.save(
+            plots_dir / f"precision_recall_curve_mutation_rate_{str(mut_rate)}.png"
+        )
 
-    chart = (
-        alt.Chart(df_plot)
-        .mark_line(point=True)
-        .encode(
-            x=alt.X(
-                "mean_precision:Q",
-                title="Mean Precision@K",
-                scale=alt.Scale(domain=[0, 1.05]),
-            ),
-            y=alt.Y(
-                "mean_recall:Q", title="Mean Recall@K", scale=alt.Scale(domain=[0, 1.0])
-            ),
-            color=alt.Color(
-                "model:N",
-                title="Model",
-            ),
-            strokeDash=alt.StrokeDash(
-                "mutation_rate:N"
-            ),  # Optional: visually separate mutation rates by line style
+        other_chart = (
+            alt.Chart(data)
+            .mark_line(point=True)
+            .encode(
+                x=alt.X("k:Q", title="k", scale=alt.Scale(domain=[1, 47])),
+                y=alt.Y("mean_recall:Q", title="Mean Recall@K"),
+                color=alt.Color(
+                    "model:N",
+                    title="Model",
+                ),
+                strokeDash=alt.StrokeDash(
+                    "mutation_rate:N"
+                ),  # Optional: visually separate mutation rates by line style
+            )
+            .properties(
+                width=650,
+                height=450,
+            )
+            .configure_axis(labelFontSize=15, titleFontSize=20)
+            .configure_legend(labelFontSize=14, titleFontSize=16)
         )
-        .properties(
-            width=650,
-            height=450,
-        )
-        .configure_axis(labelFontSize=15, titleFontSize=20)
-        .configure_legend(labelFontSize=14, titleFontSize=16)
-    )
-    chart.save(plots_dir / "precision_recall_curve.png")
-
-    other_chart = (
-        alt.Chart(df_plot)
-        .mark_line(point=True)
-        .encode(
-            x=alt.X("k:Q", title="k"),
-            y=alt.Y("mean_recall:Q", title="Mean Recall@K"),
-            color=alt.Color(
-                "model:N",
-                title="Model",
-            ),
-            strokeDash=alt.StrokeDash(
-                "mutation_rate:N"
-            ),  # Optional: visually separate mutation rates by line style
-        )
-        .properties(
-            width=650,
-            height=450,
-        )
-        .configure_axis(labelFontSize=15, titleFontSize=20)
-        .configure_legend(labelFontSize=14, titleFontSize=16)
-    )
-    other_chart.save(plots_dir / "recall_vs_k_curve.png")
+        other_chart.save(plots_dir / f"recall_vs_k_curve_mutation_rate_{mut_rate}.png")
 
 
 if __name__ == "__main__":

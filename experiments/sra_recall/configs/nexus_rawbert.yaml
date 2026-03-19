@@ -13,3 +13,4 @@ queries_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/sra_recall/logan_cont
 index_dir: indexes
 results_dir: results/rawbert
 mutation_rate: 0.0
+filter_query_lens: True

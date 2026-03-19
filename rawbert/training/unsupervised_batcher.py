@@ -133,8 +133,9 @@ class Augmenter:
     def _sample_identity(self):
         return self.beta_distribution.sample().item()
 
+    @staticmethod
     def _uniform_random_mutation(
-        self, sequence: str, target_identity: float
+        sequence: str, target_identity: float
     ) -> tuple[str, float]:
         """
         Applies uniform random substitutions, insertions, and deletions
@@ -205,8 +206,11 @@ class Augmenter:
     # original = "ATGCGTACGTAGCTAGCTAG" * 25  # 500 bp
     # augmented, actual_id = uniform_random_mutation(original, 0.85)
 
-    def _augment(self, seq, identity):
-        augmented_seq, final_identity = self._uniform_random_mutation(seq, identity)
+    @staticmethod
+    def augment(seq, identity):
+        augmented_seq, final_identity = Augmenter._uniform_random_mutation(
+            seq, identity
+        )
         return augmented_seq
 
     def get_pairs(self, seq):
@@ -238,7 +242,7 @@ class Augmenter:
             seq2_overlap_start, seq2_overlap_end = seq2_overlap_range
 
             identity = self._sample_identity()
-            augmented_overlap = self._augment(
+            augmented_overlap = Augmenter.augment(
                 seq1[seq1_overlap_start:seq1_overlap_end], identity
             )
 
