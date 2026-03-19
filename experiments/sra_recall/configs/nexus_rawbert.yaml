@@ -1,0 +1,15 @@
+model:
+  name: rawbert
+  checkpoint_path: null
+  batch_size: 128
+  device: cuda
+  pooling: max
+  k: 100
+  max_seq_len: 1024
+  min_seq_len: 150
+  min_overlap_percent: 0.6
+accessions_dir: /fs/nexus-projects/sra_search/data/test/logan_contig
+queries_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/sra_recall/raw_read_queries.parquet
+index_dir: indexes
+results_dir: results/rawbert
+mutation_rate: 0.0
