@@ -1,7 +1,7 @@
 from pathlib import Path
-import numpy as np
 
 import altair as alt
+import numpy as np
 import polars as pl
 from jsonargparse import auto_cli
 
@@ -33,7 +33,7 @@ def main(
 
     # 2. Explode, extract structs, and rank results
     df_exploded = (
-        df.explode("results")
+        data.explode("results")
         .select(
             pl.col("query_read"),
             pl.col("query_accession"),
@@ -127,35 +127,28 @@ def main(
         alt.Chart(df_plot)
         .mark_line(point=True)
         .encode(
-            x=alt.X("mean_recall:Q", title="Mean Recall@K"),
-            y=alt.Y(
+            x=alt.X(
                 "mean_precision:Q",
                 title="Mean Precision@K",
                 scale=alt.Scale(domain=[0, 1.05]),
             ),
+            y=alt.Y(
+                "mean_recall:Q", title="Mean Recall@K", scale=alt.Scale(domain=[0, 1.0])
+            ),
             color=alt.Color(
-                "legend_label:N",
-                title="Model Configurations",
-                legend=alt.Legend(orient="bottom", columns=1),
+                "model:N",
+                title="Model",
             ),
             strokeDash=alt.StrokeDash(
-                "mutation_rate:N", legend=None
+                "mutation_rate:N"
             ),  # Optional: visually separate mutation rates by line style
-            tooltip=[
-                "model",
-                "mutation_rate",
-                "k",
-                "mean_recall",
-                "mean_precision",
-                "auprc",
-            ],
         )
         .properties(
-            title="Precision-Recall Curve by Model and Mutation Rate",
             width=650,
             height=450,
         )
-        .interactive()
+        .configure_axis(labelFontSize=15, titleFontSize=20)
+        .configure_legend(labelFontSize=14, titleFontSize=16)
     )
     chart.save(plots_dir / "precision_recall_curve.png")
 
@@ -166,14 +159,19 @@ def main(
             x=alt.X("k:Q", title="k"),
             y=alt.Y("mean_recall:Q", title="Mean Recall@K"),
             color=alt.Color(
-                "legend_label:N",
-                title="Model Configurations",
-                legend=alt.Legend(orient="bottom", columns=1),
+                "model:N",
+                title="Model",
             ),
             strokeDash=alt.StrokeDash(
-                "mutation_rate:N", legend=None
+                "mutation_rate:N"
             ),  # Optional: visually separate mutation rates by line style
         )
+        .properties(
+            width=650,
+            height=450,
+        )
+        .configure_axis(labelFontSize=15, titleFontSize=20)
+        .configure_legend(labelFontSize=14, titleFontSize=16)
     )
     other_chart.save(plots_dir / "recall_vs_k_curve.png")
 
