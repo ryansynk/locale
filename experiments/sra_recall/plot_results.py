@@ -6,7 +6,10 @@ import polars as pl
 from jsonargparse import auto_cli
 
 
-def main(results_dir: str, plots_dir: str = "plots", num_identity_bins: int = 101):
+def main(
+    results_dir: str,
+    plots_dir: str = "plots",
+):
     results_dir: Path = Path(results_dir)
     plots_dir: Path = Path(plots_dir)
     if not plots_dir.is_dir():
@@ -16,8 +19,8 @@ def main(results_dir: str, plots_dir: str = "plots", num_identity_bins: int = 10
         {
             "query_read": pl.String,
             "query_accession": pl.String,
-            "retrievals": pl.List(
-                pl.Struct({"retrieved_accession": pl.String, "identity": pl.Float64})
+            "results": pl.List(
+                pl.Struct({"accession": pl.String, "score": pl.Float64})
             ),
             "model": pl.String,
             "mutation_rate": pl.Float64,
@@ -28,53 +31,151 @@ def main(results_dir: str, plots_dir: str = "plots", num_identity_bins: int = 10
         data.append(df)
     data = pl.concat(data)
 
-    identity_cutoffs = np.linspace(0.0, 1.0, num=num_identity_bins)
-
-    dfs = []
-    for name, df in data.group_by("model", "mutation_rate"):
-        model = name[0]
-        mutation_rate = name[1]
-        recalls = []
-        num_queries = len(df["query_read"].unique())
-        for c in identity_cutoffs:
-            num_correct = (
-                df.explode("retrievals")
-                .unnest("retrievals")
-                .filter(pl.col("identity") >= c)
-                .with_columns(
-                    (pl.col("query_accession") == pl.col("retrieved_accession")).alias(
-                        "correct"
-                    )
-                )
-                .group_by("query_read")
-                .agg(pl.col("correct").any())
-                .select(pl.col("correct").sum())
-                .item()
-            )
-            recall = num_correct / num_queries
-            recalls.append(recall)
-        recall_df = pl.DataFrame(
-            {
-                "identity_cutoff": identity_cutoffs,
-                "recall": recalls,
-                "model": model,
-                "mutation_rate": mutation_rate,
-            }
+    # 2. Explode, extract structs, and rank results
+    df_exploded = (
+        df.explode("results")
+        .select(
+            pl.col("query_read"),
+            pl.col("query_accession"),
+            pl.col("results").struct.field("score").alias("score"),
+            pl.col("results").struct.field("accession").alias("accession"),
+            pl.col("model"),
+            pl.col("mutation_rate"),
         )
-        dfs.append(recall_df)
+        # Sort by query_read and descending score to ensure strict ranking
+        .sort(["query_read", "score"], descending=[False, True])
+    )
 
-    recall_df = pl.concat(dfs).fill_null(0.0)
-    chart = (
-        alt.Chart(recall_df)
-        .mark_line()
-        .encode(
-            x=alt.X("identity_cutoff", title="Sequence identity cut-off (%)"),
-            y=alt.Y("recall", title="Recall (%)"),
-            color=alt.Color("model:N", title="Model"),
-            strokeDash=alt.StrokeDash("mutation_rate:N", title="Mutation Rate"),
+    # 3. Calculate Precision@K and Recall@K per query
+    # Note: Since true_accession is a single string per query, total_relevant = 1
+    df_hits = df_exploded.with_columns(
+        k=pl.int_range(1, pl.len() + 1).over("query_read"),
+        is_relevant=(pl.col("accession") == pl.col("query_accession")).cast(pl.Float64),
+    ).with_columns(cum_hits=pl.col("is_relevant").cum_sum().over("query_read"))
+
+    max_k = df_hits.select(pl.col("k").max()).item()
+    df_queries = df_hits.select("query_read", "model", "mutation_rate").unique()
+    df_k_grid = pl.DataFrame({"k": range(1, max_k + 1)})
+    df_grid = df_queries.join(df_k_grid, how="cross")
+    df_metrics = (
+        df_grid.join(
+            df_hits.select("query_read", "k", "cum_hits"),
+            on=["query_read", "k"],
+            how="left",
+        )
+        .sort(["query_read", "k"])
+        .with_columns(cum_hits=pl.col("cum_hits").forward_fill().over("query_read"))
+        .with_columns(
+            cum_hits=pl.col("cum_hits").fill_null(
+                0.0
+            )  # Just in case k=1 was completely empty
+        )
+        .with_columns(
+            precision_at_k=pl.col("cum_hits") / pl.col("k"),
+            recall_at_k=pl.col("cum_hits"),
         )
     )
-    chart.save(plots_dir / "recall_curve.png")
+
+    # 4. Average over all queries to get Mean PR values per K
+    df_pr_curve = (
+        df_metrics.group_by(["model", "mutation_rate", "k"])
+        .agg(
+            mean_precision=pl.col("precision_at_k").mean(),
+            mean_recall=pl.col("recall_at_k").mean(),
+        )
+        .sort(["model", "mutation_rate", "mean_recall", "k"])
+    )
+
+    # 5. Calculate AUPRC per Model & Mutation Rate group using window functions
+    df_auprc = (
+        df_pr_curve.with_columns(
+            prev_recall=pl.col("mean_recall")
+            .shift(1)
+            .fill_null(0.0)
+            .over(["model", "mutation_rate"]),
+            prev_precision=pl.col("mean_precision")
+            .shift(1)
+            .fill_null(1.0)
+            .over(["model", "mutation_rate"]),
+        )
+        .with_columns(
+            auprc_step=(
+                (pl.col("mean_recall") - pl.col("prev_recall"))
+                * (pl.col("mean_precision") + pl.col("prev_precision"))
+                / 2
+            )
+        )
+        .group_by(["model", "mutation_rate"])
+        .agg(auprc=pl.col("auprc_step").sum())
+    )
+    print(df_auprc)
+
+    # 6. Join AUPRC back to the PR Curve to create a descriptive legend label
+    df_plot = df_pr_curve.join(df_auprc, on=["model", "mutation_rate"]).with_columns(
+        legend_label=pl.concat_str(
+            [
+                pl.col("model"),
+                pl.lit(" (Mut: "),
+                pl.col("mutation_rate").cast(pl.String),
+                pl.lit(") - AUPRC: "),
+                pl.col("auprc").round(3).cast(pl.String),
+            ]
+        )
+    )
+
+    chart = (
+        alt.Chart(df_plot)
+        .mark_line(point=True)
+        .encode(
+            x=alt.X("mean_recall:Q", title="Mean Recall@K"),
+            y=alt.Y(
+                "mean_precision:Q",
+                title="Mean Precision@K",
+                scale=alt.Scale(domain=[0, 1.05]),
+            ),
+            color=alt.Color(
+                "legend_label:N",
+                title="Model Configurations",
+                legend=alt.Legend(orient="bottom", columns=1),
+            ),
+            strokeDash=alt.StrokeDash(
+                "mutation_rate:N", legend=None
+            ),  # Optional: visually separate mutation rates by line style
+            tooltip=[
+                "model",
+                "mutation_rate",
+                "k",
+                "mean_recall",
+                "mean_precision",
+                "auprc",
+            ],
+        )
+        .properties(
+            title="Precision-Recall Curve by Model and Mutation Rate",
+            width=650,
+            height=450,
+        )
+        .interactive()
+    )
+    chart.save(plots_dir / "precision_recall_curve.png")
+
+    other_chart = (
+        alt.Chart(df_plot)
+        .mark_line(point=True)
+        .encode(
+            x=alt.X("k:Q", title="k"),
+            y=alt.Y("mean_recall:Q", title="Mean Recall@K"),
+            color=alt.Color(
+                "legend_label:N",
+                title="Model Configurations",
+                legend=alt.Legend(orient="bottom", columns=1),
+            ),
+            strokeDash=alt.StrokeDash(
+                "mutation_rate:N", legend=None
+            ),  # Optional: visually separate mutation rates by line style
+        )
+    )
+    other_chart.save(plots_dir / "recall_vs_k_curve.png")
 
 
 if __name__ == "__main__":
