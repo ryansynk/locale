@@ -48,9 +48,11 @@ class MetagraphConfig(AlgorithmConfig):
 class ExperimentConfig:
     model: Union[DenseConfig, MetagraphConfig]
     accessions_dir: Path
-    queries_path: Path
+    raw_read_queries_path: Path
+    logan_contig_queries_path: Path
     index_dir: Path
     results_dir: Path
+    query_type: Literal["raw_read", "logan_contig"]
     mutation_rate: float = 0.0
     filter_query_lens: bool = True
 

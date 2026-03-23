@@ -39,7 +39,15 @@ def main(cfg: ExperimentConfig):
         index.build(accession_paths, index_path)
         index.save(index_path)
 
-    queries: pl.DataFrame = pl.read_parquet(cfg.queries_path)
+    if cfg.query_type == "raw_read":
+        queries: pl.DataFrame = pl.read_parquet(cfg.raw_read_queries_path)
+    elif cfg.query_type == "logan_contig":
+        queries: pl.DataFrame = pl.read_parquet(cfg.logan_contig_queries_path)
+    else:
+        raise ValueError(
+            f"Expected query_type to be 'raw_read' or 'logan_contig', got: {cfg.query_type}"
+        )
+
     if cfg.filter_query_lens:
         queries = (
             queries.with_columns(
@@ -54,8 +62,10 @@ def main(cfg: ExperimentConfig):
     results: pl.DataFrame = index.search(queries)  # dataframe
     results = results.with_columns(pl.lit(str(cfg.model)).alias("model"))
     results = results.with_columns(pl.lit(cfg.mutation_rate).alias("mutation_rate"))
+    results = results.with_columns(pl.lit(cfg.query_type).alias("query_type"))
     output_path: Path = (
-        cfg.results_dir / f"{cfg.model.name}.mutation_{cfg.mutation_rate}.parquet"
+        cfg.results_dir
+        / f"{cfg.model.name}.mutation_{cfg.mutation_rate}.query_type_{cfg.query_type}.parquet"
     )
     results.write_parquet(output_path)
 
