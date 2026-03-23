@@ -57,29 +57,30 @@ def calculate_recall_precision_df(queries_df: pl.DataFrame, data: pl.DataFrame):
         .item()
     )
 
-    # Largest number of returned results over all queries
-    max_k_results = (
-        data.with_columns(pl.col("results").list.len().alias("num_results"))
-        .select(pl.col("num_results").max())
-        .item()
-    )
-
-    max_k = max(max_k_gt, max_k_results)
-
-    for row in data.iter_rows(named=True):
-        gt_results = queries_df.filter(pl.col("read_id") == row["query_read"])[
-            "contig_accession"
-        ].item()
-        recalls_precisions = calculate_recall_precision(
-            row["results"],
-            gt_results,
-            row["query_read"],
-            row["model"],
-            row["mutation_rate"],
-            row["query_type"],
-            max_k=max_k,
+    for name, df in data.group_by("model"):
+        # Largest number of returned results over all queries
+        max_k_results = (
+            df.with_columns(pl.col("results").list.len().alias("num_results"))
+            .select(pl.col("num_results").max())
+            .item()
         )
-        all_recalls_precisions.extend(recalls_precisions)
+
+        max_k = max(max_k_gt, max_k_results)
+
+        for row in df.iter_rows(named=True):
+            gt_results = queries_df.filter(pl.col("read_id") == row["query_read"])[
+                "contig_accession"
+            ].item()
+            recalls_precisions = calculate_recall_precision(
+                row["results"],
+                gt_results,
+                row["query_read"],
+                row["model"],
+                row["mutation_rate"],
+                row["query_type"],
+                max_k=max_k,
+            )
+            all_recalls_precisions.extend(recalls_precisions)
 
     return pl.from_dicts(all_recalls_precisions)
 
