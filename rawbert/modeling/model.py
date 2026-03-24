@@ -122,7 +122,7 @@ class RawBERT(nn.Module):
             keys = concat_all_gather(keys)
         batch_size = keys.shape[0]
 
-        ptr = int(self.queue_ptr)  # ty: ignore
+        ptr = int(self.queue_ptr)
         assert self.K % batch_size == 0  # for simplicity
 
         # replace the keys at ptr (dequeue and enqueue)
@@ -135,7 +135,7 @@ class RawBERT(nn.Module):
 
         ptr = (ptr + batch_size) % self.K  # move pointer
 
-        self.queue_ptr[0] = ptr  # ty: ignore
+        self.queue_ptr[0] = ptr
 
     def _check_alignments(
         self, batch_sequences: List[str], alignment_threshold: float
@@ -293,7 +293,7 @@ class RawBERT(nn.Module):
             # If we assume k_global is ordered by rank, the positive key for the
             # i-th local query is at index: (rank * b) + i
 
-            rank = torch.distributed.get_rank() if is_distributed else 0  # ty: ignore possibly-missing-attribute
+            rank = torch.distributed.get_rank() if is_distributed else 0
             b = q.shape[0]
 
             # Labels are simply the indices in the global array corresponding to local samples
@@ -340,10 +340,9 @@ def concat_all_gather(tensor):
     *** Warning ***: torch.distributed.all_gather has no gradient.
     """
     tensors_gather = [
-        torch.ones_like(tensor)
-        for _ in range(torch.distributed.get_world_size())  # ty: ignore possibly-missing-attribute
+        torch.ones_like(tensor) for _ in range(torch.distributed.get_world_size())
     ]
-    torch.distributed.all_gather(tensors_gather, tensor, async_op=False)  # ty: ignore possibly-missing-attribute
+    torch.distributed.all_gather(tensors_gather, tensor, async_op=False)
 
     output = torch.cat(tensors_gather, dim=0)
     return output
