@@ -14,7 +14,7 @@ authors = [
 ]
 
 dependencies = [
-    "torch==2.5.1",
+    "torch>=2.6",
     "transformers",
     "einops",
     "altair",
@@ -29,7 +29,7 @@ dependencies = [
     "wandb",
     "pyyaml",
     "zstandard",
-    "flash-attn==2.8.0.post2+cu12torch2.5cxx11abiFALSE",
+    "flash-attn==2.7.4.post1+cu12torch2.6cxx11abiFALSE",
     "ipython>=9.10.0",
     "ipdb>=0.13.13",
     "pyfaidx>=0.9.0.3",
@@ -55,8 +55,7 @@ explicit = true
 [tool.uv.sources]
 metagraph-api = { git = "https://github.com/ratschlab/metagraph.git", subdirectory = "metagraph/api/python" }
 torch = { index = "pytorch"}
-flash-attn = {url = "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.0.post2/flash_attn-2.8.0.post2+cu12torch2.5cxx11abiFALSE-cp311-cp311-linux_x86_64.whl" }
-
+flash-attn = { url = "https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp311-cp311-linux_x86_64.whl" }
 # CRITICAL for your directory structure
 # This explicitly tells setuptools to look for the 'rawbert' directory
 [tool.setuptools.packages.find]
