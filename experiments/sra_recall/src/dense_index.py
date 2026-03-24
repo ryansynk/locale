@@ -333,6 +333,7 @@ class DenseEncoder:
     @torch.no_grad()
     def encode(self, sequences):
         embeds_list = []
+        assert self.tokenizer
         for batch in batched(sequences, self.batch_size):
             tokens = self.tokenizer(batch, return_tensors="pt", padding=True).to(
                 self.device
@@ -346,6 +347,7 @@ class DenseEncoder:
                 embeddings = (outputs * mask).sum(dim=1) / mask.sum(dim=1)
             elif self.pooling == "max":
                 mask_expanded = mask.expand(outputs.size())
+                outputs = outputs.clone()  # Prevent in-place modification warnings
                 outputs[mask_expanded == 0] = -1e9
                 embeddings, _ = outputs.max(dim=1)
             else:
