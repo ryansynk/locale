@@ -120,8 +120,7 @@ def chunk_sequence(seq, chunk_size, overlap):
 
 
 class Evo2Encoder:
-    # def __init__(self, model_name, batch_size, pooling, checkpoint_path, device="cuda"):
-    def __init__(self, cfg: Evo2Config):
+    def __init__(self, cfg):  # Assuming Evo2Config is defined elsewhere
         try:
             from evo2 import Evo2
         except ImportError:
@@ -131,7 +130,6 @@ class Evo2Encoder:
 
         # Loads Evo2 7B. Bypassing TransformerEngine keeps the installation light.
         model = Evo2("evo2_7b")
-        # self.model = model.to(self.device)
         self.model = model
         self.forward = self.model
         self.tokenizer = self.model.tokenizer
@@ -139,53 +137,81 @@ class Evo2Encoder:
         self.batch_size = cfg.batch_size
         self.pooling = cfg.pooling
 
+    def _process_batch(self, batch):
+        """Helper to process a batch of sequences from start to finish."""
+        assert self.tokenizer
+        tokenized = [self.tokenizer.tokenize(seq) for seq in batch]
+        max_len = max(len(t) for t in tokenized)
+
+        pad_id = getattr(
+            self.tokenizer, "pad_token_id", self.tokenizer.tokenize("N")[0]
+        )
+
+        input_ids = []
+        masks = []
+        for t in tokenized:
+            pad_len = max_len - len(t)
+            input_ids.append(t + [pad_id] * pad_len)
+            masks.append([1] * len(t) + [0] * pad_len)
+
+        tokens_tensor = torch.tensor(input_ids, dtype=torch.long, device=self.device)
+        mask = torch.tensor(masks, dtype=torch.float32, device=self.device).unsqueeze(
+            -1
+        )
+
+        layer_name = "blocks.28.mlp.l3"
+        _, embeddings_dict = self.forward(
+            tokens_tensor, return_embeddings=True, layer_names=[layer_name]
+        )
+        outputs = embeddings_dict[layer_name]
+
+        if self.pooling == "mean":
+            embeddings = (outputs * mask).sum(dim=1) / mask.sum(dim=1)
+        elif self.pooling == "max":
+            mask_expanded = mask.expand(outputs.size())
+            outputs = outputs.clone()
+            outputs[mask_expanded == 0] = -1e9
+            embeddings, _ = outputs.max(dim=1)
+        else:
+            raise ValueError(f"self.pooling got unexpected value {self.pooling}")
+
+        return nn.functional.normalize(embeddings, dim=1)
+
     @torch.no_grad()
     def encode(self, sequences):
         embeds_list = []
-        assert self.tokenizer
+
         for batch in batched(sequences, self.batch_size):
-            # Evo2 tokenizer requires manual batching and padding
-            tokenized = [self.tokenizer.tokenize(seq) for seq in batch]
-            max_len = max(len(t) for t in tokenized)
-            # Fallback to the 'N' token if a pad token isn't explicitly mapped
-            pad_id = getattr(
-                self.tokenizer, "pad_token_id", self.tokenizer.tokenize("N")[0]
-            )
+            try:
+                # 1. Attempt the full batch
+                batch_embeds = self._process_batch(batch)
+                embeds_list.append(batch_embeds)
 
-            input_ids = []
-            masks = []
-            for t in tokenized:
-                pad_len = max_len - len(t)
-                input_ids.append(t + [pad_id] * pad_len)
-                # 1 for actual tokens, 0 for padding
-                masks.append([1] * len(t) + [0] * pad_len)
+            except Exception as batch_err:
+                # 2. On failure, clear cache and fallback to batch size 1
+                print(
+                    f"Batch failed with error: {batch_err}. Falling back to batch size 1."
+                )
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
-            tokens_tensor = torch.tensor(
-                input_ids, dtype=torch.long, device=self.device
-            )
-            mask = torch.tensor(
-                masks, dtype=torch.float32, device=self.device
-            ).unsqueeze(-1)
+                for seq in batch:
+                    try:
+                        single_embed = self._process_batch([seq])
+                        embeds_list.append(single_embed)
+                    except Exception as single_err:
+                        # 3. If BS=1 still fails, ignore or pad
+                        print(
+                            f"Sequence failed on batch size 1. Error: {single_err}. Ignoring sequence."
+                        )
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
 
-            # Explicitly pull from the intermediate layer highly recommended by Evo2 authors
-            layer_name = "blocks.28.mlp.l3"
-            _, embeddings_dict = self.forward(
-                tokens_tensor, return_embeddings=True, layer_names=[layer_name]
-            )
-            outputs = embeddings_dict[layer_name]
+                        # Highly recommend uncommenting the below line to prevent downstream shape mismatches:
+                        # embeds_list.append(torch.zeros((1, 4096), device=self.device))
 
-            if self.pooling == "mean":
-                embeddings = (outputs * mask).sum(dim=1) / mask.sum(dim=1)
-            elif self.pooling == "max":
-                mask_expanded = mask.expand(outputs.size())
-                outputs = outputs.clone()  # Prevent in-place modification warnings
-                outputs[mask_expanded == 0] = -1e9
-                embeddings, _ = outputs.max(dim=1)
-            else:
-                raise ValueError(f"self.pooling got unexpected value {self.pooling}")
+        if not embeds_list:
+            # Handle edge case where every single sequence failed
+            return torch.empty(0, device=self.device)
 
-            batch_embeds = nn.functional.normalize(embeddings, dim=1)
-            embeds_list.append(batch_embeds)
-
-        embeddings = torch.cat(embeds_list, dim=0)
-        return embeddings
+        return torch.cat(embeds_list, dim=0)

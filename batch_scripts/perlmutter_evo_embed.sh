@@ -8,6 +8,8 @@
 #SBATCH --cpus-per-task=128
 #SBATCH --gpus=4
 #SBATCH --output=logs/job_%j.out
+#SBATCH --mail-type=BEGIN
+#SBATCH --mail-user=ryansynk@umd.edu
 #SBATCH --exclusive
 
 export SLURM_CPU_BIND="cores"
