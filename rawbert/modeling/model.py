@@ -8,7 +8,9 @@ License: MIT License
 Code has been modified for DNA sequence data
 """
 
+import concurrent.futures
 import logging
+import os
 from copy import deepcopy
 from typing import List, Optional
 
@@ -138,14 +140,14 @@ class RawBERT(nn.Module):
         self.queue_ptr[0] = ptr
 
     def _check_alignments(
-        self, batch_sequences: List[str], alignment_threshold: float
+        self, batch_sequences: List[str], queue_similarity_cutoff: float
     ) -> torch.Tensor:
         """
-        Check if any sequences in the batch are aligned to sequences in the queue.
+        Check if any sequences in the batch are locally aligned to sequences in the queue.
 
         Args:
             batch_sequences: List of DNA sequences in the current batch
-            alignment_threshold: Minimum similarity (1 - edit_distance/length) to consider aligned
+            queue_alignment_cutoff: Minimum similarity (num_matches/min_length) to consider aligned
 
         Returns:
             Boolean mask of shape (K,) where True indicates the queue sequence is aligned
@@ -176,9 +178,81 @@ class RawBERT(nn.Module):
                 # Calculate similarity as 1 - (edit_distance / max_length)
                 similarity = 1.0 - (edit_distance / len(q))
 
-                if similarity >= alignment_threshold:
+                if similarity >= queue_similarity_cutoff:
                     aligned_mask[i] = True
                     break  # No need to check other batch sequences for this queue seq
+
+        return aligned_mask
+
+    @torch.no_grad()
+    def _check_alignments_fast(
+        self, batch_sequences: List[str], queue_similarity_cutoff: float
+    ) -> torch.Tensor:
+        """
+        Check if any sequences in the batch are locally aligned to sequences in the queue.
+        Optimized with parallel processing and edlib early-bailout.
+        """
+        aligned_mask = torch.zeros(self.K, dtype=torch.bool, device=self.device)
+
+        # Filter out None values upfront to avoid checking inside the loop
+        valid_queue_items = [
+            (i, seq) for i, seq in enumerate(self.queue_seqs) if seq is not None
+        ]
+
+        if not valid_queue_items:
+            return aligned_mask
+
+        def check_single_queue_seq(item):
+            i, queue_seq = item
+            for batch_seq in batch_sequences:
+                if len(batch_seq) <= len(queue_seq):
+                    q, t = batch_seq, queue_seq
+                else:
+                    q, t = queue_seq, batch_seq
+
+                # Calculate the maximum allowed edit distance to meet the cutoff.
+                max_allowed_distance = int(len(q) * (1.0 - queue_similarity_cutoff))
+
+                # Pass 'k' to force edlib to abort early if the threshold is exceeded.
+                result = edlib.align(
+                    query=q,
+                    target=t,
+                    mode="HW",
+                    task="distance",
+                    k=max_allowed_distance,
+                )
+
+                # edlib returns -1 if the true edit distance is > k
+                if result["editDistance"] != -1:
+                    return i, True
+
+            return i, False
+
+        # 1. Determine total physical CPUs
+        total_cpus = os.cpu_count() or 4
+
+        # 2. Determine how many GPU processes are running on this node
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            # If running a single node with multiple GPUs, world_size is the GPU count.
+            # (Note: If running multi-node, you would fetch the LOCAL_WORLD_SIZE instead)
+            num_gpus = torch.distributed.get_world_size()
+        else:
+            num_gpus = 1
+
+        # 3. Safely partition the CPU cores
+        # We use max(1, ...) to ensure at least 1 worker per GPU process
+        safe_workers_per_gpu = max(1, total_cpus // num_gpus)
+
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=safe_workers_per_gpu
+        ) as executor:
+            # Map the function across our valid queue sequences
+            results = executor.map(check_single_queue_seq, valid_queue_items)
+
+        # Update the mask based on results
+        for i, is_aligned in results:
+            if is_aligned:
+                aligned_mask[i] = True
 
         return aligned_mask
 
@@ -220,7 +294,7 @@ class RawBERT(nn.Module):
         self,
         query,
         key,
-        alignment_threshold: float,
+        queue_identity_cutoff: float,
         is_distributed=False,
         query_seqs: Optional[List[str]] = None,
         key_seqs: Optional[List[str]] = None,
@@ -254,7 +328,9 @@ class RawBERT(nn.Module):
 
             # Check for aligned sequences and mask them out from negatives
             if filter_aligned and query_seqs is not None:
-                aligned_mask = self._check_alignments(query_seqs, alignment_threshold)
+                aligned_mask = self._check_alignments_fast(
+                    query_seqs, queue_identity_cutoff
+                )
                 # Set logits for aligned sequences to a very negative value (will be ignored)
                 l_neg[:, aligned_mask] = -1e9
 

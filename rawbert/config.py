@@ -89,6 +89,8 @@ class TrainConfig:
     moco_queue_size: int = 65536
     moco_momentum: float = 0.999
     moco_softmax_temp: float = 0.07
+    moco_filter_queue: bool = False
+    moco_filter_queue_identity_cutoff: float = 0.91
     checkpoint_dir: str | None = None
     checkpoint_interval: int = 1000
     num_val_queries: int = 100

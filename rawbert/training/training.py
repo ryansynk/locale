@@ -215,11 +215,11 @@ def train(
                 logits, labels = ddp_rawbert(
                     q,
                     k,
-                    cfg.augment_config.alignment_threshold,
+                    cfg.moco_filter_queue_identity_cutoff,
                     is_distributed=is_distributed,
                     query_seqs=query_seqs,
                     key_seqs=key_seqs,
-                    filter_aligned=False,
+                    filter_aligned=cfg.moco_filter_queue,
                 )
                 loss = F.cross_entropy(logits, labels)
                 loss.backward()
@@ -263,7 +263,7 @@ def train(
                             module,
                             local_rank,
                             tokenizer,
-                            cfg.augment_config,
+                            cfg.moco_filter_queue_identity_cutoff,
                         )
 
                         run.log(
@@ -373,7 +373,7 @@ def get_val_accuracy(
     model,
     local_rank,
     tokenizer,
-    augment_config,
+    similarity_cutoff,
 ):
     par_tqdm_write("Evaluating val accuracy")
     model.eval()
@@ -402,6 +402,11 @@ def get_val_accuracy(
         all_k = torch.cat(all_k, dim=0)
         logits = torch.matmul(all_q, all_k.T)
 
+        # Filter out aligned sequences from consideration
+        logits = _filter_aligned_sequences(
+            logits, all_query_seqs, all_key_seqs, similarity_cutoff
+        )
+
         labels = torch.arange(all_q.shape[0]).to(local_rank)
 
     acc1 = accuracy(logits, labels, topk=(1,))
@@ -411,7 +416,7 @@ def get_val_accuracy(
     return acc1, acc5
 
 
-def _filter_aligned_sequences(logits, query_seqs, key_seqs, alignment_threshold):
+def _filter_aligned_sequences(logits, query_seqs, key_seqs, similarity_cutoff):
     """
     Filter out aligned sequences from validation logits.
 
@@ -438,16 +443,18 @@ def _filter_aligned_sequences(logits, query_seqs, key_seqs, alignment_threshold)
 
             key_seq = key_seqs[j]
 
-            # Check if sequences are aligned using edlib
-            result = edlib.align(query=query_seq, target=key_seq, task="distance")
+            if len(query_seq) <= len(key_seq):
+                q = query_seq
+                t = key_seq
+            else:
+                q = key_seq
+                t = query_seq
+            result = edlib.align(query=q, target=t, mode="HW", task="distance")
             edit_distance = result["editDistance"]
-
-            # Calculate similarity
-            max_length = max(len(query_seq), len(key_seq))
-            similarity = 1.0 - (edit_distance / max_length)
+            similarity = 1.0 - (edit_distance / len(q))
 
             # If aligned, mask out this logit
-            if similarity >= alignment_threshold:
+            if similarity >= similarity_cutoff:
                 num_filtered += 1
                 logits[i, j] = -1e9
 
