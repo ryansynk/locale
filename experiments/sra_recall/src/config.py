@@ -19,6 +19,17 @@ class AlgorithmConfig:
 
 
 @dataclass
+class Evo2Config(AlgorithmConfig):
+    name: str = "evo2"
+    batch_size: int = 128
+    device: str = "cuda"
+    pooling: str = "max"
+
+    def __str__(self):
+        return f"{self.name}"
+
+
+@dataclass
 class DenseConfig(AlgorithmConfig):
     name: Literal["rawbert", "dnabert"] = "rawbert"  # "dnabert", "rawbert"
     checkpoint_path: Optional[str] = None
@@ -46,7 +57,7 @@ class MetagraphConfig(AlgorithmConfig):
 
 @dataclass
 class ExperimentConfig:
-    model: Union[DenseConfig, MetagraphConfig]
+    model: Union[DenseConfig, MetagraphConfig, Evo2Config]
     accessions_dir: Path
     raw_read_queries_path: Path
     logan_contig_queries_path: Path

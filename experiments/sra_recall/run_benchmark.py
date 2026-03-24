@@ -4,10 +4,12 @@ import polars as pl
 from jsonargparse import CLI
 from src.config import (
     DenseConfig,
+    Evo2Config,
     MetagraphConfig,
     ExperimentConfig,
 )
 from src.dense_index import DenseIndex
+from src.evo2_index import Evo2Index
 from src.metagraph_index import MetagraphIndex
 from rawbert.training.unsupervised_batcher import Augmenter
 
@@ -25,6 +27,8 @@ def main(cfg: ExperimentConfig):
     accession_paths: list[Path] = sorted(list(cfg.accessions_dir.rglob("*.contigs.fa")))
     if isinstance(cfg.model, DenseConfig):
         index = DenseIndex(cfg)
+    elif isinstance(cfg.model, Evo2Config):
+        index = Evo2Index(cfg)
     elif isinstance(cfg.model, MetagraphConfig):
         index = MetagraphIndex(cfg)
     else:

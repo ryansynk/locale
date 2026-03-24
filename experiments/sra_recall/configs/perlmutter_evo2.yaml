@@ -1,0 +1,12 @@
+model:
+  name: evo2 
+  batch_size: 10
+  device: cuda
+  pooling: max
+accessions_dir: /pscratch/sd/r/rsynk/data/test/logan_contig
+raw_read_queries_path: /pscratch/sd/r/rsynk/rawbert_data/data/sra_recall/raw_read_queries_final.parquet
+logan_contig_queries_path: /pscratch/sd/r/rsynk/rawbert_data/data/sra_recall/logan_contig_queries_final.parquet
+index_dir: /pscratch/sd/r/rsynk/rawbert/experiments/sra_recall/indexes
+results_dir: /pscratch/sd/r/rsynk/rawbert/experiments/sra_recall/results/evo2
+mutation_rate: 0.0
+filter_query_lens: False
