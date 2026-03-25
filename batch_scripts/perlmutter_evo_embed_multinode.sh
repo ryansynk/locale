@@ -12,6 +12,13 @@
 #SBATCH --mail-user=ryansynk@umd.edu
 #SBATCH --exclusive
 
+
+export UV_CACHE_DIR=/pscratch/sd/r/rsynk/.uv_cache
+export UV_DATA_DIR=/pscratch/sd/r/rsynk/.uv/data
+export UV_TOOL_DIR=/pscratch/sd/r/rsynk/.uv/tools
+export HF_HUB_CACHE=/pscratch/sd/r/rsynk/hf_cache
+export HF_HOME=/pscratch/sd/r/rsynk/hf
+export UV_PYTHON_INSTALL_DIR=/pscratch/sd/r/rsynk/.uv_python
 export SLURM_CPU_BIND="cores"
 
 cd /pscratch/sd/r/rsynk/rawbert/experiments/sra_recall
