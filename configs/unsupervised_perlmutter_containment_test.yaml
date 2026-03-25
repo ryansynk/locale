@@ -7,9 +7,9 @@ val_batch_size: 512
 schedule: cosine
 lr: 0.001
 backbone_lr: 0.00003
-total_steps: 1000000
-warmup_fraction: 0.08
-warmup_steps: null
+total_steps: 1000
+warmup_fraction: null
+warmup_steps: 400 
 moco_queue_size: 8192
 moco_momentum: 0.99
 moco_softmax_temp: 0.07
@@ -23,6 +23,7 @@ dim: 128
 pooling: max
 num_workers: 4
 sanity_test: false
+containment_only: True
 augment_config:
   max_len: 1024
   max_seq_len: 1024
@@ -34,6 +35,9 @@ augment_config:
   max_alignment_ratio: 1.0
   min_coverage: 0.1
   alignment_threshold: 0.6
+  max_containment_ratio: 1.0
+  min_read_len: 91
+  max_read_len: 150
   identity_mean: 95
   identity_max: 99
   identity_stdev: 2.5

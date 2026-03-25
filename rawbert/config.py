@@ -18,6 +18,9 @@ class AugmentConfig:
     max_alignment_ratio: float = 1.0
     min_coverage: float = 0.1
     alignment_threshold: float = 0.6
+    max_containment_ratio: float = 1.0
+    min_read_len: int = 91
+    max_read_len: int = 150
 
     identity_mean: float = 95
     identity_max: float = 99
@@ -74,10 +77,10 @@ class AugmentConfig:
 
 @dataclass
 class TrainConfig:
+    dataset_path: str
+    val_dataset_path: str
     unsupervised: bool = False
     num_epochs: int = 1
-    dataset_path: str | None = None
-    val_dataset_path: str | None = None
     batch_size: int = 256
     val_batch_size: int = 512
     schedule: Literal["cosine", "hold"] = "cosine"
@@ -99,4 +102,5 @@ class TrainConfig:
     pooling: str = "mean"
     num_workers: int = 4
     sanity_test: bool = False
+    containment_only: bool = False
     augment_config: AugmentConfig = field(default_factory=AugmentConfig)

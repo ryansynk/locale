@@ -20,6 +20,7 @@ from rawbert.config import TrainConfig
 from rawbert.modeling.model import RawBERT
 from rawbert.training.supervised_batcher import SupervisedBatcher
 from rawbert.training.unsupervised_batcher import UnsupervisedBatcher
+from rawbert.training.containment_batcher import ContainmentBatcher
 from wandb import Run
 
 
@@ -118,17 +119,30 @@ def train(
 
     if cfg.unsupervised:
         par_print("Unsupervised Training Mode")
-        reader = UnsupervisedBatcher(cfg.dataset_path, cfg.augment_config)
-        val_reader = UnsupervisedBatcher(
-            cfg.val_dataset_path, cfg.augment_config, num_examples=cfg.num_val_keys
-        )
-        sampler = (
-            DistributedSampler(
-                reader, num_replicas=world_size, rank=global_rank, shuffle=True
+        if cfg.containment_only:
+            reader = ContainmentBatcher(cfg.dataset_path, cfg.augment_config)
+            val_reader = ContainmentBatcher(
+                cfg.val_dataset_path, cfg.augment_config, num_examples=cfg.num_val_keys
             )
-            if is_distributed
-            else None
-        )
+            sampler = (
+                DistributedSampler(
+                    reader, num_replicas=world_size, rank=global_rank, shuffle=True
+                )
+                if is_distributed
+                else None
+            )
+        else:
+            reader = UnsupervisedBatcher(cfg.dataset_path, cfg.augment_config)
+            val_reader = UnsupervisedBatcher(
+                cfg.val_dataset_path, cfg.augment_config, num_examples=cfg.num_val_keys
+            )
+            sampler = (
+                DistributedSampler(
+                    reader, num_replicas=world_size, rank=global_rank, shuffle=True
+                )
+                if is_distributed
+                else None
+            )
     else:
         par_print("Supervised Training Mode")
         reader = SupervisedBatcher(cfg.dataset_path, cfg.augment_config)
