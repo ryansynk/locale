@@ -12,7 +12,7 @@ total_steps: 8000
 warmup_fraction: 0.08
 warmup_steps: null
 moco_queue_size: 8192
-moco_momentum: 0.99
+moco_momentum: 0.999
 moco_softmax_temp: 0.07
 moco_filter_queue: True 
 moco_filter_queue_identity_cutoff: 0.91

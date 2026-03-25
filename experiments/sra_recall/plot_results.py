@@ -85,6 +85,92 @@ def calculate_recall_precision_df(queries_df: pl.DataFrame, data: pl.DataFrame):
     return pl.from_dicts(all_recalls_precisions)
 
 
+def plot_contig_len_hit_at_k(
+    queries_df: pl.DataFrame, data: pl.DataFrame, plots_dir: Path, k: int = 7
+):
+    results_df = (
+        data.explode("results")
+        .unnest("results")
+        .sort(["model", "mutation_rate", "query_read", "score"], descending=True)
+        .group_by("model", "mutation_rate", "query_read", maintain_order=True)
+        .agg(pl.col("accession"))
+    )
+    results_df = results_df.join(
+        queries_df.select(["read_id", "contig_accession", "identity", "contig_len"]),
+        left_on="query_read",
+        right_on="read_id",
+    )
+    results_df = results_df.explode(["contig_accession", "identity", "contig_len"])
+    results_df = results_df.with_columns(
+        pl.col("contig_accession")
+        .is_in(pl.col("accession").list.slice(0, k))
+        .alias(f"hit_at_{k}")
+    )
+    results_df = results_df.with_columns(
+        pl.col("contig_len").qcut(8).alias("contig_len_group")
+    )
+    plot_df = (
+        results_df.group_by("model", "mutation_rate", "contig_len_group")
+        .agg(pl.col(f"hit_at_{k}").mean(), pl.len())
+        .sort("contig_len_group", "model")
+    )
+    min_contig_len = results_df.select(pl.col("contig_len").min()).item()
+    max_contig_len = results_df.select(pl.col("contig_len").max()).item()
+    plot_df = plot_df.with_columns(
+        pl.col("contig_len_group")
+        .cast(pl.String)
+        .str.replace("-inf", str(min_contig_len), literal=True)
+        .str.replace("inf", str(max_contig_len), literal=True)
+    )
+    # sort_order = plot_df["contig_len_group"].cat.get_categories().to_list()
+    unsorted_bins = plot_df["contig_len_group"].cast(pl.String).unique().to_list()
+
+    # 2. Define a sorting key to extract the lower bound
+    def get_lower_bound(interval_str):
+        # Strip brackets/parentheses: "(4844, 14290]" -> "4844, 14290"
+        clean_str = interval_str.strip("()[]")
+
+        # Split by the comma and grab the first value: "4844"
+        lower_bound_str = clean_str.split(",")[0]
+
+        # Convert to float so python handles '-inf' and standard numbers correctly
+        return float(lower_bound_str)
+
+    # 3. Sort the list numerically based on that lower bound
+    sort_order = sorted(unsorted_bins, key=get_lower_bound)
+
+    for name, mut_df in plot_df.group_by("mutation_rate"):
+        mutation_rate = name[0]
+        chart = (
+            alt.Chart(mut_df)
+            .mark_bar()
+            .encode(
+                x=alt.X(
+                    "model:O",
+                    title=None,
+                    axis=alt.Axis(labelAngle=-45, labelFontSize=15),
+                ),
+                y=alt.Y(
+                    f"hit_at_{k}:Q",
+                    scale=alt.Scale(domain=[0, 1.0]),
+                    title=f"Hit at {k}",
+                    axis=alt.Axis(labelFontSize=15, titleFontSize=20),
+                ),
+                color=alt.Color("model:O"),
+                column=alt.Column(
+                    "contig_len_group:O",
+                    sort=sort_order,
+                    title="Length of Matching Contig",
+                    header=alt.Header(
+                        labelFontSize=10,
+                        titleFontSize=18,
+                    ),
+                ),
+            )
+        )
+        chart.save(plots_dir / f"mut_{mutation_rate}_contig_lens_bar_chart.png")
+
+
 def plot_recall_precision(recall_precision_df: pl.DataFrame, plots_dir: Path):
     recall_precision_df = (
         recall_precision_df.group_by(["model", "mutation_rate", "k", "query_type"])
@@ -222,6 +308,7 @@ def main(
     results_dir: str,
     queries_path: Path_fr,
     plots_dir: str = "plots",
+    gt_alignments: Path_fr | None = None,
 ):
     results_dir: Path = Path(results_dir)
     queries_path: Path = Path(queries_path)
@@ -251,6 +338,7 @@ def main(
     plot_recall_precision(recall_precision_df, plots_dir)
     plot_recall_at_k(recall_precision_df, plots_dir)
     plot_auprc(recall_precision_df, plots_dir)
+    plot_contig_len_hit_at_k(queries_df, data, plots_dir)
 
 
 if __name__ == "__main__":
