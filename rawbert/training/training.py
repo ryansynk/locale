@@ -10,7 +10,7 @@ import torch.nn.functional as F
 import yaml
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import AdamW, lr_scheduler
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 from transformers import AutoTokenizer, get_cosine_schedule_with_warmup
@@ -21,6 +21,7 @@ from rawbert.modeling.model import RawBERT
 from rawbert.training.supervised_batcher import SupervisedBatcher
 from rawbert.training.unsupervised_batcher import UnsupervisedBatcher
 from rawbert.training.containment_batcher import ContainmentBatcher
+from rawbert.training.reference_batcher import ReferenceBatcher
 from wandb import Run
 
 
@@ -119,9 +120,9 @@ def train(
 
     if cfg.unsupervised:
         par_print("Unsupervised Training Mode")
-        if cfg.containment_only:
-            reader = ContainmentBatcher(cfg.dataset_path, cfg.augment_config)
-            val_reader = ContainmentBatcher(
+        if cfg.data_type == "contig":
+            reader = UnsupervisedBatcher(cfg.dataset_path, cfg.augment_config)
+            val_reader = UnsupervisedBatcher(
                 cfg.val_dataset_path, cfg.augment_config, num_examples=cfg.num_val_keys
             )
             sampler = (
@@ -131,10 +132,14 @@ def train(
                 if is_distributed
                 else None
             )
-        else:
-            reader = UnsupervisedBatcher(cfg.dataset_path, cfg.augment_config)
-            val_reader = UnsupervisedBatcher(
-                cfg.val_dataset_path, cfg.augment_config, num_examples=cfg.num_val_keys
+        elif cfg.data_type == "reference":
+            full_reader = ReferenceBatcher(cfg.dataset_path, cfg.augment_config)
+            total_size = len(full_reader)
+            train_size = total_size - cfg.num_val_keys
+
+            # torch.manual_seed(42) # Optional: uncomment for reproducible splits
+            reader, val_reader = random_split(
+                full_reader, [train_size, cfg.num_val_keys]
             )
             sampler = (
                 DistributedSampler(

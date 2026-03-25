@@ -80,6 +80,7 @@ class TrainConfig:
     dataset_path: str
     val_dataset_path: str
     unsupervised: bool = False
+    data_type: Literal["reference", "contig"] = "contig"
     num_epochs: int = 1
     batch_size: int = 256
     val_batch_size: int = 512
