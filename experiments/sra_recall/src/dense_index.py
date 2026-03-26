@@ -94,19 +94,12 @@ class DenseIndex(BaseIndex):
             sequences = [str(record.seq) for record in SeqIO.parse(accession, "fasta")]
             chunked_sequences = []
             for seq in sequences:
-                if len(seq) < self.model_cfg.min_seq_len:
-                    pass
                 if len(seq) <= self.model_cfg.max_seq_len:
                     chunked_sequences.append(seq)
                 else:
+                    overlap = self.model_cfg.max_seq_len - 10
                     chunks = chunk_sequence(
-                        seq,
-                        self.model_cfg.max_seq_len,
-                        math.ceil(
-                            self.model_cfg.max_seq_len
-                            * self.model_cfg.min_overlap_percent
-                            / 2
-                        ),
+                        seq, self.model_cfg.max_seq_len, overlap=overlap
                     )
                     chunked_sequences.extend(chunks)
             embeddings = self.model.encode(chunked_sequences)
@@ -138,16 +131,10 @@ class DenseIndex(BaseIndex):
                 # Yield parsed and chunked sequences
                 for record in SeqIO.parse(accession, "fasta"):
                     seq = str(record.seq)
-                    if len(seq) < self.model_cfg.min_seq_len:
-                        continue
                     if len(seq) <= self.model_cfg.max_seq_len:
                         yield (srr_id, seq)
                     else:
-                        overlap = math.ceil(
-                            self.model_cfg.max_seq_len
-                            * self.model_cfg.min_overlap_percent
-                            / 2
-                        )
+                        overlap = self.model_cfg.max_seq_len - 10
                         chunks = chunk_sequence(
                             seq, self.model_cfg.max_seq_len, overlap
                         )
@@ -254,6 +241,10 @@ class DenseIndex(BaseIndex):
         return self.indexed
 
     def save(self, output_path: Path):
+        output_path.mkdir(exist_ok=True)
+        assert self.model_cfg.checkpoint_path
+        ckpt_name = Path(self.model_cfg.checkpoint_path).parent.name
+        output_path = output_path / ckpt_name
         output_path.mkdir(exist_ok=True)
         output_file = output_path / "index.pt"
         cpu_map = {}

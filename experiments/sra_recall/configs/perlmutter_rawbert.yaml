@@ -5,7 +5,7 @@ model:
   device: cuda
   pooling: max
   k: 100
-  max_seq_len: 1024
+  max_seq_len: 700
   min_seq_len: 150
   min_overlap_percent: 0.6
 accessions_dir: /pscratch/sd/r/rsynk/data/test/logan_contig

@@ -23,7 +23,7 @@ def apply_mutations(queries: pl.DataFrame, mutation_rate: float) -> pl.DataFrame
 
 
 def main(cfg: ExperimentConfig):
-    index_path: Path = cfg.index_dir / cfg.model.name
+    index_path: Path = cfg.index_dir / cfg.model.index_suffix
     accession_paths: list[Path] = sorted(list(cfg.accessions_dir.rglob("*.contigs.fa")))
     if isinstance(cfg.model, DenseConfig):
         index = DenseIndex(cfg)
@@ -34,7 +34,6 @@ def main(cfg: ExperimentConfig):
     else:
         raise ValueError("Unknown model config")
 
-    index_path: Path = cfg.index_dir / cfg.model.name
     if index_path.exists():
         index.load(index_path)
         # indexed_accs = index.indexed_accessions()

@@ -28,6 +28,9 @@ class Evo2Config(AlgorithmConfig):
     def __str__(self):
         return f"{self.name}"
 
+    def __post_init__(self):
+        self.index_suffix = Path(self.name)
+
 
 @dataclass
 class DenseConfig(AlgorithmConfig):
@@ -44,6 +47,19 @@ class DenseConfig(AlgorithmConfig):
     def __str__(self):
         return f"{self.name}"
 
+    def __post_init__(self):
+        if self.name == "dnabert":
+            self.index_suffix: Path = Path("dnabert/index.pt")
+        elif self.name == "rawbert":
+            assert self.checkpoint_path is not None
+            self.index_suffix: Path = (
+                Path("rawbert")
+                / Path(self.checkpoint_path).resolve().parent.name
+                / "index.pt"
+            )
+        else:
+            raise ValueError(f"name expected: rawbert or dnabert, got = {self.name}")
+
 
 @dataclass
 class MetagraphConfig(AlgorithmConfig):
@@ -53,6 +69,9 @@ class MetagraphConfig(AlgorithmConfig):
 
     def __str__(self):
         return f"{self.name}"
+
+    def __post_init__(self):
+        self.index_suffix = Path(self.name)
 
 
 @dataclass
