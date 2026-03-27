@@ -13,6 +13,8 @@ def calculate_recall_precision(
     model: str,
     mutation_rate: float,
     query_type: str,
+    checkpoint: str | None,
+    max_len: int | None,
     max_k: int,
 ):
     gt_set: set[str] = set(ground_truth_results)
@@ -35,6 +37,8 @@ def calculate_recall_precision(
             {
                 "read_id": read_id,
                 "model": model,
+                "checkpoint": checkpoint,
+                "max_len": max_len,
                 "mutation_rate": mutation_rate,
                 "query_type": query_type,
                 "k": k,
@@ -57,7 +61,7 @@ def calculate_recall_precision_df(queries_df: pl.DataFrame, data: pl.DataFrame):
         .item()
     )
 
-    for name, df in data.group_by("model"):
+    for name, df in data.group_by(["model", "checkpoint", "max_len"]):
         # Largest number of returned results over all queries
         max_k_results = (
             df.with_columns(pl.col("results").list.len().alias("num_results"))
@@ -78,6 +82,8 @@ def calculate_recall_precision_df(queries_df: pl.DataFrame, data: pl.DataFrame):
                 row["model"],
                 row["mutation_rate"],
                 row["query_type"],
+                row["checkpoint"],
+                row["max_len"],
                 max_k=max_k,
             )
             all_recalls_precisions.extend(recalls_precisions)
@@ -173,7 +179,7 @@ def plot_contig_len_hit_at_k(
 
 def plot_recall_precision(recall_precision_df: pl.DataFrame, plots_dir: Path):
     recall_precision_df = (
-        recall_precision_df.group_by(["model", "mutation_rate", "k", "query_type"])
+        recall_precision_df.group_by(["model", "checkpoint", "max_len", "mutation_rate", "k", "query_type"])
         .agg(
             pl.col("recall").mean().alias("average_recall"),
             pl.col("precision").mean().alias("average_precision"),
@@ -228,7 +234,7 @@ def plot_recall_precision(recall_precision_df: pl.DataFrame, plots_dir: Path):
 
 def plot_recall_at_k(recall_precision_df: pl.DataFrame, plots_dir: Path):
     recall_precision_df = (
-        recall_precision_df.group_by(["model", "mutation_rate", "k", "query_type"])
+        recall_precision_df.group_by(["model", "checkpoint", "max_len", "mutation_rate", "k", "query_type"])
         .agg(
             pl.col("recall").mean().alias("average_recall"),
             pl.col("precision").mean().alias("average_precision"),
@@ -274,7 +280,8 @@ def plot_auprc(recall_precision_df: pl.DataFrame, plots_dir: Path):
         ["model", "mutation_rate", "read_id", "query_type", "recall"]
     )
     macro_auprc = sorted_df.group_by(
-        ["model", "mutation_rate", "read_id", "query_type"], maintain_order=True
+        ["model", "checkpoint", "max_len", "mutation_rate", "read_id", "query_type"],
+        maintain_order=True,
     ).agg(
         # 2. Apply trapezoidal rule to the explicitly sorted columns
         (
@@ -286,14 +293,14 @@ def plot_auprc(recall_precision_df: pl.DataFrame, plots_dir: Path):
         .sum()
         .alias("read_auprc")
     )
-    macro_auprc = macro_auprc.group_by(["model", "mutation_rate", "query_type"]).agg(
-        pl.col("read_auprc").mean().alias("auprc")
-    )
+    macro_auprc = macro_auprc.group_by(
+        ["model", "checkpoint", "max_len", "mutation_rate", "query_type"]
+    ).agg(pl.col("read_auprc").mean().alias("auprc"))
 
     for name, df in macro_auprc.group_by("query_type"):
         query_type = name[0]
         chart = (
-            alt.Chart(macro_auprc)
+            alt.Chart(df)
             .mark_bar()
             .encode(
                 x=alt.X("model:N"),
@@ -326,6 +333,8 @@ def main(
             "model": pl.String,
             "mutation_rate": pl.Float64,
             "query_type": pl.String,
+            "checkpoint": pl.String,
+            "max_len": pl.Int64,
         }
     )
     for f in list(results_dir.rglob("*.parquet")):

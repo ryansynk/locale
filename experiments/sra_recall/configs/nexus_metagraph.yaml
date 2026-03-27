@@ -5,6 +5,6 @@ model:
 accessions_dir: /fs/nexus-projects/sra_search/data/test/logan_contig
 queries_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/sra_recall/logan_contig_queries.parquet
 index_dir: /fs/nexus-scratch/ryansynk/rawbert/experiments/sra_recall/indexes
-results_dir: /fs/nexus-scratch/ryansynk/rawbert/experiments/sra_recall/results/metagraph
+results_dir: /fs/nexus-scratch/ryansynk/rawbert/experiments/sra_recall/results
 mutation_rate: 0.0
 filter_query_lens: True

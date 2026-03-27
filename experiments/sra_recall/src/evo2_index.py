@@ -94,7 +94,7 @@ class Evo2Index(BaseIndex):
         return self.indexed
 
     def save(self, output_path: Path):
-        output_path.mkdir(exist_ok=True)
+        output_path.mkdir(exist_ok=True, parents=True)
         output_file = output_path / "index.pt"
         cpu_map = {}
         for srr_id, embeddings in self.accessions_tensor_map.items():

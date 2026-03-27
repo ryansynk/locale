@@ -25,11 +25,15 @@ class Evo2Config(AlgorithmConfig):
     device: str = "cuda"
     pooling: str = "max"
 
-    def __str__(self):
-        return f"{self.name}"
-
     def __post_init__(self):
-        self.index_suffix = Path(self.name)
+        config_tag = f"pool{self.pooling}"
+        self.index_suffix = Path("evo2") / config_tag
+        self.experiment_id = f"evo2_{config_tag}"
+        self.checkpoint: str | None = None
+        self.max_len: int | None = None
+
+    def __str__(self):
+        return self.experiment_id
 
 
 @dataclass
@@ -44,21 +48,25 @@ class DenseConfig(AlgorithmConfig):
     min_seq_len: int = 150
     min_overlap_percent: float = 0.6
 
-    def __str__(self):
-        return f"{self.name}"
-
     def __post_init__(self):
+        config_tag = f"maxlen{self.max_seq_len}_pool{self.pooling}"
         if self.name == "dnabert":
-            self.index_suffix: Path = Path("dnabert/index.pt")
+            self.index_suffix: Path = Path("dnabert") / config_tag
+            self.experiment_id: str = f"dnabert_{config_tag}"
+            self.checkpoint: str | None = None
+            self.max_len: int = self.max_seq_len
         elif self.name == "rawbert":
             assert self.checkpoint_path is not None
-            self.index_suffix: Path = (
-                Path("rawbert")
-                / Path(self.checkpoint_path).resolve().parent.name
-                / "index.pt"
-            )
+            ckpt_id = Path(self.checkpoint_path).resolve().parent.name
+            self.index_suffix: Path = Path("rawbert") / ckpt_id / config_tag
+            self.experiment_id: str = f"rawbert_{ckpt_id}_{config_tag}"
+            self.checkpoint: str | None = ckpt_id
+            self.max_len: int = self.max_seq_len
         else:
             raise ValueError(f"name expected: rawbert or dnabert, got = {self.name}")
+
+    def __str__(self):
+        return self.experiment_id
 
 
 @dataclass
@@ -67,11 +75,14 @@ class MetagraphConfig(AlgorithmConfig):
     executable: str = "metagraph"
     k: int = 31
 
-    def __str__(self):
-        return f"{self.name}"
-
     def __post_init__(self):
-        self.index_suffix = Path(self.name)
+        self.index_suffix = Path("metagraph") / f"k{self.k}"
+        self.experiment_id = f"metagraph_k{self.k}"
+        self.checkpoint: str | None = None
+        self.max_len: int | None = None
+
+    def __str__(self):
+        return self.experiment_id
 
 
 @dataclass

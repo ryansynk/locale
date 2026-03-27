@@ -66,10 +66,14 @@ def main(cfg: ExperimentConfig):
     results = results.with_columns(pl.lit(str(cfg.model)).alias("model"))
     results = results.with_columns(pl.lit(cfg.mutation_rate).alias("mutation_rate"))
     results = results.with_columns(pl.lit(cfg.query_type).alias("query_type"))
+    results = results.with_columns(pl.lit(cfg.model.checkpoint, dtype=pl.String).alias("checkpoint"))
+    results = results.with_columns(pl.lit(cfg.model.max_len, dtype=pl.Int64).alias("max_len"))
     output_path: Path = (
         cfg.results_dir
-        / f"{cfg.model.name}.mutation_{cfg.mutation_rate}.query_type_{cfg.query_type}.parquet"
+        / cfg.model.experiment_id
+        / f"{cfg.query_type}_mut{cfg.mutation_rate}.parquet"
     )
+    output_path.parent.mkdir(exist_ok=True, parents=True)
     results.write_parquet(output_path)
 
 

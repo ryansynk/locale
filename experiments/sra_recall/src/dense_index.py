@@ -242,10 +242,6 @@ class DenseIndex(BaseIndex):
 
     def save(self, output_path: Path):
         output_path.mkdir(exist_ok=True)
-        assert self.model_cfg.checkpoint_path
-        ckpt_name = Path(self.model_cfg.checkpoint_path).parent.name
-        output_path = output_path / ckpt_name
-        output_path.mkdir(exist_ok=True)
         output_file = output_path / "index.pt"
         cpu_map = {}
         for srr_id, embeddings in self.accessions_tensor_map.items():
