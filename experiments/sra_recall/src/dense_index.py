@@ -1,13 +1,14 @@
 import copy
-import math
 import multiprocessing as mp
 import os
+import random
 import sys
 import traceback
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed, process
 from itertools import islice
 from pathlib import Path
+from typing import Literal
 
 import polars as pl
 import torch
@@ -69,9 +70,9 @@ def _process_sequence_batch(batch):
         return srr_ids, embeddings
     except Exception as e:
         # Print the full traceback directly to the console from the worker
-        print(f"\n--- WORKER ERROR ---\n", file=sys.stderr)
+        print("\n--- WORKER ERROR ---\n", file=sys.stderr)
         traceback.print_exc()
-        print(f"--------------------\n", file=sys.stderr)
+        print("--------------------\n", file=sys.stderr)
         raise e  # Re-raise so the main thread knows it failed
 
 
@@ -84,6 +85,9 @@ class DenseIndex(BaseIndex):
         self.k = cfg.model.k
         self.cfg = cfg
         self.model_cfg = cfg.model
+        self.chunk_type: Literal["stride", "exact_chunk"] = cfg.model.chunk_type
+        self.chunk_overlap: int = cfg.model.chunk_overlap
+        self.contig_align_intervals: dict[str, list[tuple[int, int]]] | None = None
 
     def load(self, index_path: Path):
         index_file = index_path / "index.pt"
@@ -91,15 +95,22 @@ class DenseIndex(BaseIndex):
 
     def build_serial(self, accessions: list[Path], index_path: Path):
         for accession in tqdm(accessions, desc="Indexing accessions..."):
-            sequences = [str(record.seq) for record in SeqIO.parse(accession, "fasta")]
+            sequences = [
+                (str(record.seq), str(record.id))
+                for record in SeqIO.parse(accession, "fasta")
+            ]
             chunked_sequences = []
-            for seq in sequences:
+            for seq, contig_id in sequences:
                 if len(seq) <= self.model_cfg.max_seq_len:
                     chunked_sequences.append(seq)
                 else:
-                    overlap = self.model_cfg.max_seq_len - 10
                     chunks = chunk_sequence(
-                        seq, self.model_cfg.max_seq_len, overlap=overlap
+                        seq,
+                        contig_id,
+                        self.model_cfg.max_seq_len,
+                        self.chunk_overlap,
+                        self.chunk_type,
+                        self.contig_align_intervals,
                     )
                     chunked_sequences.extend(chunks)
             embeddings = self.model.encode(chunked_sequences)
@@ -131,12 +142,17 @@ class DenseIndex(BaseIndex):
                 # Yield parsed and chunked sequences
                 for record in SeqIO.parse(accession, "fasta"):
                     seq = str(record.seq)
+                    contig_id = str(record.id)
                     if len(seq) <= self.model_cfg.max_seq_len:
                         yield (srr_id, seq)
                     else:
-                        overlap = self.model_cfg.max_seq_len - 10
                         chunks = chunk_sequence(
-                            seq, self.model_cfg.max_seq_len, overlap
+                            seq,
+                            contig_id,
+                            self.model_cfg.max_seq_len,
+                            self.chunk_overlap,
+                            self.chunk_type,
+                            self.contig_align_intervals,
                         )
                         for chunk in chunks:
                             yield (srr_id, chunk)
@@ -250,18 +266,65 @@ class DenseIndex(BaseIndex):
         torch.save(cpu_map, output_file)
 
 
-def chunk_sequence(seq, chunk_size, overlap):
-    if overlap >= chunk_size:
-        raise ValueError("The overlap must be strictly less than the chunk size.")
-    if chunk_size <= 0:
-        raise ValueError("Chunk size (c) must be greater than 0.")
+def chunk_sequence(
+    seq: str,
+    contig_id: str,
+    chunk_size: int,
+    chunk_overlap: int,
+    chunk_type: Literal["stride", "exact_chunk"],
+    contig_align_intervals: dict[str, list[tuple[int, int]]] | None,
+):
+    if chunk_type == "stride":
+        if chunk_overlap >= chunk_size:
+            raise ValueError("The overlap must be strictly less than the chunk size.")
+        if chunk_size <= 0:
+            raise ValueError("Chunk size (c) must be greater than 0.")
 
-    step_size = chunk_size - overlap
+        step_size = chunk_size - chunk_overlap
 
-    # Generate chunks of exactly size c
-    chunks = [
-        seq[i : i + chunk_size] for i in range(0, len(seq) - chunk_size + 1, step_size)
-    ]
+        # Generate chunks of exactly size c
+        chunks = [
+            seq[i : i + chunk_size]
+            for i in range(0, len(seq) - chunk_size + 1, step_size)
+        ]
+    elif chunk_type == "exact_chunk":
+        assert contig_align_intervals
+        align_intervals = contig_align_intervals.get(contig_id, [])
+        chunks = []
+        covered = []
+
+        for iv_start, iv_end in align_intervals:
+            # chunk must start early enough to reach iv_start, and late enough to cover iv_end
+            lo = max(0, iv_end - chunk_size)
+            hi = min(iv_start, len(seq) - chunk_size)
+            chunk_start = random.randint(lo, max(lo, hi))
+            chunks.append(seq[chunk_start : chunk_start + chunk_size])
+            covered.append((chunk_start, chunk_start + chunk_size))
+
+        # Merge covered intervals to find uncovered regions
+        covered.sort()
+        merged: list[tuple[int, int]] = []
+        for s, e in covered:
+            if merged and s <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+            else:
+                merged.append((s, e))
+
+        uncovered_regions: list[tuple[int, int]] = []
+        prev = 0
+        for s, e in merged:
+            if prev < s:
+                uncovered_regions.append((prev, s))
+            prev = e
+        if prev < len(seq):
+            uncovered_regions.append((prev, len(seq)))
+
+        # Evenly chunk each uncovered region, including any leftover
+        for r_start, r_end in uncovered_regions:
+            for i in range(r_start, r_end, chunk_size):
+                chunks.append(seq[i : i + chunk_size])
+    else:
+        raise ValueError(f"Incorrect chunk_type recieved: {chunk_type}")
 
     return chunks
 

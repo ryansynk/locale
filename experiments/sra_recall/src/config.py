@@ -1,6 +1,6 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Literal, Optional, Tuple, Union
+from typing import Literal, Optional, Union
 
 
 @dataclass
@@ -31,6 +31,7 @@ class Evo2Config(AlgorithmConfig):
         self.experiment_id = f"evo2_{config_tag}"
         self.checkpoint: str | None = None
         self.max_len: int | None = None
+        self.chunk_type: int | None = None
 
     def __str__(self):
         return self.experiment_id
@@ -45,16 +46,19 @@ class DenseConfig(AlgorithmConfig):
     pooling: str = "max"
     k: int = 100
     max_seq_len: int = 1024
-    min_seq_len: int = 150
-    min_overlap_percent: float = 0.6
+    chunk_type: Literal["stride", "exact_chunk"] = "stride"
+    chunk_overlap: int = 150
 
     def __post_init__(self):
-        config_tag = f"maxlen{self.max_seq_len}_pool{self.pooling}"
+        config_tag = (
+            f"maxlen{self.max_seq_len}_pool{self.pooling}_chunk{self.chunk_type}"
+        )
         if self.name == "dnabert":
             self.index_suffix: Path = Path("dnabert") / config_tag
             self.experiment_id: str = f"dnabert_{config_tag}"
             self.checkpoint: str | None = None
             self.max_len: int = self.max_seq_len
+            self.chunk_type: str = self.chunk_type
         elif self.name == "rawbert":
             assert self.checkpoint_path is not None
             ckpt_id = Path(self.checkpoint_path).resolve().parent.name
@@ -62,6 +66,7 @@ class DenseConfig(AlgorithmConfig):
             self.experiment_id: str = f"rawbert_{ckpt_id}_{config_tag}"
             self.checkpoint: str | None = ckpt_id
             self.max_len: int = self.max_seq_len
+            self.chunk_type: str = self.chunk_type
         else:
             raise ValueError(f"name expected: rawbert or dnabert, got = {self.name}")
 
@@ -80,6 +85,7 @@ class MetagraphConfig(AlgorithmConfig):
         self.experiment_id = f"metagraph_k{self.k}"
         self.checkpoint: str | None = None
         self.max_len: int | None = None
+        self.chunk_type: int | None = None
 
     def __str__(self):
         return self.experiment_id
@@ -95,7 +101,6 @@ class ExperimentConfig:
     results_dir: Path
     query_type: Literal["raw_read", "logan_contig"]
     mutation_rate: float = 0.0
-    filter_query_lens: bool = True
 
     def __post_init__(self):
         self.results_dir.mkdir(exist_ok=True, parents=True)
