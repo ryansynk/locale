@@ -39,7 +39,7 @@ class Evo2Config(AlgorithmConfig):
 
 @dataclass
 class DenseConfig(AlgorithmConfig):
-    name: Literal["rawbert", "dnabert"] = "rawbert"  # "dnabert", "rawbert"
+    name: Literal["rawbert", "dnabert", "generator"] = "rawbert"  # "dnabert", "rawbert"
     checkpoint_path: Optional[str] = None
     batch_size: int = 128
     device: str = "cuda"
@@ -56,6 +56,12 @@ class DenseConfig(AlgorithmConfig):
         if self.name == "dnabert":
             self.index_suffix: Path = Path("dnabert") / config_tag
             self.experiment_id: str = f"dnabert_{config_tag}"
+            self.checkpoint: str | None = None
+            self.max_len: int = self.max_seq_len
+            self.chunk_type: str = self.chunk_type
+        elif self.name == "generator":
+            self.index_suffix: Path = Path("generator") / config_tag
+            self.experiment_id: str = f"generator_{config_tag}"
             self.checkpoint: str | None = None
             self.max_len: int = self.max_seq_len
             self.chunk_type: str = self.chunk_type

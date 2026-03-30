@@ -15,7 +15,7 @@ authors = [
 
 dependencies = [
     "torch>=2.6",
-    "transformers",
+    "transformers<=4.57.1",
     "einops",
     "altair",
     "biopython",
@@ -37,6 +37,7 @@ dependencies = [
     "metagraph-api",
     "evo2>=0.5.5",
     "setuptools>=82.0.1",
+    "mamba-ssm==2.2.4",
 ]
 
 [project.optional-dependencies]

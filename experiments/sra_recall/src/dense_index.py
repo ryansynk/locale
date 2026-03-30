@@ -15,7 +15,11 @@ import torch
 from Bio import SeqIO
 from torch import nn
 from tqdm import tqdm
-from transformers import AutoTokenizer, BertConfig
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    BertConfig,
+)
 from transformers.utils import logging as transformers_logging
 
 from rawbert.modeling.bert_layers import BertModel as DNABertModel
@@ -330,55 +334,49 @@ def chunk_sequence(
 
 
 class DenseEncoder:
+    def __init__(self, cfg: DenseConfig):
+        if cfg.name == "dnabert":
+            self._encoder = DNABertEncoder(cfg)
+        elif cfg.name == "rawbert":
+            self._encoder = RawBERTEncoder(cfg)
+        elif cfg.name == "generator":
+            self._encoder = GeneratorEncoder(cfg)
+        else:
+            raise ValueError(f"Unknown model name: {cfg.name}")
+
+    def encode(self, sequences):
+        return self._encoder.encode(sequences)
+
+
+class DNABertEncoder:
     # def __init__(self, model_name, batch_size, pooling, checkpoint_path, device="cuda"):
     def __init__(self, cfg: DenseConfig):
         transformers_logging.set_verbosity_error()
-        # Load your PyTorch model or DNABERT here
+
+        device = cfg.device
+        assert cfg.name == "dnabert"
         bert_config = BertConfig.from_pretrained("zhihan1996/DNABERT-2-117M")
         if not hasattr(bert_config, "pad_token_id") or bert_config.pad_token_id is None:
             bert_config.pad_token_id = 3  # DNABERT Tokenizer [PAD] token id
-
-        device = cfg.device
-        if cfg.name == "rawbert":
-            assert cfg.checkpoint_path, "No checkpoint provided!"
-            checkpoint_path = Path(cfg.checkpoint_path).resolve()
-            assert checkpoint_path.is_file(), "Checkpoint does not exist!"
-            checkpoint = torch.load(checkpoint_path)
-            model = RawBERT(
-                pooling="max",
-                dim=checkpoint["model_args"]["dim"],
-                K=checkpoint["model_args"]["K"],
-                m=checkpoint["model_args"]["m"],
-                T=checkpoint["model_args"]["T"],
-            )
-            model.load_state_dict(checkpoint["model"])
-            model = model.eval().to(device)
-            forward = model.bert_q
-        elif cfg.name == "dnabert":
-            model = DNABertModel.from_pretrained(
-                "zhihan1996/DNABERT-2-117M",
-                trust_remote_code=True,
-                config=bert_config,
-            )
-            if hasattr(model, "pooler") and model.pooler is not None:
-                del model.pooler
-                model.pooler = None
-            patch_with_flash_lib(model)
-            model = model.eval().to(device)
-            forward = model
-        else:
-            raise ValueError(
-                f"Expected model_name to be 'rawbert' or 'dnabert', got: {cfg.name}"
-            )
-
-        self.model = model
-        self.batch_size = cfg.batch_size
-        self.device = device
-        self.forward = forward
-        self.pooling = cfg.pooling
+        model = DNABertModel.from_pretrained(
+            "zhihan1996/DNABERT-2-117M",
+            trust_remote_code=True,
+            config=bert_config,
+        )
+        if hasattr(model, "pooler") and model.pooler is not None:
+            del model.pooler
+            model.pooler = None
+        patch_with_flash_lib(model)
+        model = model.eval().to(device)
+        # forward = model
         self.tokenizer = AutoTokenizer.from_pretrained(
             "zhihan1996/DNABERT-2-117M", trust_remote_code=True
         )
+        self.model = model
+
+        self.batch_size = cfg.batch_size
+        self.device = device
+        self.pooling = cfg.pooling
 
     @torch.no_grad()
     def encode(self, sequences):
@@ -388,7 +386,7 @@ class DenseEncoder:
             tokens = self.tokenizer(batch, return_tensors="pt", padding=True).to(
                 self.device
             )
-            outputs = self.forward(**tokens)[0]
+            outputs = self.model(**tokens)[0]
 
             mask = tokens.attention_mask.unsqueeze(-1)
             if self.pooling == "class":
@@ -400,6 +398,140 @@ class DenseEncoder:
                 outputs = outputs.clone()  # Prevent in-place modification warnings
                 outputs[mask_expanded == 0] = -1e9
                 embeddings, _ = outputs.max(dim=1)
+            else:
+                raise ValueError(f"self.pooling got unexpected value {self.pooling}")
+
+            batch_embeds = nn.functional.normalize(embeddings, dim=1)
+            embeds_list.append(batch_embeds)
+
+        embeddings = torch.cat(embeds_list, dim=0)
+        return embeddings
+
+
+class RawBERTEncoder:
+    # def __init__(self, model_name, batch_size, pooling, checkpoint_path, device="cuda"):
+    def __init__(self, cfg: DenseConfig):
+        transformers_logging.set_verbosity_error()
+
+        device = cfg.device
+        assert cfg.name == "rawbert"
+        assert cfg.checkpoint_path, "No checkpoint provided!"
+        checkpoint_path = Path(cfg.checkpoint_path).resolve()
+        assert checkpoint_path.is_file(), "Checkpoint does not exist!"
+        checkpoint = torch.load(checkpoint_path)
+        model = RawBERT(
+            pooling="max",
+            dim=checkpoint["model_args"]["dim"],
+            K=checkpoint["model_args"]["K"],
+            m=checkpoint["model_args"]["m"],
+            T=checkpoint["model_args"]["T"],
+        )
+        model.load_state_dict(checkpoint["model"])
+        model = model.eval().to(device)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            "zhihan1996/DNABERT-2-117M", trust_remote_code=True
+        )
+
+        self.model = model
+        self.batch_size = cfg.batch_size
+        self.device = device
+        self.pooling = cfg.pooling
+
+    @torch.no_grad()
+    def encode(self, sequences):
+        embeds_list = []
+        assert self.tokenizer
+        for batch in batched(sequences, self.batch_size):
+            tokens = self.tokenizer(batch, return_tensors="pt", padding=True).to(
+                self.device
+            )
+            outputs = self.model.bert_q(**tokens)[0]
+
+            mask = tokens.attention_mask.unsqueeze(-1)
+            if self.pooling == "class":
+                embeddings = outputs[:, 0, :]
+            elif self.pooling == "mean":
+                embeddings = (outputs * mask).sum(dim=1) / mask.sum(dim=1)
+            elif self.pooling == "max":
+                mask_expanded = mask.expand(outputs.size())
+                outputs = outputs.clone()  # Prevent in-place modification warnings
+                outputs[mask_expanded == 0] = -1e9
+                embeddings, _ = outputs.max(dim=1)
+            else:
+                raise ValueError(f"self.pooling got unexpected value {self.pooling}")
+
+            batch_embeds = nn.functional.normalize(embeddings, dim=1)
+            embeds_list.append(batch_embeds)
+
+        embeddings = torch.cat(embeds_list, dim=0)
+        return embeddings
+
+
+class GeneratorEncoder:
+    # def __init__(self, model_name, batch_size, pooling, checkpoint_path, device="cuda"):
+    def __init__(self, cfg: DenseConfig):
+        transformers_logging.set_verbosity_error()
+
+        device = cfg.device
+        assert cfg.name == "generator"
+        model_str = "GenerTeam/GENERator-v2-eukaryote-1.2b-base"
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model_str, trust_remote_code=True
+        )
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_str,
+            trust_remote_code=True,
+            torch_dtype=torch.bfloat16,
+            attn_implementation="flash_attention_2",
+        )
+        self.batch_size = cfg.batch_size
+        self.device = device
+        self.pooling = cfg.pooling
+        self.model = self.model.eval().to(self.device)
+
+    @torch.no_grad()
+    def encode(self, sequences):
+        embeds_list = []
+        assert self.tokenizer
+        for batch in batched(sequences, self.batch_size):
+            processed_sequences = [
+                self.tokenizer.bos_token + seq[: len(seq) // 6 * 6] for seq in batch
+            ]
+            self.tokenizer.padding_side = "right"
+            inputs = self.tokenizer(
+                processed_sequences,
+                add_special_tokens=True,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=self.model.config.max_position_embeddings,
+            ).to(self.device)
+            with torch.inference_mode():
+                outputs = self.model(**inputs, output_hidden_states=True)
+
+            hidden_states = outputs.hidden_states[-1]
+            attention_mask = inputs["attention_mask"]
+
+            if self.pooling == "class":
+                raise ValueError("Decoder-only model has no cls token")
+            elif self.pooling == "mean":
+                expanded_mask = (
+                    attention_mask.unsqueeze(-1)
+                    .expand(hidden_states.size())
+                    .to(torch.float32)
+                )
+                sum_embeddings = torch.sum(hidden_states * expanded_mask, dim=1)
+                embeddings = sum_embeddings / expanded_mask.sum(dim=1)
+            elif self.pooling == "max":
+                mask_expanded = attention_mask.expand(outputs.size())
+                outputs = outputs.clone()  # Prevent in-place modification warnings
+                outputs[mask_expanded == 0] = -1e9
+                embeddings, _ = outputs.max(dim=1)
+            elif self.pooling == "eos":
+                last_token_indices = attention_mask.sum(dim=1) - 1
+                embeddings = hidden_states[
+                    torch.arange(hidden_states.size(0)), last_token_indices, :
+                ]
             else:
                 raise ValueError(f"self.pooling got unexpected value {self.pooling}")
 
