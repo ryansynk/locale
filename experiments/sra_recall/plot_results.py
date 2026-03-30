@@ -15,6 +15,7 @@ def calculate_recall_precision(
     query_type: str,
     checkpoint: str | None,
     max_len: int | None,
+    chunk_type: str | None,
     max_k: int,
 ):
     gt_set: set[str] = set(ground_truth_results)
@@ -39,6 +40,7 @@ def calculate_recall_precision(
                 "model": model,
                 "checkpoint": checkpoint,
                 "max_len": max_len,
+                "chunk_type": chunk_type,
                 "mutation_rate": mutation_rate,
                 "query_type": query_type,
                 "k": k,
@@ -61,7 +63,7 @@ def calculate_recall_precision_df(queries_df: pl.DataFrame, data: pl.DataFrame):
         .item()
     )
 
-    for name, df in data.group_by(["model", "checkpoint", "max_len"]):
+    for name, df in data.group_by(["model", "checkpoint", "max_len", "chunk_type"]):
         # Largest number of returned results over all queries
         max_k_results = (
             df.with_columns(pl.col("results").list.len().alias("num_results"))
@@ -84,6 +86,7 @@ def calculate_recall_precision_df(queries_df: pl.DataFrame, data: pl.DataFrame):
                 row["query_type"],
                 row["checkpoint"],
                 row["max_len"],
+                row["chunk_type"],
                 max_k=max_k,
             )
             all_recalls_precisions.extend(recalls_precisions)
@@ -179,7 +182,17 @@ def plot_contig_len_hit_at_k(
 
 def plot_recall_precision(recall_precision_df: pl.DataFrame, plots_dir: Path):
     recall_precision_df = (
-        recall_precision_df.group_by(["model", "checkpoint", "max_len", "mutation_rate", "k", "query_type"])
+        recall_precision_df.group_by(
+            [
+                "model",
+                "checkpoint",
+                "max_len",
+                "chunk_type",
+                "mutation_rate",
+                "k",
+                "query_type",
+            ]
+        )
         .agg(
             pl.col("recall").mean().alias("average_recall"),
             pl.col("precision").mean().alias("average_precision"),
@@ -234,7 +247,17 @@ def plot_recall_precision(recall_precision_df: pl.DataFrame, plots_dir: Path):
 
 def plot_recall_at_k(recall_precision_df: pl.DataFrame, plots_dir: Path):
     recall_precision_df = (
-        recall_precision_df.group_by(["model", "checkpoint", "max_len", "mutation_rate", "k", "query_type"])
+        recall_precision_df.group_by(
+            [
+                "model",
+                "checkpoint",
+                "max_len",
+                "chunk_type",
+                "mutation_rate",
+                "k",
+                "query_type",
+            ]
+        )
         .agg(
             pl.col("recall").mean().alias("average_recall"),
             pl.col("precision").mean().alias("average_precision"),
@@ -280,7 +303,15 @@ def plot_auprc(recall_precision_df: pl.DataFrame, plots_dir: Path):
         ["model", "mutation_rate", "read_id", "query_type", "recall"]
     )
     macro_auprc = sorted_df.group_by(
-        ["model", "checkpoint", "max_len", "mutation_rate", "read_id", "query_type"],
+        [
+            "model",
+            "checkpoint",
+            "max_len",
+            "chunk_type",
+            "mutation_rate",
+            "read_id",
+            "query_type",
+        ],
         maintain_order=True,
     ).agg(
         # 2. Apply trapezoidal rule to the explicitly sorted columns
@@ -294,7 +325,7 @@ def plot_auprc(recall_precision_df: pl.DataFrame, plots_dir: Path):
         .alias("read_auprc")
     )
     macro_auprc = macro_auprc.group_by(
-        ["model", "checkpoint", "max_len", "mutation_rate", "query_type"]
+        ["model", "checkpoint", "max_len", "chunk_type", "mutation_rate", "query_type"]
     ).agg(pl.col("read_auprc").mean().alias("auprc"))
 
     for name, df in macro_auprc.group_by("query_type"):
@@ -335,13 +366,13 @@ def main(
             "query_type": pl.String,
             "checkpoint": pl.String,
             "max_len": pl.Int64,
+            "chunk_type": pl.String,
         }
     )
     for f in list(results_dir.rglob("*.parquet")):
         df = pl.read_parquet(f, schema=schema)
         data.append(df)
     data = pl.concat(data)
-
     queries_df = pl.read_parquet(queries_path)
     recall_precision_df = calculate_recall_precision_df(queries_df, data)
     plot_recall_precision(recall_precision_df, plots_dir)
