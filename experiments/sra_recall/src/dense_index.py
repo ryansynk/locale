@@ -343,6 +343,8 @@ class DenseEncoder:
             self._encoder = RawBERTEncoder(cfg)
         elif cfg.name == "generator":
             self._encoder = GeneratorEncoder(cfg)
+        elif cfg.name == "neuroseed":
+            self._encoder = NeuroSEEDEncoder(cfg)
         else:
             raise ValueError(f"Unknown model name: {cfg.name}")
 
@@ -547,3 +549,90 @@ class GeneratorEncoder:
 
         embeddings = torch.cat(embeds_list, dim=0)
         return embeddings
+
+
+# DNA character → integer index matching NeuroSEED's convention:
+# A→0, C→1, G→2, T→3; unknown characters (N, etc.) encoded as all-zeros.
+_DNA_ALPHABET: dict[str, int] = {"A": 0, "C": 1, "G": 2, "T": 3}
+
+
+def _strings_to_one_hot(sequences: list[str], len_sequence: int) -> torch.Tensor:
+    """Convert a list of DNA strings to a one-hot float tensor of shape
+    (batch, len_sequence, 4).  Sequences are truncated or zero-padded to
+    ``len_sequence``.  Unknown nucleotides are encoded as all-zeros.
+    """
+    alphabet_size = 4
+    # lookup[i] = one-hot row for nucleotide i; lookup[4] = zeros for padding/-1
+    lookup = torch.cat(
+        [torch.eye(alphabet_size), torch.zeros(1, alphabet_size)], dim=0
+    )  # (5, 4)
+
+    batch_indices = []
+    for seq in sequences:
+        indices = [
+            _DNA_ALPHABET.get(c.upper(), alphabet_size) for c in seq[:len_sequence]
+        ]
+        if len(indices) < len_sequence:
+            indices.extend([alphabet_size] * (len_sequence - len(indices)))
+        batch_indices.append(indices)
+
+    index_tensor = torch.tensor(batch_indices, dtype=torch.long)  # (B, L)
+    return lookup[index_tensor]  # (B, L, 4)
+
+
+class NeuroSEEDEncoder:
+    """Wraps a pretrained NeuroSEED model for encoding raw DNA strings.
+
+    The checkpoint must be saved in the format produced by NeuroSEED's
+    training scripts::
+
+        torch.save(
+            (model_class, model_args, embedding_model.state_dict(), distance),
+            "checkpoint.pkl",
+        )
+
+    Sequences are converted to one-hot tensors (batch × len_sequence × 4)
+    before being passed to ``model.encode()``.  Sequences longer than
+    ``model_args.len_sequence`` are truncated; shorter ones are zero-padded.
+    """
+
+    def __init__(self, cfg: DenseConfig):
+        assert cfg.name == "neuroseed"
+        assert cfg.checkpoint_path, "No checkpoint_path provided for NeuroSEED!"
+        checkpoint_path = Path(cfg.checkpoint_path).resolve()
+        assert checkpoint_path.is_file(), f"Checkpoint not found: {checkpoint_path}"
+
+        # NeuroSEED model classes must be importable at torch.load time because
+        # the checkpoint serialises the class object itself.
+        if cfg.neuroseed_path:
+            neuroseed_abs = str(Path(cfg.neuroseed_path).resolve())
+            if neuroseed_abs not in sys.path:
+                sys.path.insert(0, neuroseed_abs)
+
+        # Checkpoint format: (model_class, model_args, state_dict, distance)
+        model_class, model_args, state_dict, distance = torch.load(
+            checkpoint_path, map_location="cpu", weights_only=False
+        )
+        encoder_model = model_class(**vars(model_args))
+        encoder_model.load_state_dict(state_dict)
+        encoder_model = encoder_model.eval().to(cfg.device)
+
+        self.model = encoder_model
+        self.len_sequence: int = model_args.len_sequence
+        self.batch_size = cfg.batch_size
+        self.device = cfg.device
+
+    @torch.no_grad()
+    def encode(self, sequences: list[str]) -> torch.Tensor:
+        embeds_list = []
+        for batch in batched(sequences, self.batch_size):
+            one_hot = _strings_to_one_hot(batch, self.len_sequence).to(self.device)
+            # Base model classes (CNN, Feedforward, etc.) expose forward() not encode().
+            # TripletEncoder wraps those and does expose encode(), so handle both.
+            if hasattr(self.model, "encode"):
+                embeddings = self.model.encode(one_hot)
+            else:
+                embeddings = self.model(one_hot)
+            batch_embeds = nn.functional.normalize(embeddings.float(), dim=1)
+            embeds_list.append(batch_embeds)
+        return torch.cat(embeds_list, dim=0)

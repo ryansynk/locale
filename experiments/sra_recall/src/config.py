@@ -39,7 +39,7 @@ class Evo2Config(AlgorithmConfig):
 
 @dataclass
 class DenseConfig(AlgorithmConfig):
-    name: Literal["rawbert", "dnabert", "generator"] = "rawbert"  # "dnabert", "rawbert"
+    name: Literal["rawbert", "dnabert", "generator", "neuroseed"] = "rawbert"  # "dnabert", "rawbert"
     checkpoint_path: Optional[str] = None
     batch_size: int = 128
     device: str = "cuda"
@@ -48,6 +48,7 @@ class DenseConfig(AlgorithmConfig):
     max_seq_len: int = 1024
     chunk_type: Literal["stride", "exact_chunk"] = "stride"
     chunk_overlap: int = 150
+    neuroseed_path: Optional[str] = "/pscratch/sd/r/rsynk/NeuroSEED"
 
     def __post_init__(self):
         config_tag = (
@@ -73,8 +74,16 @@ class DenseConfig(AlgorithmConfig):
             self.checkpoint: str | None = ckpt_id
             self.max_len: int = self.max_seq_len
             self.chunk_type: str = self.chunk_type
+        elif self.name == "neuroseed":
+            assert self.checkpoint_path is not None
+            ckpt_id = Path(self.checkpoint_path).resolve().stem
+            self.index_suffix: Path = Path("neuroseed") / ckpt_id / config_tag
+            self.experiment_id: str = f"neuroseed_{ckpt_id}_{config_tag}"
+            self.checkpoint: str | None = ckpt_id
+            self.max_len: int = self.max_seq_len
+            self.chunk_type: str = self.chunk_type
         else:
-            raise ValueError(f"name expected: rawbert or dnabert, got = {self.name}")
+            raise ValueError(f"name expected: rawbert, dnabert, generator, or neuroseed, got = {self.name}")
 
     def __str__(self):
         return self.experiment_id
