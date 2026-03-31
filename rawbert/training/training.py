@@ -95,6 +95,8 @@ def train(
         m=cfg.moco_momentum,
         T=cfg.moco_softmax_temp,
     )
+    if cfg.moco_filter_queue:
+        rawbert.set_kmer_k(cfg.moco_filter_queue_identity_cutoff)
     rawbert = rawbert.to(local_rank)
     rawbert.train()
     backbone_params = list(

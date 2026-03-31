@@ -10,9 +10,11 @@ Code has been modified for DNA sequence data
 
 import concurrent.futures
 import logging
+import math
 import os
+from collections import defaultdict
 from copy import deepcopy
-from typing import List, Optional
+from typing import Dict, List, Optional, Set
 
 import edlib  # ty: ignore unresolved-import
 import einops
@@ -102,9 +104,36 @@ class RawBERT(nn.Module):
             # Queue for storing actual DNA sequence strings
             # Using a Python list since strings can't be stored in tensors
             self.queue_seqs: List[Optional[str]] = [None] * K
+
+            # k-mer inverted index: kmer_str -> set of queue slot indices
+            # Allows O(L) candidate lookup instead of O(K) exhaustive search.
+            # k is chosen so that sequences above the similarity cutoff are
+            # guaranteed to share at least one k-mer (q-gram lemma).
+            # Safe default k=9 works for similarity >= 0.9 on typical DNA reads.
+            self.kmer_k: int = 9
+            self.kmer_index: Dict[str, Set[int]] = defaultdict(set)
         else:
             self.bert_k = None
             self.projector_k = None
+
+    def set_kmer_k(self, identity_cutoff):
+        # k must satisfy k < 1/(1-cutoff) to guarantee shared k-mers for similar seqs.
+        # Use ceil - 1 to get the largest valid integer strictly below the bound.
+        self.kmer_k = math.ceil(1 / (1 - identity_cutoff)) - 1
+
+    def _get_kmers(self, seq: str) -> List[str]:
+        k = self.kmer_k
+        return [seq[i : i + k] for i in range(len(seq) - k + 1)]
+
+    def _add_to_kmer_index(self, slot: int, seq: str) -> None:
+        for kmer in self._get_kmers(seq):
+            self.kmer_index[kmer].add(slot)
+
+    def _remove_from_kmer_index(self, slot: int, seq: str) -> None:
+        for kmer in self._get_kmers(seq):
+            bucket = self.kmer_index.get(kmer)
+            if bucket is not None:
+                bucket.discard(slot)
 
     def _remove_pooler(self, model):
         # Remove unused pooler layers
@@ -130,10 +159,15 @@ class RawBERT(nn.Module):
         # replace the keys at ptr (dequeue and enqueue)
         self.queue[:, ptr : ptr + batch_size] = keys.T
 
-        # Store sequence strings if provided
+        # Store sequence strings and maintain k-mer index
         if sequences is not None:
             for i, seq in enumerate(sequences):
-                self.queue_seqs[ptr + i] = seq
+                slot = ptr + i
+                old_seq = self.queue_seqs[slot]
+                if old_seq is not None:
+                    self._remove_from_kmer_index(slot, old_seq)
+                self.queue_seqs[slot] = seq
+                self._add_to_kmer_index(slot, seq)
 
         ptr = (ptr + batch_size) % self.K  # move pointer
 
@@ -189,31 +223,38 @@ class RawBERT(nn.Module):
         self, batch_sequences: List[str], queue_similarity_cutoff: float
     ) -> torch.Tensor:
         """
-        Check if any sequences in the batch are locally aligned to sequences in the queue.
-        Optimized with parallel processing and edlib early-bailout.
+        Check if any sequences in the batch are aligned to sequences in the queue.
+
+        Uses a k-mer inverted index to find candidates in O(batch * L) instead of
+        O(K * batch). By the q-gram lemma, any pair with edit distance <= d must
+        share at least one k-mer when k <= floor(min_len / (d + 1)), so this
+        filter has zero false negatives.
+
+        Only the (typically small) candidate set is passed to edlib.
         """
         aligned_mask = torch.zeros(self.K, dtype=torch.bool, device=self.device)
 
-        # Filter out None values upfront to avoid checking inside the loop
-        valid_queue_items = [
-            (i, seq) for i, seq in enumerate(self.queue_seqs) if seq is not None
-        ]
+        # Collect candidate queue slots that share at least one k-mer with any batch seq
+        candidates: Set[int] = set()
+        for seq in batch_sequences:
+            for kmer in self._get_kmers(seq):
+                bucket = self.kmer_index.get(kmer)
+                if bucket:
+                    candidates.update(bucket)
 
-        if not valid_queue_items:
+        if not candidates:
             return aligned_mask
 
-        def check_single_queue_seq(item):
-            i, queue_seq = item
+        def check_single_candidate(slot: int):
+            queue_seq = self.queue_seqs[slot]
+            if queue_seq is None:
+                return slot, False
             for batch_seq in batch_sequences:
                 if len(batch_seq) <= len(queue_seq):
                     q, t = batch_seq, queue_seq
                 else:
                     q, t = queue_seq, batch_seq
-
-                # Calculate the maximum allowed edit distance to meet the cutoff.
                 max_allowed_distance = int(len(q) * (1.0 - queue_similarity_cutoff))
-
-                # Pass 'k' to force edlib to abort early if the threshold is exceeded.
                 result = edlib.align(
                     query=q,
                     target=t,
@@ -221,38 +262,21 @@ class RawBERT(nn.Module):
                     task="distance",
                     k=max_allowed_distance,
                 )
-
-                # edlib returns -1 if the true edit distance is > k
                 if result["editDistance"] != -1:
-                    return i, True
+                    return slot, True
+            return slot, False
 
-            return i, False
-
-        # 1. Determine total physical CPUs
         total_cpus = os.cpu_count() or 4
-
-        # 2. Determine how many GPU processes are running on this node
         if torch.distributed.is_available() and torch.distributed.is_initialized():
-            # If running a single node with multiple GPUs, world_size is the GPU count.
-            # (Note: If running multi-node, you would fetch the LOCAL_WORLD_SIZE instead)
             num_gpus = torch.distributed.get_world_size()
         else:
             num_gpus = 1
+        workers = max(1, total_cpus // num_gpus)
 
-        # 3. Safely partition the CPU cores
-        # We use max(1, ...) to ensure at least 1 worker per GPU process
-        safe_workers_per_gpu = max(1, total_cpus // num_gpus)
-
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=safe_workers_per_gpu
-        ) as executor:
-            # Map the function across our valid queue sequences
-            results = executor.map(check_single_queue_seq, valid_queue_items)
-
-        # Update the mask based on results
-        for i, is_aligned in results:
-            if is_aligned:
-                aligned_mask[i] = True
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            for slot, is_aligned in executor.map(check_single_candidate, candidates):
+                if is_aligned:
+                    aligned_mask[slot] = True
 
         return aligned_mask
 

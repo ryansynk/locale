@@ -1,9 +1,8 @@
 model:
   name: neuroseed 
-  checkpoint_path: /pscratch/sd/r/rsynk/NeuroSEED/38.pkl
+  checkpoint_path: /pscratch/sd/r/rsynk/NeuroSEED/checkpoints/cnn_closest.pkl
   batch_size: 100
   device: cuda
-  pooling: max
   k: 100
   max_seq_len: 700
   chunk_type: stride
