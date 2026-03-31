@@ -212,8 +212,10 @@ class DenseIndex(BaseIndex):
     @torch.no_grad()
     def search(self, queries: pl.DataFrame) -> pl.DataFrame:
         queries = queries.with_row_index()
-        query_features = self.model.encode(queries["query_sequence"].to_list()).to(
-            self.model_cfg.device
+        query_features = (
+            self.model.encode(queries["query_sequence"].to_list())
+            .to(self.model_cfg.device)
+            .float()
         )
         all_scores = []
         accession_names = []
@@ -224,13 +226,13 @@ class DenseIndex(BaseIndex):
         ):
             accession_names.append(acc)
             per_accession_logits = torch.matmul(
-                query_features, acc_tensor.to(self.model_cfg.device).T
+                query_features, acc_tensor.to(self.model_cfg.device).float().T
             )  # (num_queries, num_seqs_in_accession)
             scores, _ = per_accession_logits.max(dim=-1)
             all_scores.append(scores)
 
         scores = torch.stack(all_scores, dim=1)  # (num_queries, num_accessions)
-        scores_cpu = scores.cpu().numpy()
+        scores_cpu = scores.float().cpu().numpy()
         # scores_col = []
         scores_df = []
         for i in range(scores_cpu.shape[0]):
@@ -506,6 +508,7 @@ class GeneratorEncoder:
                 truncation=True,
                 max_length=self.model.config.max_position_embeddings,
             ).to(self.device)
+
             with torch.inference_mode():
                 outputs = self.model(**inputs, output_hidden_states=True)
 
@@ -523,10 +526,14 @@ class GeneratorEncoder:
                 sum_embeddings = torch.sum(hidden_states * expanded_mask, dim=1)
                 embeddings = sum_embeddings / expanded_mask.sum(dim=1)
             elif self.pooling == "max":
-                mask_expanded = attention_mask.expand(outputs.size())
-                outputs = outputs.clone()  # Prevent in-place modification warnings
-                outputs[mask_expanded == 0] = -1e9
-                embeddings, _ = outputs.max(dim=1)
+                mask_expanded = attention_mask.unsqueeze(-1).expand(
+                    hidden_states.size()
+                )
+                hidden_states = (
+                    hidden_states.clone()
+                )  # Prevent in-place modification warnings
+                hidden_states[mask_expanded == 0] = -1e9
+                embeddings, _ = hidden_states.max(dim=1)
             elif self.pooling == "eos":
                 last_token_indices = attention_mask.sum(dim=1) - 1
                 embeddings = hidden_states[

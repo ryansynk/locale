@@ -91,7 +91,21 @@ def calculate_recall_precision_df(queries_df: pl.DataFrame, data: pl.DataFrame):
             )
             all_recalls_precisions.extend(recalls_precisions)
 
-    return pl.from_dicts(all_recalls_precisions)
+    schema = pl.Schema(
+        {
+            "read_id": pl.String,
+            "model": pl.String,
+            "checkpoint": pl.String,
+            "max_len": pl.Int64,
+            "chunk_type": pl.String,
+            "mutation_rate": pl.Float64,
+            "query_type": pl.String,
+            "k": pl.Int64,
+            "precision": pl.Float64,
+            "recall": pl.Float64,
+        }
+    )
+    return pl.from_dicts(all_recalls_precisions, schema=schema)
 
 
 def plot_contig_len_hit_at_k(
