@@ -39,7 +39,9 @@ class Evo2Config(AlgorithmConfig):
 
 @dataclass
 class DenseConfig(AlgorithmConfig):
-    name: Literal["rawbert", "dnabert", "generator", "neuroseed"] = "rawbert"  # "dnabert", "rawbert"
+    name: Literal["rawbert", "dnabert", "generator", "neuroseed", "dna2vec"] = (
+        "rawbert"  # "dnabert", "rawbert"
+    )
     checkpoint_path: Optional[str] = None
     batch_size: int = 128
     device: str = "cuda"
@@ -82,8 +84,16 @@ class DenseConfig(AlgorithmConfig):
             self.checkpoint: str | None = ckpt_id
             self.max_len: int = self.max_seq_len
             self.chunk_type: str = self.chunk_type
+        elif self.name == "dna2vec":
+            self.index_suffix: Path = Path("dna2vec") / config_tag
+            self.experiment_id: str = f"dna2vec_{config_tag}"
+            self.checkpoint: str | None = None
+            self.max_len: int = self.max_seq_len
+            self.chunk_type: str = self.chunk_type
         else:
-            raise ValueError(f"name expected: rawbert, dnabert, generator, or neuroseed, got = {self.name}")
+            raise ValueError(
+                f"name expected: rawbert, dnabert, generator, or neuroseed, got = {self.name}"
+            )
 
     def __str__(self):
         return self.experiment_id
