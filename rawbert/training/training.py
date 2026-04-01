@@ -18,10 +18,10 @@ from transformers.utils import logging as transformers_logging
 
 from rawbert.config import TrainConfig
 from rawbert.modeling.model import RawBERT
-from rawbert.training.supervised_batcher import SupervisedBatcher
-from rawbert.training.unsupervised_batcher import UnsupervisedBatcher
 from rawbert.training.containment_batcher import ContainmentBatcher
 from rawbert.training.reference_batcher import ReferenceBatcher
+from rawbert.training.supervised_batcher import SupervisedBatcher
+from rawbert.training.unsupervised_batcher import UnsupervisedBatcher
 from wandb import Run
 
 
@@ -50,7 +50,8 @@ def save_checkpoint(state, checkpoint_dir, cfg, run_id):
     with open(this_ckpt_dir / "config.yaml", "w") as f:
         yaml.dump(asdict(cfg), f)
 
-    filename = (this_ckpt_dir / "checkpoint.pth.tar").resolve()
+    step = state["step"]
+    filename = (this_ckpt_dir / f"checkpoint{step}.pth.tar").resolve()
     par_tqdm_write(f"Saving checkpoint to {str(filename)}")
     torch.save(state, filename)
 

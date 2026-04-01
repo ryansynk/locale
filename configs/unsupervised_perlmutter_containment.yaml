@@ -2,7 +2,7 @@ unsupervised: true
 num_epochs: 1
 dataset_path: /pscratch/sd/r/rsynk/data/train/logan_contig/all_contigs.parquet
 val_dataset_path: /pscratch/sd/r/rsynk/data/val/logan_contig/all_contigs.parquet
-batch_size: 256
+per_device_batch_size: 64
 val_batch_size: 512
 schedule: cosine
 lr: 0.001
@@ -34,7 +34,7 @@ augment_config:
   identity_mean: 95
   identity_max: 99
   identity_stdev: 2.5
-  disable_mutations: True 
+  disable_mutations: False
   insertion_rate: 0.005
   deletion_rate: 0.005
   substitution_rate: 0.02

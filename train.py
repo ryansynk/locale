@@ -48,16 +48,9 @@ def main(cfg: TrainConfig):
         world_size = 1
         par_print("Running in Single-GPU mode (No DDP detected).")
 
-    # Calculate per-device batch size
-    per_device_batch_size = cfg.batch_size // world_size
-
-    par_print(f"Global Batch Size: {cfg.batch_size}")
     par_print(f"World Size: {world_size}")
-    par_print(f"Per-Device Batch Size: {per_device_batch_size}")
-    if cfg.batch_size % world_size != 0:
-        par_print(
-            "Warning: Global batch size is not divisible by world size. This results in an uneven split."
-        )
+    par_print(f"Per-Device Batch Size: {cfg.per_device_batch_size}")
+    par_print(f"Global Batch Size: {cfg.per_device_batch_size * world_size}")
 
     par_print(f"Rawbert dim = {cfg.dim}")
     par_print(f"Rawbert queue size = {cfg.moco_queue_size}")
@@ -73,7 +66,7 @@ def main(cfg: TrainConfig):
 
     train(
         cfg,
-        per_device_batch_size,
+        cfg.per_device_batch_size,
         run,
         local_rank,
         global_rank,
