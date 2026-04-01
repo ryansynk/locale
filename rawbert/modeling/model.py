@@ -42,6 +42,7 @@ class RawBERT(nn.Module):
         K: int = 4096,
         m: float = 0.999,
         T: float = 0.07,
+        use_projection_head: bool = False,
     ):
         super().__init__()
         self.config = BertConfig.from_pretrained("zhihan1996/DNABERT-2-117M")
@@ -57,6 +58,7 @@ class RawBERT(nn.Module):
         self.K = K
         self.m = m
         self.T = T
+        self.use_projection_head = use_projection_head
 
         self.is_moco = K > 0
 
@@ -71,17 +73,16 @@ class RawBERT(nn.Module):
             patch_with_flash_lib(self.bert_q)
 
         prev_dim = self.config.hidden_size
-        self.projector_q = nn.Sequential(
-            nn.Linear(prev_dim, prev_dim), nn.ReLU(), nn.Linear(prev_dim, dim)
-        )
+        if self.use_projection_head:
+            self.projector_q = nn.Sequential(
+                nn.Linear(prev_dim, prev_dim), nn.ReLU(), nn.Linear(prev_dim, dim)
+            )
+        else:
+            self.projector_q = None
 
         if self.is_moco:
             self.bert_k = deepcopy(self.bert_q)
             self._remove_pooler(self.bert_k)
-
-            self.projector_k = nn.Sequential(
-                nn.Linear(prev_dim, prev_dim), nn.ReLU(), nn.Linear(prev_dim, dim)
-            )
 
             for param_q, param_k in zip(
                 self.bert_q.parameters(), self.bert_k.parameters()
@@ -89,15 +90,25 @@ class RawBERT(nn.Module):
                 param_k.data.copy_(param_q.data)
                 param_k.requires_grad = False
 
-            # Initialize Key Projector
-            for param_q, param_k in zip(
-                self.projector_q.parameters(), self.projector_k.parameters()
-            ):
-                param_k.data.copy_(param_q.data)
-                param_k.requires_grad = False
+            if self.use_projection_head:
+                self.projector_k = nn.Sequential(
+                    nn.Linear(prev_dim, prev_dim), nn.ReLU(), nn.Linear(prev_dim, dim)
+                )
+                assert self.projector_q
+                # Initialize Key Projector
+                for param_q, param_k in zip(
+                    self.projector_q.parameters(), self.projector_k.parameters()
+                ):
+                    param_k.data.copy_(param_q.data)
+                    param_k.requires_grad = False
+            else:
+                self.projector_k = None
 
             # Queue setup (unchanged)
-            self.register_buffer("queue", torch.randn(dim, K))
+            if self.use_projection_head:
+                self.register_buffer("queue", torch.randn(dim, K))
+            else:
+                self.register_buffer("queue", torch.randn(prev_dim, K))
             self.queue = nn.functional.normalize(self.queue, dim=0)
             self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
 
@@ -286,11 +297,14 @@ class RawBERT(nn.Module):
         for param_q, param_k in zip(self.bert_q.parameters(), self.bert_k.parameters()):  # ty: ignore possibly-missing-attribute
             param_k.data = param_k.data * self.m + param_q.data * (1.0 - self.m)
 
-        for param_q, param_k in zip(
-            self.projector_q.parameters(),
-            self.projector_k.parameters(),  # ty: ignore possibly-missing-attribute
-        ):
-            param_k.data = param_k.data * self.m + param_q.data * (1.0 - self.m)
+        if self.use_projection_head:
+            assert self.projector_q
+            assert self.projector_k
+            for param_q, param_k in zip(
+                self.projector_q.parameters(),
+                self.projector_k.parameters(),  # ty: ignore possibly-missing-attribute
+            ):
+                param_k.data = param_k.data * self.m + param_q.data * (1.0 - self.m)
 
     def _embed(self, model, projector, seq_ids, pooling):
         # 1. Get Sequence Output (Batch, Seq_Len, Hidden)
@@ -312,7 +326,11 @@ class RawBERT(nn.Module):
             embeddings, _ = outputs.max(dim=1)
 
         # 3. Apply MLP Projection Head
-        return projector(embeddings)
+        if self.use_projection_head:
+            outputs = projector(embeddings)
+        else:
+            outputs = embeddings
+        return embeddings
 
     def forward(
         self,

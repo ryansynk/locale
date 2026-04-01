@@ -95,6 +95,7 @@ def train(
         K=cfg.moco_queue_size,
         m=cfg.moco_momentum,
         T=cfg.moco_softmax_temp,
+        use_projection_head=cfg.use_projection_head,
     )
     if cfg.moco_filter_queue:
         rawbert.set_kmer_k(cfg.moco_filter_queue_identity_cutoff)
@@ -103,17 +104,26 @@ def train(
     backbone_params = list(
         filter(lambda p: p.requires_grad, rawbert.bert_q.parameters())
     )
-    head_params = list(
-        filter(lambda p: p.requires_grad, rawbert.projector_q.parameters())
-    )
-    optimizer = AdamW(
-        [
-            # Backbones usually need a much lower learning rate (e.g., 1e-5)
-            {"params": backbone_params, "lr": cfg.backbone_lr, "name": "backbone"},
-            # Heads need a higher learning rate to learn quickly (e.g., 1e-3 or cfg.lr)
-            {"params": head_params, "lr": cfg.lr, "name": "head"},
-        ]
-    )
+    if cfg.use_projection_head:
+        assert rawbert.projector_q
+        head_params = list(
+            filter(lambda p: p.requires_grad, rawbert.projector_q.parameters())
+        )
+        optimizer = AdamW(
+            [
+                # Backbones usually need a much lower learning rate (e.g., 1e-5)
+                {"params": backbone_params, "lr": cfg.backbone_lr, "name": "backbone"},
+                # Heads need a higher learning rate to learn quickly (e.g., 1e-3 or cfg.lr)
+                {"params": head_params, "lr": cfg.lr, "name": "head"},
+            ]
+        )
+    else:
+        optimizer = AdamW(
+            [
+                # Backbones usually need a much lower learning rate (e.g., 1e-5)
+                {"params": backbone_params, "lr": cfg.backbone_lr, "name": "backbone"},
+            ]
+        )
 
     # Wrap model with DDP only if distributed
     if is_distributed:
@@ -256,10 +266,11 @@ def train(
                         "train/loss": loss.item(),
                         "train/acc1": acc1[0],
                         "train/acc5": acc5[0],
-                        "train/lr": lrs[1],
-                        "train/backbone_lr": lrs[0],
+                        "train/lr": lrs[0],
                         "train/step": global_step,
                     }
+                    if cfg.use_projection_head:
+                        metrics["train/head_lr"] = lrs[1]
                     for i, group in enumerate(optimizer.param_groups):
                         norm = torch.nn.utils.get_total_norm(
                             [p.grad for p in group["params"]]
@@ -342,7 +353,7 @@ def train(
             module,
             local_rank,
             tokenizer,
-            cfg.augment_config,
+            cfg.moco_filter_queue_identity_cutoff,
         )
 
         run.log(

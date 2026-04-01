@@ -104,4 +104,5 @@ class TrainConfig:
     num_workers: int = 4
     sanity_test: bool = False
     containment_only: bool = False
+    use_projection_head: bool = False
     augment_config: AugmentConfig = field(default_factory=AugmentConfig)

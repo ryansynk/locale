@@ -6,13 +6,13 @@ per_device_batch_size: 64
 val_batch_size: 512
 schedule: cosine
 lr: 0.001
-backbone_lr: 0.00003
+backbone_lr: 0.00006
 total_steps: 4000
 warmup_fraction: 0.08
 warmup_steps: null
-moco_queue_size: 65536
-moco_momentum: 0.999
-moco_softmax_temp: 0.07
+moco_queue_size: 131072
+moco_momentum: 0.9995
+moco_softmax_temp: 0.05
 moco_filter_queue: True 
 moco_filter_queue_identity_cutoff: 0.91
 checkpoint_dir: /pscratch/sd/r/rsynk/rawbert/checkpoints/
@@ -23,6 +23,7 @@ dim: 128
 pooling: max
 num_workers: 24
 sanity_test: false
+use_projection_head: False
 augment_config:
   max_len: 256
   max_seq_len: 256
