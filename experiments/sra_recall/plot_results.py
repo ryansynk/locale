@@ -51,6 +51,38 @@ def calculate_recall_precision(
     return outputs
 
 
+def add_random_baseline(data, queries_df, total_num_items):
+    # Random baseline
+    # read_id, model, k, precision, recall
+    num_relevant_items = queries_df.with_columns(
+        pl.col("contig_accession").list.len().alias("num_results")
+    ).select("read_id", "num_results")
+    random_baseline = []
+    for row in num_relevant_items.iter_rows(named=True):
+        read_id = row["read_id"]
+        num_relevant = row["num_results"]
+        for k in range(1, total_num_items + 1):
+            random_baseline.append(
+                {
+                    "read_id": read_id,
+                    "model": "random",
+                    "k": k,
+                    "precision": num_relevant / total_num_items,
+                    "recall": k / total_num_items,
+                }
+            )
+
+    baseline_df = pl.from_dicts(random_baseline)
+    baseline_df = baseline_df.with_columns(
+        pl.lit(None).alias("checkpoint"),
+        pl.lit(None).alias("max_len"),
+        pl.lit(None).alias("chunk_type"),
+    )
+    combos = data.select("mutation_rate", "query_type").unique()
+    baseline_df = baseline_df.join(combos, how="cross")
+    return pl.concat([data, baseline_df], how="diagonal")
+
+
 def calculate_recall_precision_df(queries_df: pl.DataFrame, data: pl.DataFrame):
     all_recalls_precisions = []
 
@@ -62,16 +94,17 @@ def calculate_recall_precision_df(queries_df: pl.DataFrame, data: pl.DataFrame):
         .select(pl.col("num_results").max())
         .item()
     )
-
-    for name, df in data.group_by(["model", "checkpoint", "max_len", "chunk_type"]):
+    total_num_items = -1
+    for _, df in data.group_by(["model", "checkpoint", "max_len", "chunk_type"]):
         # Largest number of returned results over all queries
         max_k_results = (
             df.with_columns(pl.col("results").list.len().alias("num_results"))
             .select(pl.col("num_results").max())
             .item()
         )
-
         max_k = max(max_k_gt, max_k_results)
+        if max_k > total_num_items:
+            total_num_items = max_k
 
         for row in df.iter_rows(named=True):
             gt_results = queries_df.filter(pl.col("read_id") == row["query_read"])[
@@ -105,7 +138,9 @@ def calculate_recall_precision_df(queries_df: pl.DataFrame, data: pl.DataFrame):
             "recall": pl.Float64,
         }
     )
-    return pl.from_dicts(all_recalls_precisions, schema=schema)
+    data = pl.from_dicts(all_recalls_precisions, schema=schema)
+    data = add_random_baseline(data, queries_df, total_num_items)
+    return data
 
 
 def plot_contig_len_hit_at_k(
@@ -349,11 +384,38 @@ def plot_auprc(recall_precision_df: pl.DataFrame, plots_dir: Path):
             .mark_bar()
             .encode(
                 x=alt.X("model:N"),
-                y=alt.Y("auprc:Q", scale=alt.Scale(domain=[0, 1.0])),
+                y=alt.Y("auprc:Q", scale=alt.Scale(domain=[0, 0.4])),
                 column="mutation_rate:Q",
             )
         )
         chart.save(plots_dir / f"{query_type}_auprc_bar_chart.png")
+
+
+def add_oracle_results(data, queries_df):
+    oracle_df = (
+        queries_df.select("accession", "read_id", "contig_accession", "identity")
+        .explode("contig_accession", "identity")
+        .rename(
+            {
+                "read_id": "query_read",
+                "accession": "query_accession",
+                "contig_accession": "accession",
+                "identity": "score",
+            }
+        )
+        .with_columns(pl.struct("accession", "score").alias("results"))
+        .drop("accession", "score")
+        .group_by("query_read")
+        .agg(pl.col("results"))
+    ).with_columns(
+        pl.lit("oracle").alias("model"),
+        pl.lit(None).alias("checkpoint"),
+        pl.lit(None).alias("max_len"),
+        pl.lit(None).alias("chunk_type"),
+    )
+    combos = data.select("mutation_rate", "query_type").unique()
+    oracle_df = oracle_df.join(combos, how="cross")
+    return pl.concat([data, oracle_df], how="diagonal")
 
 
 def main(
@@ -388,6 +450,7 @@ def main(
         data.append(df)
     data = pl.concat(data)
     queries_df = pl.read_parquet(queries_path)
+    data = add_oracle_results(data, queries_df)
     recall_precision_df = calculate_recall_precision_df(queries_df, data)
     plot_recall_precision(recall_precision_df, plots_dir)
     plot_recall_at_k(recall_precision_df, plots_dir)
