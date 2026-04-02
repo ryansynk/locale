@@ -7,7 +7,7 @@ val_batch_size: 512
 schedule: cosine
 lr: 0.001
 backbone_lr: 0.00006
-total_steps: 4000
+total_steps: 8000
 warmup_fraction: 0.08
 warmup_steps: null
 moco_queue_size: 131072
@@ -20,7 +20,7 @@ checkpoint_interval: 1000
 num_val_queries: 100
 num_val_keys: 10000
 dim: 128
-pooling: max
+pooling: mean
 num_workers: 24
 sanity_test: false
 use_projection_head: False
