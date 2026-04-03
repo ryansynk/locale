@@ -123,11 +123,10 @@ class MetagraphIndex(BaseIndex):
         df = df.with_columns(pl.col("seq_description").cast(pl.Int32))
         df = queries.join(
             df, left_on="index", right_on="seq_description", how="left"
-        ).select("read_id", "accession", "results")
+        ).select("query_id", "results")
         df = df.with_columns(
             pl.col("results").fill_null(pl.lit([], dtype=df.schema["results"]))
         )
-        df = df.rename({"read_id": "query_read", "accession": "query_accession"})
 
         assert len(df) == len(queries)
         return df

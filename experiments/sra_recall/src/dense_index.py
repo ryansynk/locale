@@ -294,7 +294,7 @@ class DenseIndex(BaseIndex):
         query_chunk_features = (
             self.model.encode(query_chunks).to(self.model_cfg.device).float()
         )
-        all_scores: list[list[torch.Tensor]] = []
+        all_scores: list[torch.Tensor] = []
         accession_names = []
         for acc, acc_tensor in tqdm(
             self.accessions_tensor_map.items(),
@@ -308,33 +308,31 @@ class DenseIndex(BaseIndex):
             query_accession_logits = [
                 chunk_accession_logits[start:end] for (start, end) in query_indices
             ]
-            scores: list[torch.Tensor] = [
-                query_accession_logit.max(dim=-1)[0]
-                for query_accession_logit in query_accession_logits
-            ]
+            scores: torch.Tensor = torch.cat(
+                [
+                    query_accession_logit.max(dim=-1)[0].sum().unsqueeze(-1)
+                    for query_accession_logit in query_accession_logits
+                ]
+            )
             all_scores.append(scores)
             torch.cuda.empty_cache()
 
+        scores = torch.stack(all_scores, dim=1)  # (num_queries, num_accessions)
+        scores_cpu = scores.float().cpu().numpy()
         scores_df = []
-        for acc_idx in range(len(all_scores)):
-            for query_idx in range(len(long_queries["query_sequence"])):
-                chunk_scores = all_scores[acc_idx][query_idx].float().cpu()
-                assert chunk_scores.dim() == 1, (
-                    f"Expected 1D tensor, got {chunk_scores.dim()}D"
-                )
+        for i in range(scores_cpu.shape[0]):
+            for j in range(scores_cpu.shape[1]):
                 scores_df.append(
                     {
-                        "query_idx": query_idx,
-                        "accession": accession_names[acc_idx],
-                        "chunk_scores": chunk_scores.numpy().tolist(),
+                        "query_idx": i,
+                        "accession": accession_names[j],
+                        "score": float(scores_cpu[i, j]),
                     }
                 )
 
         scores_df = pl.from_dicts(scores_df)
         scores_df = (
-            scores_df.with_columns(
-                pl.struct("accession", "chunk_scores").alias("result")
-            )
+            scores_df.with_columns(pl.struct("accession", "score").alias("result"))
             .group_by("query_idx")
             .agg(pl.col("result").alias("results"))
         )
@@ -343,6 +341,75 @@ class DenseIndex(BaseIndex):
         ).select("query_id", "results")
 
         assert len(df) == len(long_queries)
+        return df
+
+    @torch.no_grad()
+    def search_both(self, queries: pl.DataFrame) -> pl.DataFrame:
+        queries = queries.with_row_index()
+        query_chunks = []
+        query_indices = []
+        prev_idx = 0
+        for query in queries["query_sequence"].to_list():
+            chunked_query = [
+                query[i : (i + self.model_cfg.max_seq_len)]
+                for i in range(0, len(query), self.model_cfg.max_seq_len)
+            ]
+            num_chunks = len(chunked_query)
+            query_indices.append((prev_idx, prev_idx + num_chunks))
+            query_chunks.extend(chunked_query)
+            prev_idx = prev_idx + num_chunks
+
+        query_chunk_features = (
+            self.model.encode(query_chunks).to(self.model_cfg.device).float()
+        )
+        all_scores = []
+        accession_names = []
+        for acc, acc_tensor in tqdm(
+            self.accessions_tensor_map.items(),
+            total=len(self.indexed),
+            desc="Searching...",
+        ):
+            accession_names.append(acc)
+            chunk_accession_logits = torch.matmul(
+                query_chunk_features, acc_tensor.to(self.model_cfg.device).float().T
+            )  # (num_queries, num_seqs_in_accession)
+            query_accession_logits = [
+                chunk_accession_logits[start:end] for (start, end) in query_indices
+            ]
+            scores: torch.Tensor = torch.cat(
+                [
+                    query_accession_logit.max(dim=-1).values.sum().unsqueeze(-1)
+                    for query_accession_logit in query_accession_logits
+                ]
+            )
+            all_scores.append(scores)
+
+        scores = torch.stack(all_scores, dim=1)  # (num_queries, num_accessions)
+        scores_cpu = scores.float().cpu().numpy()
+        # scores_col = []
+        scores_df = []
+        for i in range(scores_cpu.shape[0]):
+            for j in range(scores_cpu.shape[1]):
+                scores_df.append(
+                    {
+                        "query_idx": i,
+                        "accession": accession_names[j],
+                        "score": float(scores_cpu[i, j]),
+                    }
+                )
+
+        scores_df = pl.from_dicts(scores_df)
+        scores_df = (
+            scores_df.with_columns(pl.struct("accession", "score").alias("result"))
+            .group_by("query_idx")
+            .agg(pl.col("result").alias("results"))
+        )
+        df = queries.join(
+            scores_df, left_on="index", right_on="query_idx", how="left"
+        ).select("read_id", "results")
+
+        df = df.rename({"read_id": "query_id"})
+        assert len(df) == len(queries)
         return df
 
     def indexed_accessions(self) -> list[Path]:
