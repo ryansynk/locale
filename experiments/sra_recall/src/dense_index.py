@@ -141,7 +141,6 @@ class DenseIndex(BaseIndex):
         # 2. Define a generator to flatten all files into (srr_id, sequence) tuples
         def sequence_generator():
             for accession in accessions:
-                self.indexed.append(accession)
                 srr_id = accession.parent.stem
 
                 # Yield parsed and chunked sequences
@@ -212,6 +211,22 @@ class DenseIndex(BaseIndex):
 
     @torch.no_grad()
     def search(self, queries: pl.DataFrame) -> pl.DataFrame:
+        short_queries = queries.filter(
+            pl.col("query_sequence").str.len_chars() < self.model_cfg.max_seq_len
+        )
+        long_queries = queries.filter(
+            pl.col("query_sequence").str.len_chars() >= self.model_cfg.max_seq_len
+        )
+        results = []
+        if not short_queries.is_empty():
+            results.append(self.search_short(short_queries))
+        if not long_queries.is_empty():
+            results.append(self.search_long(long_queries))
+
+        return pl.concat(results, how="diagonal")
+
+    @torch.no_grad()
+    def search_short(self, queries: pl.DataFrame) -> pl.DataFrame:
         queries = queries.with_row_index()
         query_features = (
             self.model.encode(queries["query_sequence"].to_list())
@@ -254,10 +269,80 @@ class DenseIndex(BaseIndex):
         )
         df = queries.join(
             scores_df, left_on="index", right_on="query_idx", how="left"
-        ).select("read_id", "accession", "results")
+        ).select("read_id", "results")
 
-        df = df.rename({"read_id": "query_read", "accession": "query_accession"})
+        df = df.rename({"read_id": "query_id"})
         assert len(df) == len(queries)
+        return df
+
+    @torch.no_grad()
+    def search_long(self, long_queries: pl.DataFrame) -> pl.DataFrame:
+        long_queries = long_queries.with_row_index()
+        query_chunks = []
+        query_indices = []
+        prev_idx = 0
+        for query in long_queries["query_sequence"].to_list():
+            chunked_query = [
+                query[i : (i + self.model_cfg.max_seq_len)]
+                for i in range(0, len(query), self.model_cfg.max_seq_len)
+            ]
+            num_chunks = len(chunked_query)
+            query_indices.append((prev_idx, prev_idx + num_chunks))
+            query_chunks.extend(chunked_query)
+            prev_idx = prev_idx + num_chunks
+
+        query_chunk_features = (
+            self.model.encode(query_chunks).to(self.model_cfg.device).float()
+        )
+        all_scores: list[list[torch.Tensor]] = []
+        accession_names = []
+        for acc, acc_tensor in tqdm(
+            self.accessions_tensor_map.items(),
+            total=len(self.indexed),
+            desc="Searching...",
+        ):
+            accession_names.append(acc)
+            chunk_accession_logits = torch.matmul(
+                query_chunk_features, acc_tensor.to(self.model_cfg.device).float().T
+            ).cpu()  # (num_query_chunks, num_seqs_in_accession)
+            query_accession_logits = [
+                chunk_accession_logits[start:end] for (start, end) in query_indices
+            ]
+            scores: list[torch.Tensor] = [
+                query_accession_logit.max(dim=-1)[0]
+                for query_accession_logit in query_accession_logits
+            ]
+            all_scores.append(scores)
+            torch.cuda.empty_cache()
+
+        scores_df = []
+        for acc_idx in range(len(all_scores)):
+            for query_idx in range(len(long_queries["query_sequence"])):
+                chunk_scores = all_scores[acc_idx][query_idx].float().cpu()
+                assert chunk_scores.dim() == 1, (
+                    f"Expected 1D tensor, got {chunk_scores.dim()}D"
+                )
+                scores_df.append(
+                    {
+                        "query_idx": query_idx,
+                        "accession": accession_names[acc_idx],
+                        "chunk_scores": chunk_scores.numpy().tolist(),
+                    }
+                )
+
+        scores_df = pl.from_dicts(scores_df)
+        scores_df = (
+            scores_df.with_columns(
+                pl.struct("accession", "chunk_scores").alias("result")
+            )
+            .group_by("query_idx")
+            .agg(pl.col("result").alias("results"))
+        )
+        df = long_queries.join(
+            scores_df, left_on="index", right_on="query_idx", how="left"
+        ).select("query_id", "results")
+
+        assert len(df) == len(long_queries)
         return df
 
     def indexed_accessions(self) -> list[Path]:

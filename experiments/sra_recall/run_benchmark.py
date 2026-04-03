@@ -48,9 +48,11 @@ def main(cfg: ExperimentConfig):
         queries: pl.DataFrame = pl.read_parquet(cfg.raw_read_queries_path)
     elif cfg.query_type == "logan_contig":
         queries: pl.DataFrame = pl.read_parquet(cfg.logan_contig_queries_path)
+    elif cfg.query_type == "gencode":
+        queries: pl.DataFrame = pl.read_parquet(cfg.gencode_queries_path)
     else:
         raise ValueError(
-            f"Expected query_type to be 'raw_read' or 'logan_contig', got: {cfg.query_type}"
+            f"Expected query_type to be 'raw_read', 'logan_contig', or 'gencode'. Got: {cfg.query_type}"
         )
 
     if isinstance(cfg.model, DenseConfig):

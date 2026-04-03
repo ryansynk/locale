@@ -122,9 +122,10 @@ class ExperimentConfig:
     accessions_dir: Path
     raw_read_queries_path: Path
     logan_contig_queries_path: Path
+    gencode_queries_path: Path
     index_dir: Path
     results_dir: Path
-    query_type: Literal["raw_read", "logan_contig"]
+    query_type: Literal["raw_read", "logan_contig", "gencode"]
     mutation_rate: float = 0.0
 
     def __post_init__(self):
