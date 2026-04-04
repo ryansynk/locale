@@ -26,14 +26,18 @@ def calculate_recall_precision(
 
     outputs = []
     true_positives = set()
+    precision = 0.0
+    recall = 0.0
 
     for k in range(1, max_k + 1):
         if k <= len(retrieval_results):
             accession = retrieval_results[k - 1].get("accession")
             if accession in gt_set:
                 true_positives.add(accession)
-        precision = len(true_positives) / k
-        recall = len(true_positives) / num_gt
+            precision = len(true_positives) / k
+            recall = len(true_positives) / num_gt
+        # else: hold precision and recall at their last values
+
         outputs.append(
             {
                 "query_id": query_id,
@@ -92,7 +96,7 @@ def calculate_recall_precision_df(ground_truth: pl.DataFrame, data: pl.DataFrame
         .select(pl.col("num_results").max())
         .item()
     )
-    total_num_items = -1
+    total_num_items = 0
     for _, df in data.group_by(
         ["model", "checkpoint", "max_len", "chunk_type", "query_type"]
     ):
@@ -168,8 +172,8 @@ def plot_contig_len_hit_at_k(
         .agg(pl.col("accession"))
     ).rename({"accession": "retrieved_accession"})
     results_df = results_df.join(
-        ground_truth.select(["query_id", "results", "contig_len"]),
-        on="query_id",
+        ground_truth.select(["query_id", "results", "contig_len", "mutation_rate"]),
+        on=["query_id", "mutation_rate"],
     )
     # results_df = results_df.explode(["contig_accession", "identity", "contig_len"])
     results_df = results_df.explode(["results", "contig_len"]).unnest("results")
@@ -243,8 +247,8 @@ def plot_contig_len_hit_at_k(
         chart.save(plots_dir / f"mut_{mutation_rate}_contig_lens_bar_chart.png")
 
 
-def plot_recall_precision(recall_precision_df: pl.DataFrame, plots_dir: Path):
-    recall_precision_df = (
+def get_average_precision_recall_df(recall_precision_df: pl.DataFrame):
+    return (
         recall_precision_df.group_by(
             [
                 "model",
@@ -262,11 +266,13 @@ def plot_recall_precision(recall_precision_df: pl.DataFrame, plots_dir: Path):
         )
         .sort("average_recall")
     )
-    recall_precision_df = recall_precision_df.sort("average_recall")
-    for name, data in recall_precision_df.group_by("mutation_rate", "query_type"):
+
+
+def plot_recall_precision(recall_precision_df: pl.DataFrame, plots_dir: Path):
+    avg_recall_precision_df = get_average_precision_recall_df(recall_precision_df)
+    for name, data in avg_recall_precision_df.group_by("mutation_rate", "query_type"):
         mut_rate = name[0]
         query_type = name[1]
-        title = ""
         match query_type:
             case "raw_read":
                 title = "Average Precision-Recall Curve for Raw Read Queries"
@@ -309,29 +315,11 @@ def plot_recall_precision(recall_precision_df: pl.DataFrame, plots_dir: Path):
 
 
 def plot_recall_at_k(recall_precision_df: pl.DataFrame, plots_dir: Path):
-    recall_precision_df = (
-        recall_precision_df.group_by(
-            [
-                "model",
-                "checkpoint",
-                "max_len",
-                "chunk_type",
-                "mutation_rate",
-                "k",
-                "query_type",
-            ]
-        )
-        .agg(
-            pl.col("recall").mean().alias("average_recall"),
-            pl.col("precision").mean().alias("average_precision"),
-        )
-        .sort("average_recall")
-    )
-    recall_precision_df = recall_precision_df.sort("average_recall")
-    for name, data in recall_precision_df.group_by("mutation_rate", "query_type"):
+    max_k = recall_precision_df.select(pl.col("k")).max().item()
+    avg_recall_precision_df = get_average_precision_recall_df(recall_precision_df)
+    for name, data in avg_recall_precision_df.group_by("mutation_rate", "query_type"):
         mut_rate = name[0]
         query_type = name[1]
-        title = ""
         match query_type:
             case "raw_read":
                 title = "Recall @ k for Raw Read Queries"
@@ -341,7 +329,7 @@ def plot_recall_at_k(recall_precision_df: pl.DataFrame, plots_dir: Path):
             alt.Chart(data)
             .mark_line(point=True)
             .encode(
-                x=alt.X("k:Q", title="k", scale=alt.Scale(domain=[1, 47])),
+                x=alt.X("k:Q", title="k", scale=alt.Scale(domain=[1, max_k])),
                 y=alt.Y("average_recall:Q", title="Mean Recall@K"),
                 color=alt.Color(
                     "model:N",
@@ -398,7 +386,9 @@ def plot_auprc(recall_precision_df: pl.DataFrame, plots_dir: Path):
             .mark_bar()
             .encode(
                 x=alt.X("model:N"),
-                y=alt.Y("auprc:Q", scale=alt.Scale(domain=[0, 0.4])),
+                y=alt.Y(
+                    "auprc:Q", scale=alt.Scale(domain=[0, 0.4])
+                ),  # oracle performance is around 0.39
                 column="mutation_rate:Q",
             )
         )
@@ -415,6 +405,8 @@ def raw_read_oracle_results(raw_read_queries_df):
                 "identity": "score",
             }
         )
+        .group_by("query_id", "accession")
+        .agg(pl.col("score").max())
         .with_columns(pl.struct("accession", "score").alias("results"))
         .drop("accession", "score")
         .group_by("query_id")
@@ -465,6 +457,8 @@ def get_ground_truth(raw_read_queries_df, gencode_oracle_data, combos):
                 "identity": "score",
             }
         )
+        .group_by("query_id", "accession")
+        .agg(pl.col("score").max(), pl.col("contig_len").max())
         .with_columns(pl.struct("accession", "score").alias("results"))
         .drop("accession", "score")
         .group_by("query_id")
