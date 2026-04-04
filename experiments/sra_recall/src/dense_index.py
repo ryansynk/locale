@@ -269,9 +269,8 @@ class DenseIndex(BaseIndex):
         )
         df = queries.join(
             scores_df, left_on="index", right_on="query_idx", how="left"
-        ).select("read_id", "results")
+        ).select("query_id", "results")
 
-        df = df.rename({"read_id": "query_id"})
         assert len(df) == len(queries)
         return df
 
@@ -406,9 +405,8 @@ class DenseIndex(BaseIndex):
         )
         df = queries.join(
             scores_df, left_on="index", right_on="query_idx", how="left"
-        ).select("read_id", "results")
+        ).select("query_id", "results")
 
-        df = df.rename({"read_id": "query_id"})
         assert len(df) == len(queries)
         return df
 

@@ -278,6 +278,8 @@ def plot_recall_precision(recall_precision_df: pl.DataFrame, plots_dir: Path):
                 title = "Average Precision-Recall Curve for Raw Read Queries"
             case "logan_contig":
                 title = "Average Precision-Recall Curve for Logan Contig Queries"
+            case "gencode":
+                title = "Average Precision-Recall Curve for Gencode Queries"
         chart = (
             alt.Chart(data)
             .mark_line(point=True)
@@ -325,6 +327,8 @@ def plot_recall_at_k(recall_precision_df: pl.DataFrame, plots_dir: Path):
                 title = "Recall @ k for Raw Read Queries"
             case "logan_contig":
                 title = "Recall @ k for Logan Contig Queries"
+            case "gencode":
+                title = "Recall @ k for Gencode Queries"
         chart = (
             alt.Chart(data)
             .mark_line(point=True)
