@@ -1,3 +1,6 @@
+import os
+import sys
+import time
 from pathlib import Path
 
 import polars as pl
@@ -40,6 +43,20 @@ def get_matching_regions_of_contigs(queries_df: pl.DataFrame):
     return intervals_dict
 
 
+def _wait_for_shards(
+    index_path: Path, num_nodes: int, timeout: int = 7200, poll_interval: int = 30
+):
+    elapsed = 0
+    while elapsed < timeout:
+        if all(
+            (index_path / f"shard_{r}" / ".done").exists() for r in range(num_nodes)
+        ):
+            return
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+    raise TimeoutError(f"Timed out after {timeout}s waiting for all {num_nodes} shards")
+
+
 def main(cfg: ExperimentConfig):
     index_path: Path = cfg.index_dir / cfg.model.index_suffix
     accession_paths: list[Path] = sorted(list(cfg.accessions_dir.rglob("*.contigs.fa")))
@@ -66,10 +83,29 @@ def main(cfg: ExperimentConfig):
     else:
         raise ValueError("Unknown model config")
 
+    node_rank = int(os.environ.get("SLURM_NODEID", "0"))
+    num_nodes = int(os.environ.get("SLURM_NNODES", "1"))
+
     if index_path.exists():
         index.load(index_path)
-        # indexed_accs = index.indexed_accessions()
-        # assert Counter(indexed_accs) == Counter(accession_paths)
+    elif num_nodes > 1:
+        node_accessions = accession_paths[node_rank::num_nodes]
+        shard_path = index_path / f"shard_{node_rank}"
+        print(
+            f"[Node {node_rank}/{num_nodes}] Building shard from {len(node_accessions)} accessions..."
+        )
+        index.build(node_accessions, shard_path)
+        index.save(shard_path)
+        (shard_path / ".done").touch()
+
+        if node_rank != 0:
+            print(f"[Node {node_rank}] Shard saved. Exiting.")
+            sys.exit(0)
+
+        print(f"[Node 0] Waiting for {num_nodes - 1} other node(s) to finish...")
+        _wait_for_shards(index_path, num_nodes)
+        DenseIndex.merge_shards(index_path, num_nodes)
+        index.load(index_path)
     else:
         index.build(accession_paths, index_path)
         index.save(index_path)
@@ -86,6 +122,11 @@ def main(cfg: ExperimentConfig):
     )
     results = results.with_columns(
         pl.lit(cfg.model.max_len, dtype=pl.Int64).alias("max_len")
+    )
+    results = results.with_columns(
+        pl.lit(cfg.model.checkpoint_step_num, dtype=pl.Int64).alias(
+            "checkpoint_step_num"
+        )
     )
     results = results.with_columns(pl.lit(cfg.model.chunk_type).alias("chunk_type"))
     output_path: Path = (

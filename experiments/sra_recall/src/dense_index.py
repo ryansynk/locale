@@ -422,6 +422,21 @@ class DenseIndex(BaseIndex):
         print(f"Saving index to {output_file}")
         torch.save(cpu_map, output_file)
 
+    @staticmethod
+    def merge_shards(index_path: Path, num_nodes: int):
+        """Merge per-node shard index files into a single index.pt."""
+        merged_map = {}
+        for rank in range(num_nodes):
+            shard_file = index_path / f"shard_{rank}" / "index.pt"
+            shard_map = torch.load(shard_file, weights_only=False)
+            merged_map.update(shard_map)
+            print(f"  Loaded shard {rank} ({len(shard_map)} accessions)")
+        index_file = index_path / "index.pt"
+        torch.save(merged_map, index_file)
+        print(
+            f"Merged {num_nodes} shards ({len(merged_map)} total accessions) -> {index_file}"
+        )
+
 
 def chunk_sequence(
     seq: str,

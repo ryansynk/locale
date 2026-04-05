@@ -15,6 +15,7 @@ def calculate_recall_precision(
     query_type: str,
     checkpoint: str | None,
     max_len: int | None,
+    checkpoint_step_num: int | None,
     chunk_type: str | None,
     max_k: int,
 ):
@@ -44,6 +45,7 @@ def calculate_recall_precision(
                 "model": model,
                 "checkpoint": checkpoint,
                 "max_len": max_len,
+                "checkpoint_step_num": checkpoint_step_num,
                 "chunk_type": chunk_type,
                 "mutation_rate": mutation_rate,
                 "query_type": query_type,
@@ -79,6 +81,7 @@ def add_random_baseline(data, ground_truth, total_num_items):
     baseline_df = baseline_df.with_columns(
         pl.lit(None).alias("checkpoint"),
         pl.lit(None).alias("max_len"),
+        pl.lit(None).alias("checkpoint_step_num"),
         pl.lit(None).alias("chunk_type"),
     )
     combos = data.select("mutation_rate", "query_type").unique()
@@ -98,7 +101,14 @@ def calculate_recall_precision_df(ground_truth: pl.DataFrame, data: pl.DataFrame
     )
     total_num_items = 0
     for _, df in data.group_by(
-        ["model", "checkpoint", "max_len", "chunk_type", "query_type"]
+        [
+            "model",
+            "checkpoint",
+            "max_len",
+            "checkpoint_step_num",
+            "chunk_type",
+            "query_type",
+        ]
     ):
         # Largest number of returned results over all queries
         max_k_results = (
@@ -130,6 +140,7 @@ def calculate_recall_precision_df(ground_truth: pl.DataFrame, data: pl.DataFrame
                 row["query_type"],
                 row["checkpoint"],
                 row["max_len"],
+                row["checkpoint_step_num"],
                 row["chunk_type"],
                 max_k=max_k,
             )
@@ -141,6 +152,7 @@ def calculate_recall_precision_df(ground_truth: pl.DataFrame, data: pl.DataFrame
             "model": pl.String,
             "checkpoint": pl.String,
             "max_len": pl.Int64,
+            "checkpoint_step_num": pl.Int64,
             "chunk_type": pl.String,
             "mutation_rate": pl.Float64,
             "query_type": pl.String,
@@ -254,6 +266,7 @@ def get_average_precision_recall_df(recall_precision_df: pl.DataFrame):
                 "model",
                 "checkpoint",
                 "max_len",
+                "checkpoint_step_num",
                 "chunk_type",
                 "mutation_rate",
                 "k",
@@ -362,6 +375,7 @@ def plot_auprc(recall_precision_df: pl.DataFrame, plots_dir: Path):
             "model",
             "checkpoint",
             "max_len",
+            "checkpoint_step_num",
             "chunk_type",
             "mutation_rate",
             "query_id",
@@ -380,7 +394,15 @@ def plot_auprc(recall_precision_df: pl.DataFrame, plots_dir: Path):
         .alias("read_auprc")
     )
     macro_auprc = macro_auprc.group_by(
-        ["model", "checkpoint", "max_len", "chunk_type", "mutation_rate", "query_type"]
+        [
+            "model",
+            "checkpoint",
+            "max_len",
+            "checkpoint_step_num",
+            "chunk_type",
+            "mutation_rate",
+            "query_type",
+        ]
     ).agg(pl.col("read_auprc").mean().alias("auprc"))
 
     for name, df in macro_auprc.group_by("query_type"):
@@ -420,6 +442,7 @@ def raw_read_oracle_results(raw_read_queries_df):
         pl.lit("raw_read").alias("query_type"),
         pl.lit(None).alias("checkpoint"),
         pl.lit(None).alias("max_len"),
+        pl.lit(None).alias("checkpoint_step_num"),
         pl.lit(None).alias("chunk_type"),
     )
     return oracle_df
@@ -444,6 +467,7 @@ def gencode_oracle_results(gencode_queries_df):
         pl.lit("gencode").alias("query_type"),
         pl.lit(None).alias("checkpoint"),
         pl.lit(None).alias("max_len"),
+        pl.lit(None).alias("checkpoint_step_num"),
         pl.lit(None).alias("chunk_type"),
     )
     return oracle_df
@@ -472,6 +496,7 @@ def get_ground_truth(raw_read_queries_df, gencode_oracle_data, combos):
         pl.lit("raw_read").alias("query_type"),
         pl.lit(None).alias("checkpoint"),
         pl.lit(None).alias("max_len"),
+        pl.lit(None).alias("checkpoint_step_num"),
         pl.lit(None).alias("chunk_type"),
     )
     oracle_raw_read_data_with_contig_len = oracle_raw_read_data_with_contig_len.join(
@@ -506,6 +531,7 @@ def main(
             "query_type": pl.String,
             "checkpoint": pl.String,
             "max_len": pl.Int64,
+            "checkpoint_step_num": pl.Int64,
             "chunk_type": pl.String,
         }
     )
