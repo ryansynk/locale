@@ -6,7 +6,7 @@ from jsonargparse import CLI
 
 import wandb
 from rawbert.config import TrainConfig
-from rawbert.training.training import train
+from rawbert.training.training import train, train_kl
 
 
 # 1. Basic setup function
@@ -52,9 +52,6 @@ def main(cfg: TrainConfig):
     par_print(f"Per-Device Batch Size: {cfg.per_device_batch_size}")
     par_print(f"Global Batch Size: {cfg.per_device_batch_size * world_size}")
 
-    par_print(f"Rawbert dim = {cfg.dim}")
-    par_print(f"Rawbert queue size = {cfg.moco_queue_size}")
-
     if global_rank == 0:
         run = wandb.init(
             entity="tomg-group-umd",
@@ -64,15 +61,28 @@ def main(cfg: TrainConfig):
     else:
         run = None
 
-    train(
-        cfg,
-        cfg.per_device_batch_size,
-        run,
-        local_rank,
-        global_rank,
-        world_size,
-        is_distributed,
-    )
+    if cfg.kl:
+        train_kl(
+            cfg,
+            cfg.per_device_batch_size,
+            run,
+            local_rank,
+            global_rank,
+            world_size,
+            is_distributed,
+        )
+    else:
+        par_print(f"Rawbert dim = {cfg.dim}")
+        par_print(f"Rawbert queue size = {cfg.moco_queue_size}")
+        train(
+            cfg,
+            cfg.per_device_batch_size,
+            run,
+            local_rank,
+            global_rank,
+            world_size,
+            is_distributed,
+        )
 
     if global_rank == 0:
         run.finish()  # ty: ignore possibly-missing-attribute

@@ -2,6 +2,7 @@ import warnings
 from dataclasses import asdict
 from functools import partial
 from pathlib import Path
+from typing import cast
 
 import edlib  # ty: ignore unresolved-import
 import torch
@@ -43,8 +44,10 @@ def par_tqdm_write(*args, **kwargs):
         tqdm.write(*args, **kwargs)
 
 
-def save_checkpoint(state, checkpoint_dir, cfg, run_id):
+def save_checkpoint(state, checkpoint_dir, cfg, run_id, kl: bool = False):
     this_ckpt_dir: Path = Path(checkpoint_dir / run_id).resolve()
+    if kl:
+        this_ckpt_dir = this_ckpt_dir / "kl"
     this_ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     with open(this_ckpt_dir / "config.yaml", "w") as f:
@@ -380,6 +383,306 @@ def train(
             cfg,
             run.id,
         )
+
+
+def train_kl(
+    cfg: TrainConfig,
+    per_device_batch_size: int,
+    run: Run | None,
+    local_rank: int,
+    global_rank: int,
+    world_size: int,
+    is_distributed: bool,
+):
+    par_print("Executing KL Divergence Training")
+    warnings.filterwarnings("ignore", message=".*Increasing alibi size.*")
+    warnings.filterwarnings("ignore", message=".*Unable to import Triton.*")
+    transformers_logging.set_verbosity_error()
+    # Set the device for this process
+    torch.cuda.set_device(local_rank)
+    assert cfg.starting_checkpoint_path, "No checkpoint given"
+    checkpoint = torch.load(cfg.starting_checkpoint_path)
+    rawbert = RawBERT(
+        pooling="max",
+        dim=checkpoint["model_args"]["dim"],
+        K=checkpoint["model_args"]["K"],
+        m=checkpoint["model_args"]["m"],
+        T=checkpoint["model_args"]["T"],
+    )
+    rawbert.load_state_dict(checkpoint["model"])
+    rawbert = rawbert.to(local_rank)
+    rawbert.train()
+    backbone_params = list(
+        filter(lambda p: p.requires_grad, rawbert.bert_q.parameters())
+    )
+
+    optimizer = AdamW(
+        [
+            # Backbones usually need a much lower learning rate (e.g., 1e-5)
+            {"params": backbone_params, "lr": cfg.backbone_lr, "name": "backbone"},
+        ]
+    )
+
+    # Wrap model with DDP only if distributed
+    if is_distributed:
+        ddp_rawbert = DDP(rawbert, device_ids=[local_rank])
+    else:
+        ddp_rawbert = rawbert
+
+    par_print("Unsupervised Training Mode")
+    reader = UnsupervisedBatcher(cfg.dataset_path, cfg.augment_config)
+    val_reader = UnsupervisedBatcher(
+        cfg.val_dataset_path, cfg.augment_config, num_examples=cfg.num_val_keys
+    )
+    sampler = (
+        DistributedSampler(
+            reader, num_replicas=world_size, rank=global_rank, shuffle=True
+        )
+        if is_distributed
+        else None
+    )
+    tokenizer = AutoTokenizer.from_pretrained(
+        "zhihan1996/DNABERT-2-117M", trust_remote_code=True
+    )
+    collater = partial(collate, tokenizer=tokenizer)
+
+    dataloader = DataLoader(
+        reader,
+        batch_size=per_device_batch_size,
+        collate_fn=collater,
+        sampler=sampler,
+        drop_last=True,
+        shuffle=False,
+        num_workers=cfg.num_workers,
+    )
+    val_dataloader = DataLoader(
+        val_reader,
+        batch_size=cfg.val_batch_size,
+        collate_fn=collater,
+        sampler=None,
+        drop_last=False,
+        shuffle=True,
+        num_workers=1,
+    )
+
+    if getattr(cfg, "total_steps", None):
+        total_steps = cfg.total_steps
+        # Calculate required epochs to reach max_steps (ceiling division)
+        num_epochs = (total_steps + len(dataloader) - 1) // len(dataloader)
+    else:
+        num_epochs = cfg.num_epochs
+        total_steps = len(dataloader) * num_epochs
+
+    assert not (cfg.warmup_steps is not None and cfg.warmup_fraction is not None), (
+        "warmup_steps and warmup_fraction cannot be set simultaneously"
+    )
+    if cfg.warmup_steps:
+        num_warmup_steps = cfg.warmup_steps
+    elif cfg.warmup_fraction:
+        num_warmup_steps = int(cfg.warmup_fraction * total_steps)
+
+    scheduler = get_linear_warmup_with_hold_schedule(optimizer, num_warmup_steps)
+
+    if cfg.checkpoint_dir:
+        checkpoint_dir = Path(cfg.checkpoint_dir)
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        raise ValueError("No checkpoint_dir provided!")
+
+    global_step = 0
+    ddp_rawbert.train()
+    model = cast(RawBERT, ddp_rawbert.module if is_distributed else ddp_rawbert)
+
+    with tqdm(total=total_steps, desc="Training", unit="step") as pbar:
+        for epoch in range(num_epochs):
+            par_tqdm_write(f"Training epoch = {epoch + 1}/{num_epochs}")
+            for batch in dataloader:
+                q, query_seqs, k, key_seqs = batch
+                q = q.to(local_rank)
+                k = k.to(local_rank)
+                optimizer.zero_grad()
+
+                q_embeds = model._embed(
+                    model.bert_q,
+                    model.projector_q,
+                    q.to(model.device),
+                    pooling=model.pooling,
+                )
+                q_embeds = F.normalize(q_embeds, dim=1)
+                k_embeds = model._embed(
+                    model.bert_q,
+                    model.projector_q,
+                    k.to(model.device),
+                    pooling=model.pooling,
+                )
+                k_embeds = F.normalize(k_embeds, dim=1)
+                cosine_sims = torch.matmul(q_embeds, k_embeds.T)
+                pred_scores = F.log_softmax(cosine_sims / model.T, dim=-1)
+                sw_scores = get_smith_waterman_scores(query_seqs, key_seqs).to(
+                    model.device
+                )
+                target_scores = F.log_softmax(
+                    sw_scores / cfg.smith_waterman_temperature, dim=-1
+                )
+                loss = F.kl_div(
+                    pred_scores, target_scores, reduction="batchmean", log_target=True
+                )
+                loss.backward()
+                optimizer.step()
+                scheduler.step()
+
+                with torch.no_grad():
+                    sw_probs = F.softmax(
+                        sw_scores / cfg.smith_waterman_temperature, dim=-1
+                    )
+                    pred_probs = F.softmax(cosine_sims / model.T, dim=-1)
+                    sw_entropy = -(sw_probs * sw_probs.log()).sum(dim=-1).mean()
+                    pred_entropy = -(pred_probs * pred_probs.log()).sum(dim=-1).mean()
+
+                if global_rank == 0:
+                    assert run
+                    lrs = scheduler.get_last_lr()
+                    metrics = {
+                        "train/loss": loss.item(),
+                        "train/lr": lrs[0],
+                        "train/step": global_step,
+                        "train/model_entropy": pred_entropy.item(),
+                        "train/sw_entropy": sw_entropy.item(),
+                    }
+                    for i, group in enumerate(optimizer.param_groups):
+                        norm = torch.nn.utils.get_total_norm(
+                            [p.grad for p in group["params"]]
+                        )
+                        metrics[f"metrics/grad_norm_{group['name']}"] = norm
+                    run.log(metrics)
+
+                if global_step % cfg.checkpoint_interval == 0 and global_step > 0:
+                    if global_rank == 0:
+                        assert run
+                        if is_distributed:
+                            module = ddp_rawbert.module
+                        else:
+                            module = ddp_rawbert
+
+                        assert isinstance(module, torch.nn.Module)
+                        model_state_dict = module.state_dict()
+
+                        val_acc1, val_acc5 = get_val_accuracy(
+                            val_dataloader,
+                            cfg.num_val_queries,
+                            cfg.num_val_keys,
+                            module,
+                            local_rank,
+                            tokenizer,
+                            cfg.moco_filter_queue_identity_cutoff,
+                        )
+
+                        run.log(
+                            {
+                                "val/acc1": val_acc1[0],
+                                "val/acc5": val_acc5[0],
+                                "val/step": global_step,
+                            }
+                        )
+                        save_checkpoint(
+                            {
+                                "step": global_step,
+                                "model": model_state_dict,
+                                "optimizer": optimizer.state_dict(),
+                                "model_args": {
+                                    "pooling": cfg.pooling,
+                                    "dim": cfg.dim,
+                                    "K": cfg.moco_queue_size,
+                                    "m": cfg.moco_momentum,
+                                    "T": cfg.moco_softmax_temp,
+                                },
+                            },
+                            checkpoint_dir,
+                            cfg,
+                            run.id,
+                            kl=True,
+                        )
+                    if is_distributed:
+                        torch.distributed.barrier()
+                    ddp_rawbert.train()
+
+                global_step += 1
+                pbar.update(1)
+                if getattr(cfg, "total_steps", None) and global_step >= total_steps:
+                    break
+
+            # Check for step-based termination (Outer Loop)
+            if getattr(cfg, "total_steps", None) and global_step >= total_steps:
+                break
+
+    if global_rank == 0:
+        assert run
+        if is_distributed:
+            module = ddp_rawbert.module
+        else:
+            module = ddp_rawbert
+
+        assert isinstance(module, torch.nn.Module)
+        model_state_dict = module.state_dict()
+
+        val_acc1, val_acc5 = get_val_accuracy(
+            val_dataloader,
+            cfg.num_val_queries,
+            cfg.num_val_keys,
+            module,
+            local_rank,
+            tokenizer,
+            cfg.moco_filter_queue_identity_cutoff,
+        )
+
+        run.log(
+            {
+                "val/acc1": val_acc1[0],
+                "val/acc5": val_acc5[0],
+                "val/step": global_step,
+            }
+        )
+        save_checkpoint(
+            {
+                "step": global_step,
+                "model": model_state_dict,
+                "optimizer": optimizer.state_dict(),
+                "model_args": {
+                    "pooling": cfg.pooling,
+                    "dim": cfg.dim,
+                    "K": cfg.moco_queue_size,
+                    "m": cfg.moco_momentum,
+                    "T": cfg.moco_softmax_temp,
+                },
+            },
+            checkpoint_dir,
+            cfg,
+            run.id,
+            kl=True,
+        )
+
+
+@torch.no_grad()
+def get_smith_waterman_scores(
+    query_seqs: list[str], key_seqs: list[str]
+) -> torch.Tensor:
+    assert len(query_seqs) == len(key_seqs)
+    B = len(query_seqs)
+    output_identities = torch.zeros((B, B), dtype=torch.float)
+
+    for i, query_seq in enumerate(query_seqs):
+        for j, key_seq in enumerate(key_seqs):
+            # Use edlib for fast alignment
+            if len(query_seq) <= len(key_seq):
+                q = query_seq
+                t = key_seq
+            else:
+                q = key_seq
+                t = query_seq
+            result = edlib.align(query=q, target=t, mode="HW", task="distance")
+            edit_distance = result["editDistance"]
+            output_identities[i, j] = 1.0 - (edit_distance / len(q))
+    return output_identities
 
 
 def accuracy(output, target, topk=(1,)):

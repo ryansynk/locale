@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, Literal
 
 import numpy as np
@@ -97,6 +98,7 @@ class TrainConfig:
     moco_filter_queue_identity_cutoff: float = 0.91
     checkpoint_dir: str | None = None
     checkpoint_interval: int = 1000
+    starting_checkpoint_path: Path | None = None
     num_val_queries: int = 100
     num_val_keys: int = 100_000
     dim: int = 128
@@ -105,4 +107,6 @@ class TrainConfig:
     sanity_test: bool = False
     containment_only: bool = False
     use_projection_head: bool = False
+    smith_waterman_temperature: float = 0.1
+    kl: bool = False
     augment_config: AugmentConfig = field(default_factory=AugmentConfig)
