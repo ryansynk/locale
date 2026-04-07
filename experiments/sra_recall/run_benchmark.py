@@ -10,10 +10,12 @@ from src.config import (
     Evo2Config,
     ExperimentConfig,
     MetagraphConfig,
+    MantisConfig,
 )
 from src.dense_index import DenseIndex
 from src.evo2_index import Evo2Index
 from src.metagraph_index import MetagraphIndex
+from src.mantis_index import MantisIndex
 
 from rawbert.training.unsupervised_batcher import Augmenter
 
@@ -80,6 +82,8 @@ def main(cfg: ExperimentConfig):
         index = Evo2Index(cfg)
     elif isinstance(cfg.model, MetagraphConfig):
         index = MetagraphIndex(cfg)
+    elif isinstance(cfg.model, MantisConfig):
+        index = MantisIndex(cfg)
     else:
         raise ValueError("Unknown model config")
 
