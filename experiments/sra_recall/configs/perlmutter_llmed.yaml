@@ -3,9 +3,8 @@ model:
   checkpoint_path: null
   batch_size: 1000
   device: cuda
-  pooling: max
-  k: 100
-  max_seq_len: 700
+  pooling: mean
+  max_seq_len: 256
   chunk_type: stride
   chunk_overlap: 150
 accessions_dir: /pscratch/sd/r/rsynk/data/test/logan_contig
