@@ -513,6 +513,8 @@ class DenseEncoder:
             self._encoder = NeuroSEEDEncoder(cfg)
         elif cfg.name == "dna2vec":
             self._encoder = DNA2VecEncoder(cfg)
+        elif cfg.name == "llmed":
+            self._encoder = LLMEDEncoder(cfg)
         else:
             raise ValueError(f"Unknown model name: {cfg.name}")
 
@@ -838,6 +840,56 @@ class DNA2VecEncoder:
             mask = tokens.attention_mask.unsqueeze(-1)
             if self.pooling == "class":
                 raise ValueError("dna2vec does not have a class token")
+            elif self.pooling == "mean":
+                embeddings = (outputs * mask).sum(dim=1) / mask.sum(dim=1)
+            elif self.pooling == "max":
+                mask_expanded = mask.expand(outputs.size())
+                outputs = outputs.clone()  # Prevent in-place modification warnings
+                outputs[mask_expanded == 0] = -1e9
+                embeddings, _ = outputs.max(dim=1)
+            else:
+                raise ValueError(f"self.pooling got unexpected value {self.pooling}")
+
+            batch_embeds = nn.functional.normalize(embeddings, dim=1)
+            embeds_list.append(batch_embeds)
+
+        embeddings = torch.cat(embeds_list, dim=0)
+        return embeddings
+
+
+class LLMEDEncoder:
+    # def __init__(self, model_name, batch_size, pooling, checkpoint_path, device="cuda"):
+    def __init__(self, cfg: DenseConfig):
+        transformers_logging.set_verbosity_error()
+
+        device = cfg.device
+        assert cfg.name == "llmed"
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            "zhihan1996/DNABERT-2-117M", trust_remote_code=True
+        )
+        model = AutoModel.from_pretrained("PSUXL/LLMED-MAE", trust_remote_code=True)
+        patch_with_flash_lib(model)
+        self.model = model
+        self.model = self.model.eval().to(device)
+
+        self.batch_size = cfg.batch_size
+        self.device = device
+        self.pooling = cfg.pooling
+        assert self.tokenizer.vocab_size == self.model.config.vocab_size
+
+    @torch.no_grad()
+    def encode(self, sequences):
+        embeds_list = []
+        assert self.tokenizer
+        for batch in batched(sequences, self.batch_size):
+            tokens = self.tokenizer(batch, return_tensors="pt", padding=True).to(
+                self.device
+            )
+            outputs = self.model(**tokens)[0]
+
+            mask = tokens.attention_mask.unsqueeze(-1)
+            if self.pooling == "class":
+                embeddings = outputs[:, 0, :]
             elif self.pooling == "mean":
                 embeddings = (outputs * mask).sum(dim=1) / mask.sum(dim=1)
             elif self.pooling == "max":
