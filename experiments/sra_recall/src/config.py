@@ -156,8 +156,26 @@ class MantisConfig(AlgorithmConfig):
 
 
 @dataclass
+class MMseqs2Config(AlgorithmConfig):
+    name: str = "mmseqs"
+    executable: str = "mmseqs"
+    max_seqs: int = 300
+
+    def __post_init__(self):
+        self.index_suffix = Path("mmseqs")
+        self.experiment_id = "mmseqs"
+        self.checkpoint: str | None = None
+        self.max_len: int | None = None
+        self.chunk_type: int | None = None
+        self.checkpoint_step_num: int | None = None
+
+    def __str__(self):
+        return self.experiment_id
+
+
+@dataclass
 class ExperimentConfig:
-    model: Union[DenseConfig, MetagraphConfig, Evo2Config, MantisConfig]
+    model: Union[DenseConfig, MetagraphConfig, Evo2Config, MantisConfig, MMseqs2Config]
     accessions_dir: Path
     raw_read_queries_path: Path
     logan_contig_queries_path: Path
