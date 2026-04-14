@@ -112,4 +112,5 @@ class TrainConfig:
     hnm_num_negatives: int = (
         0  # hard negatives per query mined from queue (0 = disabled)
     )
+    use_hard_negatives: bool = False
     augment_config: AugmentConfig = field(default_factory=AugmentConfig)

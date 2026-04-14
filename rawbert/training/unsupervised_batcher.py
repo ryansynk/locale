@@ -10,13 +10,23 @@ from ..config import AugmentConfig
 
 
 class UnsupervisedBatcher(Dataset):
-    def __init__(self, dataset_path, augment_config, num_examples=None):
+    def __init__(
+        self,
+        dataset_path,
+        use_hard_negatives: bool,
+        augment_config: AugmentConfig,
+        num_examples=None,
+    ):
         dataset_path = Path(dataset_path).resolve()
         self.cfg = augment_config
         self.augmenter = Augmenter(augment_config)
         self.df = pl.read_parquet(dataset_path)
+        self.df = self.df.with_columns(
+            pl.col("sequence").str.len_chars().alias("sequence_len")
+        )
         self.df = self.df.filter(pl.col("sequence_len") >= self.cfg.min_seq_len)
-        self.disable_mutations = self.cfg.disable_mutations
+        self.disable_mutations: bool = self.cfg.disable_mutations
+        self.use_hard_negatives: bool = use_hard_negatives
         if num_examples is not None:
             self.df = self.df.head(num_examples)
 
@@ -26,8 +36,19 @@ class UnsupervisedBatcher(Dataset):
     def __getitem__(self, index):
         row = self.df.row(index, named=True)
         seq = row["sequence"].upper()
-        query, ref = self.augmenter.get_pairs(seq)
-        return query, ref
+        return_dict = {}
+        if self.use_hard_negatives:
+            query, ref, negative = self.augmenter.get_pairs(
+                seq, self.use_hard_negatives
+            )
+            return_dict["query"] = query
+            return_dict["ref"] = ref
+            return_dict["negative"] = negative
+        else:
+            query, ref = self.augmenter.get_pairs(seq)
+            return_dict["query"] = query
+            return_dict["ref"] = ref
+        return return_dict
 
 
 class CropType(Enum):
@@ -91,7 +112,9 @@ class Augmenter:
                 start_short - start_long + len(short_crop),
             )
 
-        return query, query_range, ref, ref_range
+        covered_start = start_long
+        covered_end = start_long + long_crop_len
+        return query, query_range, ref, ref_range, covered_start, covered_end
 
     def _overlap_crop(self, seq, crop_len_1, crop_len_2):
         min_crop_len = min(crop_len_1, crop_len_2)
@@ -128,7 +151,41 @@ class Augmenter:
             query, query_range = right, right_overlap_range
             ref, ref_range = left, left_overlap_range
 
-        return query, query_range, ref, ref_range
+        covered_start = union_start
+        covered_end = union_start + union_len
+        return query, query_range, ref, ref_range, covered_start, covered_end
+
+    def _hard_negative_crop(
+        self, seq: str, covered_start: int, covered_end: int
+    ) -> str | None:
+        """Sample a crop from seq entirely outside [covered_start, covered_end).
+
+        Returns None if neither flanking region is long enough for min_seq_len.
+        """
+        max_crop_len = min(self.cfg.max_seq_len, len(seq))
+
+        candidates = []
+        if covered_start >= self.cfg.min_seq_len:
+            candidates.append((0, covered_start))
+        if len(seq) - covered_end >= self.cfg.min_seq_len:
+            candidates.append((covered_end, len(seq)))
+
+        if not candidates:
+            return None
+
+        idx = int(torch.randint(0, len(candidates), size=(1,)).item())
+        region_start, region_end = candidates[idx]
+        region_len = region_end - region_start
+
+        crop_len = int(
+            torch.randint(
+                self.cfg.min_seq_len, min(max_crop_len, region_len) + 1, size=(1,)
+            ).item()
+        )
+        crop_start = region_start + int(
+            torch.randint(0, region_len - crop_len + 1, size=(1,)).item()
+        )
+        return seq[crop_start : crop_start + crop_len]
 
     def _sample_identity(self):
         return self.beta_distribution.sample().item()
@@ -213,7 +270,7 @@ class Augmenter:
         )
         return augmented_seq
 
-    def get_pairs(self, seq):
+    def get_pairs(self, seq: str, use_hard_negatives: bool = False):
         crop_len_1, crop_len_2 = self._get_crop_lens(seq)
 
         # Force containment if overlap is impossible
@@ -229,13 +286,26 @@ class Augmenter:
 
         match crop_type:
             case CropType.CONTAINMENT:
-                seq1, seq1_overlap_range, seq2, seq2_overlap_range = (
-                    self._containment_crop(seq, crop_len_1, crop_len_2)
-                )
+                (
+                    seq1,
+                    seq1_overlap_range,
+                    seq2,
+                    seq2_overlap_range,
+                    covered_start,
+                    covered_end,
+                ) = self._containment_crop(seq, crop_len_1, crop_len_2)
             case CropType.OVERLAP:
-                seq1, seq1_overlap_range, seq2, seq2_overlap_range = self._overlap_crop(
-                    seq, crop_len_1, crop_len_2
-                )
+                (
+                    seq1,
+                    seq1_overlap_range,
+                    seq2,
+                    seq2_overlap_range,
+                    covered_start,
+                    covered_end,
+                ) = self._overlap_crop(seq, crop_len_1, crop_len_2)
+
+        if use_hard_negatives:
+            hard_negative = self._hard_negative_crop(seq, covered_start, covered_end)
 
         if self.cfg.disable_mutations is False:
             seq1_overlap_start, seq1_overlap_end = seq1_overlap_range
@@ -266,6 +336,8 @@ class Augmenter:
             query = seq2
             ref = seq1
 
+        if use_hard_negatives:
+            return query, ref, hard_negative
         return query, ref
 
 

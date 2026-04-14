@@ -326,7 +326,9 @@ class RawBERT(nn.Module):
                     q_seq, t_seq = query_seq, queue_seq
                 else:
                     q_seq, t_seq = queue_seq, query_seq
-                result = edlib.align(query=q_seq, target=t_seq, mode="HW", task="distance")
+                result = edlib.align(
+                    query=q_seq, target=t_seq, mode="HW", task="distance"
+                )
                 sw_score = 1.0 - result["editDistance"] / len(q_seq)
                 scored.append((sw_score, slot))
 
@@ -348,6 +350,59 @@ class RawBERT(nn.Module):
                     hn_sw_scores[i, j] = sw_score
 
         return top_k_idx, hn_seqs_per_query, hn_sw_scores
+
+    @torch.no_grad()
+    def _filter_hard_negatives(
+        self,
+        query_seqs: List[str],
+        neg_seqs: List[str],
+        similarity_cutoff: float,
+    ) -> torch.Tensor:
+        """
+        For each hard negative, check whether it aligns with any query in the batch.
+
+        Returns a boolean mask of shape (B,) where True means the hard negative at
+        that position is aligned to at least one query and should be masked out.
+        Uses the same edlib HW alignment logic as _check_alignments_fast, but
+        operates over the small batch-sized negative list rather than the queue.
+        """
+        B = len(neg_seqs)
+        mask = torch.zeros(B, dtype=torch.bool, device=self.device)
+
+        def check_single_neg(args: Tuple[int, str]):
+            j, neg_seq = args
+            if neg_seq is None:
+                return j, True
+            for query_seq in query_seqs:
+                if len(query_seq) <= len(neg_seq):
+                    q, t = query_seq, neg_seq
+                else:
+                    q, t = neg_seq, query_seq
+                max_allowed_distance = int(len(q) * (1.0 - similarity_cutoff))
+                result = edlib.align(
+                    query=q,
+                    target=t,
+                    mode="HW",
+                    task="distance",
+                    k=max_allowed_distance,
+                )
+                if result["editDistance"] != -1:
+                    return j, True
+            return j, False
+
+        total_cpus = os.cpu_count() or 4
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            num_gpus = torch.distributed.get_world_size()
+        else:
+            num_gpus = 1
+        workers = max(1, total_cpus // num_gpus)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            for j, is_aligned in executor.map(check_single_neg, enumerate(neg_seqs)):
+                if is_aligned:
+                    mask[j] = True
+
+        return mask
 
     @torch.no_grad()
     def _momentum_update_key_encoder(self) -> None:
@@ -399,12 +454,24 @@ class RawBERT(nn.Module):
         query_seqs: Optional[List[str]] = None,
         key_seqs: Optional[List[str]] = None,
         filter_aligned: bool = True,
+        neg_tokens: torch.Tensor | None = None,
+        neg_seqs: list[str] | None = None,
     ):
         # Calculate Query Embedding
         q = self._embed(
             self.bert_q, self.projector_q, query.to(self.device), pooling=self.pooling
         )
         q = nn.functional.normalize(q, dim=1)
+
+        n = None
+        if neg_tokens is not None and neg_seqs is not None:
+            n = self._embed(
+                self.bert_q,
+                self.projector_q,
+                neg_tokens.to(self.device),
+                pooling=self.pooling,
+            )
+            n = nn.functional.normalize(n, dim=1)
 
         if self.is_moco:
             with torch.no_grad():
@@ -434,12 +501,24 @@ class RawBERT(nn.Module):
                 # Set logits for aligned sequences to a very negative value (will be ignored)
                 l_neg[:, aligned_mask] = -1e9
 
-            # Logits: B x (1 + K)
-            logits = torch.cat([l_pos, l_neg], dim=1)
+            # Logits: B x (1 + [B] + K)
+            # Hard negatives are batch negatives: each query is penalized against all
+            # hard negatives in the batch. They are NOT enqueued.
+            if n is not None:
+                l_hard = einops.einsum(q, n, "B D, N D -> B N")  # (B, B)
+                if filter_aligned and query_seqs is not None and neg_seqs is not None:
+                    neg_aligned_mask = self._filter_hard_negatives(
+                        query_seqs, neg_seqs, queue_identity_cutoff
+                    )
+                    l_hard[:, neg_aligned_mask] = -1e9
+                logits = torch.cat([l_pos, l_hard, l_neg], dim=1)
+            else:
+                logits = torch.cat([l_pos, l_neg], dim=1)
 
             # apply temperature
             logits /= self.T
 
+            # Label 0 is always the positive (l_pos is at index 0)
             labels = torch.zeros(logits.shape[0], dtype=torch.long, device=self.device)
 
             self._dequeue_and_enqueue(k, is_distributed, sequences=key_seqs)
@@ -459,10 +538,25 @@ class RawBERT(nn.Module):
             else:
                 k_global = k
 
+            # Append hard negatives to the key matrix so they are treated as
+            # additional negatives. The positive indices in labels are unchanged
+            # because hard negatives are appended after k_global.
+            if n is not None:
+                if is_distributed:
+                    n_global_list = torch.distributed.nn.all_gather(n)  # ty: ignore possibly-missing-attribute
+                    n_global = torch.cat(n_global_list, dim=0)  # (N*b, D)
+                else:
+                    n_global = n
+                keys_and_negs = torch.cat([k_global, n_global], dim=0)  # (2*N*b, D)
+            else:
+                keys_and_negs = k_global
+
             # 3. Compute Partial Logits (Memory Saving Step)
             # Instead of (N*b x N*b), we compute (b x N*b)
             # We only calculate logits for the queries sitting on THIS GPU
-            logits = torch.matmul(q, k_global.T) / self.T  # Shape: (b, N*b)
+            logits = (
+                torch.matmul(q, keys_and_negs.T) / self.T
+            )  # Shape: (b, N*b [+ N*b])
 
             # 4. Correct Labels
             # The positive key for q_local[i] is at a specific index in k_global.

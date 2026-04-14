@@ -60,11 +60,33 @@ def save_checkpoint(state, checkpoint_dir, cfg, run_id, kl: bool = False):
 
 
 def collate(batch, tokenizer):
-    # batch is list of (query, key) pairs
-    queries, keys = zip(*batch)
+    # batch is list of dict[str, str]
+    queries = [b["query"] for b in batch]
+    keys = [b["ref"] for b in batch]
     query_tokens = tokenizer(queries, return_tensors="pt", padding=True)
     key_tokens = tokenizer(keys, return_tensors="pt", padding=True)
     return query_tokens, queries, key_tokens, keys
+
+
+def collate_w_hard_negatives(batch, tokenizer):
+    # batch is list of dict[str, str]
+    queries = [b["query"] for b in batch]
+    keys = [b["ref"] for b in batch]
+    negatives = [b["negative"] for b in batch]
+    neg_none_indices: list[int] = []
+    for i, neg in enumerate(negatives):
+        if neg is None:
+            neg_none_indices.append(i)
+    if neg_none_indices:
+        none_indices = set(neg_none_indices)
+        queries = [q for i, q in enumerate(queries) if i not in none_indices]
+        keys = [k for i, k in enumerate(keys) if i not in none_indices]
+        negatives = [n for i, n in enumerate(negatives) if i not in none_indices]
+
+    query_tokens = tokenizer(queries, return_tensors="pt", padding=True)
+    key_tokens = tokenizer(keys, return_tensors="pt", padding=True)
+    negative_tokens = tokenizer(negatives, return_tensors="pt", padding=True)
+    return query_tokens, queries, key_tokens, keys, negative_tokens, negatives
 
 
 def get_linear_warmup_with_hold_schedule(optimizer, num_warmup_steps, last_epoch=-1):
@@ -137,9 +159,14 @@ def train(
     if cfg.unsupervised:
         par_print("Unsupervised Training Mode")
         if cfg.data_type == "contig":
-            reader = UnsupervisedBatcher(cfg.dataset_path, cfg.augment_config)
+            reader = UnsupervisedBatcher(
+                cfg.dataset_path, cfg.use_hard_negatives, cfg.augment_config
+            )
             val_reader = UnsupervisedBatcher(
-                cfg.val_dataset_path, cfg.augment_config, num_examples=cfg.num_val_keys
+                cfg.val_dataset_path,
+                False,
+                cfg.augment_config,
+                num_examples=cfg.num_val_keys,
             )
             sampler = (
                 DistributedSampler(
@@ -180,12 +207,13 @@ def train(
     tokenizer = AutoTokenizer.from_pretrained(
         "zhihan1996/DNABERT-2-117M", trust_remote_code=True
     )
+    hn_collater = partial(collate_w_hard_negatives, tokenizer=tokenizer)
     collater = partial(collate, tokenizer=tokenizer)
 
     dataloader = DataLoader(
         reader,
         batch_size=per_device_batch_size,
-        collate_fn=collater,
+        collate_fn=hn_collater if cfg.use_hard_negatives else collater,
         sampler=sampler,
         drop_last=True,
         shuffle=False,
@@ -243,7 +271,12 @@ def train(
         for epoch in range(num_epochs):
             par_tqdm_write(f"Training epoch = {epoch + 1}/{num_epochs}")
             for batch in dataloader:
-                q, query_seqs, k, key_seqs = batch
+                if cfg.use_hard_negatives:
+                    q, query_seqs, k, key_seqs, neg_tokens, neg_seqs = batch
+                else:
+                    q, query_seqs, k, key_seqs = batch
+                    neg_tokens = None
+                    neg_seqs = None
                 q = q.to(local_rank)
                 k = k.to(local_rank)
                 optimizer.zero_grad()
@@ -255,6 +288,8 @@ def train(
                     query_seqs=query_seqs,
                     key_seqs=key_seqs,
                     filter_aligned=cfg.moco_filter_queue,
+                    neg_tokens=neg_tokens,
+                    neg_seqs=neg_seqs,
                 )
                 loss = F.cross_entropy(logits, labels)
                 loss.backward()
