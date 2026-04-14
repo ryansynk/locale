@@ -16,7 +16,7 @@ export MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)
 cd /pscratch/sd/r/rsynk/rawbert
 
 srun uv run python -m torch.distributed.run \
-    --nnodes=4 \
+    --nnodes=$SLURM_NNODES \
     --nproc_per_node=4 \
     --rdzv_id=$SLURM_JOB_ID \
     --rdzv_backend=c10d \

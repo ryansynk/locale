@@ -7,14 +7,12 @@ import polars as pl
 from jsonargparse import CLI
 from src.config import (
     DenseConfig,
-    Evo2Config,
     ExperimentConfig,
     MetagraphConfig,
     MantisConfig,
     MMseqs2Config,
 )
 from src.dense_index import DenseIndex
-from src.evo2_index import Evo2Index
 from src.metagraph_index import MetagraphIndex
 from src.mantis_index import MantisIndex
 from src.mmseqs2_index import MMseqs2Index
@@ -80,8 +78,6 @@ def main(cfg: ExperimentConfig):
         index = DenseIndex(cfg)
         if cfg.model.chunk_type == "exact_chunk":
             index.contig_align_intervals = get_matching_regions_of_contigs(queries)
-    elif isinstance(cfg.model, Evo2Config):
-        index = Evo2Index(cfg)
     elif isinstance(cfg.model, MetagraphConfig):
         index = MetagraphIndex(cfg)
     elif isinstance(cfg.model, MantisConfig):

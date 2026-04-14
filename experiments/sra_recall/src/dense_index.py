@@ -515,6 +515,8 @@ class DenseEncoder:
             self._encoder = DNA2VecEncoder(cfg)
         elif cfg.name == "llmed":
             self._encoder = LLMEDEncoder(cfg)
+        elif cfg.name == "evo2":
+            self._encoder = Evo2Encoder(cfg)
         else:
             raise ValueError(f"Unknown model name: {cfg.name}")
 
@@ -903,5 +905,77 @@ class LLMEDEncoder:
             batch_embeds = nn.functional.normalize(embeddings, dim=1)
             embeds_list.append(batch_embeds)
 
+        embeddings = torch.cat(embeds_list, dim=0)
+        return embeddings
+
+
+class Evo2Encoder:
+    def __init__(self, cfg):  # Assuming Evo2Config is defined elsewhere
+        assert cfg.name == "evo2"
+        try:
+            from evo2 import Evo2
+        except ImportError:
+            raise ImportError(
+                "Evo2 is missing. For a light install, run: pip install evo2"
+            )
+
+        # Evo2 claims all visible GPUs by default, which breaks multi-GPU workers.
+        # Restrict visibility to only the target GPU before loading so Evo2
+        # initializes a single copy on that device (visible as cuda:0).
+        device_str = cfg.device  # e.g. "cuda:2"
+        gpu_id = device_str.split(":")[-1] if ":" in device_str else "0"
+        os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id
+
+        model = Evo2("evo2_7b")
+        self.model = model
+        self.forward = self.model
+        self.tokenizer = self.model.tokenizer
+        # With CUDA_VISIBLE_DEVICES restricted to one GPU, Evo2 sees it as cuda:0
+        self.device = "cuda:0"
+        self.batch_size = cfg.batch_size
+        self.pooling = cfg.pooling
+
+    def encode(self, sequences):
+        embeds_list = []
+        assert self.tokenizer
+        for batch in batched(sequences, self.batch_size):
+            tokenized = [self.tokenizer.tokenize(seq) for seq in batch]
+            max_len = max(len(t) for t in tokenized)
+
+            pad_id = getattr(
+                self.tokenizer, "pad_token_id", self.tokenizer.tokenize("N")[0]
+            )
+
+            input_ids = []
+            masks = []
+            for t in tokenized:
+                pad_len = max_len - len(t)
+                input_ids.append(t + [pad_id] * pad_len)
+                masks.append([1] * len(t) + [0] * pad_len)
+
+            tokens_tensor = torch.tensor(
+                input_ids, dtype=torch.long, device=self.device
+            )
+            mask = torch.tensor(
+                masks, dtype=torch.float32, device=self.device
+            ).unsqueeze(-1)
+
+            layer_name = "blocks.28.mlp.l3"
+            _, embeddings_dict = self.forward(
+                tokens_tensor, return_embeddings=True, layer_names=[layer_name]
+            )
+            outputs = embeddings_dict[layer_name]
+
+            if self.pooling == "mean":
+                embeddings = (outputs * mask).sum(dim=1) / mask.sum(dim=1)
+            elif self.pooling == "max":
+                mask_expanded = mask.expand(outputs.size())
+                outputs = outputs.clone()
+                outputs[mask_expanded == 0] = -1e9
+                embeddings, _ = outputs.max(dim=1)
+            else:
+                raise ValueError(f"self.pooling got unexpected value {self.pooling}")
+
+            embeds_list.append(nn.functional.normalize(embeddings, dim=1))
         embeddings = torch.cat(embeds_list, dim=0)
         return embeddings

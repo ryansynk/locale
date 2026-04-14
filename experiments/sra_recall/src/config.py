@@ -19,29 +19,9 @@ class AlgorithmConfig:
 
 
 @dataclass
-class Evo2Config(AlgorithmConfig):
-    name: str = "evo2"
-    batch_size: int = 128
-    device: str = "cuda"
-    pooling: str = "max"
-
-    def __post_init__(self):
-        config_tag = f"pool{self.pooling}"
-        self.index_suffix = Path("evo2") / config_tag
-        self.experiment_id = f"evo2_{config_tag}"
-        self.checkpoint: str | None = None
-        self.max_len: int | None = None
-        self.chunk_type: int | None = None
-        self.checkpoint_step_num: int | None = None
-
-    def __str__(self):
-        return self.experiment_id
-
-
-@dataclass
 class DenseConfig(AlgorithmConfig):
     name: Literal[
-        "rawbert", "dnabert", "generator", "neuroseed", "dna2vec", "llmed"
+        "rawbert", "dnabert", "generator", "neuroseed", "dna2vec", "llmed", "evo2"
     ] = "rawbert"  # "dnabert", "rawbert"
     checkpoint_path: Optional[str] = None
     checkpoint_step_num: Optional[int] = None
@@ -106,9 +86,15 @@ class DenseConfig(AlgorithmConfig):
             self.checkpoint: str | None = None
             self.max_len: int = self.max_seq_len
             self.chunk_type: str = self.chunk_type
+        elif self.name == "evo2":
+            self.index_suffix: Path = Path("evo2") / config_tag
+            self.experiment_id: str = f"evo2_{config_tag}"
+            self.checkpoint: str | None = None
+            self.max_len: int = self.max_seq_len
+            self.chunk_type: str = self.chunk_type
         else:
             raise ValueError(
-                f"name expected: rawbert, dnabert, generator, neuroseed, dna2vec, or llmed. Got = {self.name}"
+                f"name expected: rawbert, dnabert, generator, neuroseed, dna2vec, llmed, or evo2. Got = {self.name}"
             )
 
     def __str__(self):
@@ -175,7 +161,7 @@ class MMseqs2Config(AlgorithmConfig):
 
 @dataclass
 class ExperimentConfig:
-    model: Union[DenseConfig, MetagraphConfig, Evo2Config, MantisConfig, MMseqs2Config]
+    model: Union[DenseConfig, MetagraphConfig, MantisConfig, MMseqs2Config]
     accessions_dir: Path
     raw_read_queries_path: Path
     logan_contig_queries_path: Path
