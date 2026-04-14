@@ -109,4 +109,7 @@ class TrainConfig:
     use_projection_head: bool = False
     smith_waterman_temperature: float = 0.1
     kl: bool = False
+    hnm_num_negatives: int = (
+        0  # hard negatives per query mined from queue (0 = disabled)
+    )
     augment_config: AugmentConfig = field(default_factory=AugmentConfig)

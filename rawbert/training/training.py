@@ -481,7 +481,18 @@ def train_kl(
     elif cfg.warmup_fraction:
         num_warmup_steps = int(cfg.warmup_fraction * total_steps)
 
-    scheduler = get_linear_warmup_with_hold_schedule(optimizer, num_warmup_steps)
+    if cfg.schedule == "cosine":
+        scheduler = get_cosine_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=total_steps,
+        )
+    elif cfg.schedule == "hold":
+        scheduler = get_linear_warmup_with_hold_schedule(optimizer, num_warmup_steps)
+    else:
+        raise ValueError(
+            f"Expected schedule to be one of 'cosine', 'hold', got: {cfg.schedule}"
+        )
 
     if cfg.checkpoint_dir:
         checkpoint_dir = Path(cfg.checkpoint_dir)
@@ -516,18 +527,72 @@ def train_kl(
                     pooling=model.pooling,
                 )
                 k_embeds = F.normalize(k_embeds, dim=1)
-                cosine_sims = torch.matmul(q_embeds, k_embeds.T)
-                pred_scores = F.log_softmax(cosine_sims / model.T, dim=-1)
+                B = q_embeds.shape[0]
+                cosine_sims = torch.matmul(q_embeds, k_embeds.T)  # (B, B)
                 sw_scores = get_smith_waterman_scores(query_seqs, key_seqs).to(
                     model.device
-                )
+                )  # (B, B)
+
+                # Split in-batch sims into positive (diagonal) and in-batch negatives
+                # (off-diagonal). These form the base of the unified distribution.
+                off_diag = ~torch.eye(B, dtype=torch.bool, device=model.device)
+                pos_model_sims = cosine_sims.diagonal().unsqueeze(1)  # (B, 1)
+                pos_sw = sw_scores.diagonal().unsqueeze(1)  # (B, 1)
+                in_batch_sims = cosine_sims[off_diag].view(B, B - 1)  # (B, B-1)
+                in_batch_sw = sw_scores[off_diag].view(B, B - 1)  # (B, B-1)
+
+                if cfg.hnm_num_negatives > 0 and model.is_moco:
+                    k_hn = cfg.hnm_num_negatives
+
+                    with torch.no_grad():
+                        # Find top-k hard negatives by Smith-Waterman score using
+                        # the k-mer index for candidate pre-filtering (zero false negatives).
+                        top_k_idx, _, hn_sw = model._get_top_k_sw_negatives(
+                            query_seqs, k_hn
+                        )
+                        hn_sw = hn_sw.to(model.device)  # (B, k_hn)
+
+                    # valid_hn_mask tracks slots where a candidate was found (-1 = none)
+                    valid_hn_mask = top_k_idx >= 0  # (B, k_hn)
+                    safe_idx = top_k_idx.clamp(min=0).flatten()  # (B * k_hn,)
+                    hn_vecs = model.queue[:, safe_idx].T.view(
+                        B, k_hn, -1
+                    )  # (B, k_hn, D)
+                    hn_model_sims = (q_embeds.unsqueeze(1) * hn_vecs).sum(
+                        dim=-1
+                    )  # (B, k_hn)
+                    # Mask out slots with no candidate so they don't influence the loss
+                    hn_model_sims = hn_model_sims.masked_fill(~valid_hn_mask, -1e9)
+                    hn_sw = hn_sw.masked_fill(~valid_hn_mask, -1e9)
+
+                    # Unified: [positive | hard negatives | in-batch negatives]
+                    all_model_sims = torch.cat(
+                        [pos_model_sims, hn_model_sims, in_batch_sims], dim=1
+                    )  # (B, 1+k_hn+B-1)
+                    all_sw = torch.cat(
+                        [pos_sw, hn_sw, in_batch_sw], dim=1
+                    )  # (B, 1+k_hn+B-1)
+                else:
+                    # Without HNM: unified distribution over positive + in-batch negatives
+                    all_model_sims = torch.cat([pos_model_sims, in_batch_sims], dim=1)
+                    all_sw = torch.cat([pos_sw, in_batch_sw], dim=1)
+
+                pred_scores = F.log_softmax(all_model_sims / model.T, dim=-1)
                 target_scores = F.log_softmax(
-                    sw_scores / cfg.smith_waterman_temperature, dim=-1
+                    all_sw / cfg.smith_waterman_temperature, dim=-1
                 )
                 loss = F.kl_div(
                     pred_scores, target_scores, reduction="batchmean", log_target=True
                 )
                 loss.backward()
+
+                # Enqueue current key embeddings so the hard negative pool
+                # evolves as the model improves (uses bert_q, not momentum encoder)
+                with torch.no_grad():
+                    if model.is_moco:
+                        model._dequeue_and_enqueue(
+                            k_embeds.detach(), is_distributed, key_seqs
+                        )
                 optimizer.step()
                 scheduler.step()
 
@@ -540,6 +605,9 @@ def train_kl(
                     pred_entropy = -(pred_probs * pred_probs.log()).sum(dim=-1).mean()
 
                 if global_rank == 0:
+                    frac_hn_high_score = (
+                        (hn_sw >= pos_sw) & valid_hn_mask
+                    ).sum() / valid_hn_mask.sum().clamp(min=1)
                     assert run
                     lrs = scheduler.get_last_lr()
                     metrics = {
@@ -548,6 +616,7 @@ def train_kl(
                         "train/step": global_step,
                         "train/model_entropy": pred_entropy.item(),
                         "train/sw_entropy": sw_entropy.item(),
+                        "train/hn_high_sw_score_frac": frac_hn_high_score.item(),
                     }
                     for i, group in enumerate(optimizer.param_groups):
                         norm = torch.nn.utils.get_total_norm(
@@ -660,6 +729,38 @@ def train_kl(
             run.id,
             kl=True,
         )
+
+
+def _sw_score(seq_a: str, seq_b: str) -> float:
+    """Smith-Waterman identity score (HW mode) for a single pair."""
+    q, t = (seq_a, seq_b) if len(seq_a) <= len(seq_b) else (seq_b, seq_a)
+    result = edlib.align(query=q, target=t, mode="HW", task="distance")
+    return 1.0 - result["editDistance"] / len(q)
+
+
+@torch.no_grad()
+def get_hard_negative_sw_scores(
+    query_seqs: list[str],
+    hn_seqs_per_query: list[list[str | None]],
+) -> torch.Tensor:
+    """
+    Compute SW identity scores between each query and its per-query hard negatives.
+
+    Args:
+        query_seqs: B query sequences
+        hn_seqs_per_query: B lists of k hard negative sequences (None = missing slot)
+
+    Returns:
+        (B, k) tensor of identity scores; missing slots get 0.0
+    """
+    B = len(query_seqs)
+    k = len(hn_seqs_per_query[0]) if B > 0 else 0
+    scores = torch.zeros(B, k, dtype=torch.float)
+    for i, query_seq in enumerate(query_seqs):
+        for j, hn_seq in enumerate(hn_seqs_per_query[i]):
+            if hn_seq is not None:
+                scores[i, j] = _sw_score(query_seq, hn_seq)
+    return scores
 
 
 @torch.no_grad()

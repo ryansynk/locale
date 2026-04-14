@@ -14,7 +14,7 @@ import math
 import os
 from collections import defaultdict
 from copy import deepcopy
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 import edlib  # ty: ignore unresolved-import
 import einops
@@ -290,6 +290,64 @@ class RawBERT(nn.Module):
                     aligned_mask[slot] = True
 
         return aligned_mask
+
+    @torch.no_grad()
+    def _get_top_k_sw_negatives(
+        self, batch_sequences: List[str], k: int
+    ) -> Tuple[torch.Tensor, List[List[Optional[str]]], torch.Tensor]:
+        """
+        For each query, find the top-k queue sequences by Smith-Waterman score
+        using the k-mer inverted index for candidate pre-filtering.
+
+        Returns:
+            top_k_idx: (B, k) LongTensor of queue slot indices; -1 where no candidate.
+            hn_seqs_per_query: B x k lists of sequences; None where no candidate.
+            hn_sw_scores: (B, k) FloatTensor of SW identity scores; 0.0 where no candidate.
+        """
+        B = len(batch_sequences)
+        top_k_idx = torch.full((B, k), -1, dtype=torch.long, device=self.device)
+        hn_seqs_per_query: List[List[Optional[str]]] = [[None] * k for _ in range(B)]
+        hn_sw_scores = torch.zeros((B, k), dtype=torch.float)
+
+        def score_query(args: Tuple[int, str]):
+            i, query_seq = args
+            candidates: Set[int] = set()
+            for kmer in self._get_kmers(query_seq):
+                bucket = self.kmer_index.get(kmer)
+                if bucket:
+                    candidates.update(bucket)
+
+            scored = []
+            for slot in candidates:
+                queue_seq = self.queue_seqs[slot]
+                if queue_seq is None:
+                    continue
+                if len(query_seq) <= len(queue_seq):
+                    q_seq, t_seq = query_seq, queue_seq
+                else:
+                    q_seq, t_seq = queue_seq, query_seq
+                result = edlib.align(query=q_seq, target=t_seq, mode="HW", task="distance")
+                sw_score = 1.0 - result["editDistance"] / len(q_seq)
+                scored.append((sw_score, slot))
+
+            scored.sort(key=lambda x: x[0], reverse=True)
+            return i, scored[:k]
+
+        total_cpus = os.cpu_count() or 4
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            num_gpus = torch.distributed.get_world_size()
+        else:
+            num_gpus = 1
+        workers = max(1, total_cpus // num_gpus)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            for i, scored in executor.map(score_query, enumerate(batch_sequences)):
+                for j, (sw_score, slot) in enumerate(scored):
+                    top_k_idx[i, j] = slot
+                    hn_seqs_per_query[i][j] = self.queue_seqs[slot]
+                    hn_sw_scores[i, j] = sw_score
+
+        return top_k_idx, hn_seqs_per_query, hn_sw_scores
 
     @torch.no_grad()
     def _momentum_update_key_encoder(self) -> None:

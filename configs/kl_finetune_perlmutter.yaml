@@ -4,9 +4,9 @@ dataset_path: /pscratch/sd/r/rsynk/data/train/logan_contig/all_contigs.parquet
 val_dataset_path: /pscratch/sd/r/rsynk/data/val/logan_contig/all_contigs.parquet
 per_device_batch_size: 64
 val_batch_size: 512
-schedule: hold 
+schedule: cosine
 lr: 0.001
-backbone_lr: 0.00006
+backbone_lr: 0.00001
 total_steps: 2000
 warmup_fraction: 0.08
 warmup_steps: null
@@ -16,17 +16,18 @@ moco_softmax_temp: 0.05
 moco_filter_queue: True 
 moco_filter_queue_identity_cutoff: 0.91
 checkpoint_dir: /pscratch/sd/r/rsynk/rawbert/checkpoints/
-checkpoint_interval: 100
+checkpoint_interval: 200
 starting_checkpoint_path: /pscratch/sd/r/rsynk/rawbert/checkpoints/69skoum1/checkpoint7000.pth.tar
-num_val_queries: 100
+num_val_queries: 1000
 num_val_keys: 10000
 dim: 128
 pooling: mean
 num_workers: 16
 sanity_test: false
 use_projection_head: False
-smith_waterman_temperature: 0.1
+smith_waterman_temperature: 0.05
 kl: True
+hnm_num_negatives: 32
 augment_config:
   max_len: 256
   max_seq_len: 256
