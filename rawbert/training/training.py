@@ -229,19 +229,23 @@ def train(
         num_workers=1,
     )
 
-    if getattr(cfg, "total_steps", None):
-        total_steps = cfg.total_steps
-        # Calculate required epochs to reach max_steps (ceiling division)
+    global_batch_size = per_device_batch_size * world_size
+
+    if cfg.total_samples is not None:
+        total_steps = cfg.total_samples // global_batch_size
+        # Calculate required epochs to reach total_steps (ceiling division)
         num_epochs = (total_steps + len(dataloader) - 1) // len(dataloader)
     else:
         num_epochs = cfg.num_epochs
         total_steps = len(dataloader) * num_epochs
 
-    assert not (cfg.warmup_steps is not None and cfg.warmup_fraction is not None), (
-        "warmup_steps and warmup_fraction cannot be set simultaneously"
+    checkpoint_interval_steps = cfg.checkpoint_interval_samples // global_batch_size
+
+    assert not (cfg.warmup_samples is not None and cfg.warmup_fraction is not None), (
+        "warmup_samples and warmup_fraction cannot be set simultaneously"
     )
-    if cfg.warmup_steps:
-        num_warmup_steps = cfg.warmup_steps
+    if cfg.warmup_samples:
+        num_warmup_steps = cfg.warmup_samples // global_batch_size
     elif cfg.warmup_fraction:
         num_warmup_steps = int(cfg.warmup_fraction * total_steps)
 
@@ -305,7 +309,7 @@ def train(
                         "train/acc1": acc1[0],
                         "train/acc5": acc5[0],
                         "train/lr": lrs[0],
-                        "train/step": global_step,
+                        "train/samples_seen": global_step * global_batch_size,
                     }
                     if cfg.use_projection_head:
                         metrics["train/head_lr"] = lrs[1]
@@ -316,7 +320,7 @@ def train(
                         metrics[f"metrics/grad_norm_{group['name']}"] = norm
                     run.log(metrics)
 
-                if global_step % cfg.checkpoint_interval == 0 and global_step > 0:
+                if global_step % checkpoint_interval_steps == 0 and global_step > 0:
                     if global_rank == 0:
                         assert run
                         if is_distributed:
@@ -341,7 +345,7 @@ def train(
                             {
                                 "val/acc1": val_acc1[0],
                                 "val/acc5": val_acc5[0],
-                                "val/step": global_step,
+                                "val/samples_seen": global_step * global_batch_size,
                             }
                         )
                         save_checkpoint(
@@ -367,11 +371,11 @@ def train(
 
                 global_step += 1
                 pbar.update(1)
-                if getattr(cfg, "total_steps", None) and global_step >= total_steps:
+                if cfg.total_samples is not None and global_step >= total_steps:
                     break
 
             # Check for step-based termination (Outer Loop)
-            if getattr(cfg, "total_steps", None) and global_step >= total_steps:
+            if cfg.total_samples is not None and global_step >= total_steps:
                 break
 
     if global_rank == 0:
@@ -398,7 +402,7 @@ def train(
             {
                 "val/acc1": val_acc1[0],
                 "val/acc5": val_acc5[0],
-                "val/step": global_step,
+                "val/samples_seen": global_step * global_batch_size,
             }
         )
         save_checkpoint(
@@ -500,19 +504,23 @@ def train_kl(
         num_workers=1,
     )
 
-    if getattr(cfg, "total_steps", None):
-        total_steps = cfg.total_steps
-        # Calculate required epochs to reach max_steps (ceiling division)
+    global_batch_size = per_device_batch_size * world_size
+
+    if cfg.total_samples is not None:
+        total_steps = cfg.total_samples // global_batch_size
+        # Calculate required epochs to reach total_steps (ceiling division)
         num_epochs = (total_steps + len(dataloader) - 1) // len(dataloader)
     else:
         num_epochs = cfg.num_epochs
         total_steps = len(dataloader) * num_epochs
 
-    assert not (cfg.warmup_steps is not None and cfg.warmup_fraction is not None), (
-        "warmup_steps and warmup_fraction cannot be set simultaneously"
+    checkpoint_interval_steps = cfg.checkpoint_interval_samples // global_batch_size
+
+    assert not (cfg.warmup_samples is not None and cfg.warmup_fraction is not None), (
+        "warmup_samples and warmup_fraction cannot be set simultaneously"
     )
-    if cfg.warmup_steps:
-        num_warmup_steps = cfg.warmup_steps
+    if cfg.warmup_samples:
+        num_warmup_steps = cfg.warmup_samples // global_batch_size
     elif cfg.warmup_fraction:
         num_warmup_steps = int(cfg.warmup_fraction * total_steps)
 
@@ -648,7 +656,7 @@ def train_kl(
                     metrics = {
                         "train/loss": loss.item(),
                         "train/lr": lrs[0],
-                        "train/step": global_step,
+                        "train/samples_seen": global_step * global_batch_size,
                         "train/model_entropy": pred_entropy.item(),
                         "train/sw_entropy": sw_entropy.item(),
                         "train/hn_high_sw_score_frac": frac_hn_high_score.item(),
@@ -660,7 +668,7 @@ def train_kl(
                         metrics[f"metrics/grad_norm_{group['name']}"] = norm
                     run.log(metrics)
 
-                if global_step % cfg.checkpoint_interval == 0 and global_step > 0:
+                if global_step % checkpoint_interval_steps == 0 and global_step > 0:
                     if global_rank == 0:
                         assert run
                         if is_distributed:
@@ -685,7 +693,7 @@ def train_kl(
                             {
                                 "val/acc1": val_acc1[0],
                                 "val/acc5": val_acc5[0],
-                                "val/step": global_step,
+                                "val/samples_seen": global_step * global_batch_size,
                             }
                         )
                         save_checkpoint(
@@ -712,11 +720,11 @@ def train_kl(
 
                 global_step += 1
                 pbar.update(1)
-                if getattr(cfg, "total_steps", None) and global_step >= total_steps:
+                if cfg.total_samples is not None and global_step >= total_steps:
                     break
 
             # Check for step-based termination (Outer Loop)
-            if getattr(cfg, "total_steps", None) and global_step >= total_steps:
+            if cfg.total_samples is not None and global_step >= total_steps:
                 break
 
     if global_rank == 0:
@@ -743,7 +751,7 @@ def train_kl(
             {
                 "val/acc1": val_acc1[0],
                 "val/acc5": val_acc5[0],
-                "val/step": global_step,
+                "val/samples_seen": global_step * global_batch_size,
             }
         )
         save_checkpoint(

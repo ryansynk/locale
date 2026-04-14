@@ -7,14 +7,14 @@ val_batch_size: 512
 schedule: hold
 lr: 0.001
 backbone_lr: 4.0e-06
-total_steps: 1010
+total_samples: 258_560
 warmup_fraction: null
-warmup_steps: 300
+warmup_samples: 76_800
 moco_queue_size: 65536
 moco_momentum: 0.999
 moco_softmax_temp: 0.07
 checkpoint_dir: /fs/nexus-scratch/ryansynk/rawbert/checkpoints/
-checkpoint_interval: 1000
+checkpoint_interval_samples: 256_000
 num_val_queries: 100
 num_val_keys: 10000
 dim: 128

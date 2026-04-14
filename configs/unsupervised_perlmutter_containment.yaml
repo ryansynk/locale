@@ -5,24 +5,23 @@ val_dataset_path: /pscratch/sd/r/rsynk/data/val/logan_contig/all_contigs.parquet
 per_device_batch_size: 64
 val_batch_size: 512
 schedule: cosine
-lr: 0.001
-backbone_lr: 0.00006
-total_steps: 8000
+backbone_lr: 6.0e-05
+total_samples: 6_000_000
 warmup_fraction: 0.08
-warmup_steps: null
+warmup_samples: null
 moco_queue_size: 131072
 moco_momentum: 0.9995
 moco_softmax_temp: 0.05
 moco_filter_queue: True 
-moco_filter_queue_identity_cutoff: 0.91
+moco_filter_queue_identity_cutoff: 0.88
 checkpoint_dir: /pscratch/sd/r/rsynk/rawbert/checkpoints/
-checkpoint_interval: 1000
+checkpoint_interval_samples: 1_000_000
 starting_checkpoint_path: null
 num_val_queries: 100
 num_val_keys: 10000
 dim: 128
 pooling: mean
-num_workers: 16
+num_workers: 24
 sanity_test: false
 use_projection_head: False
 augment_config:
@@ -33,9 +32,9 @@ augment_config:
   containment_prob: 1.0
   overlap_prob: 0.0
   alignment_threshold: 0.6
-  identity_mean: 95
-  identity_max: 99
-  identity_stdev: 2.5
+  identity_mean: 90
+  identity_max: 98
+  identity_stdev: 5.0
   disable_mutations: False
   insertion_rate: 0.005
   deletion_rate: 0.005

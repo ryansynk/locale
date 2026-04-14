@@ -2,12 +2,12 @@ dataset_path: null
 val_dataset_path: null
 batch_size: 128
 lr: 4.0e-06
-total_steps: 1000000
+total_samples: 128_000_000
 moco_queue_size: 65536
 moco_momentum: 0.999
 moco_softmax_temp: 0.05
 checkpoint_dir: null
-checkpoint_interval: 1000
+checkpoint_interval_samples: 128_000
 num_val_queries: 100
 num_val_keys: 100000
 dim: 128
