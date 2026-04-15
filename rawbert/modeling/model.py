@@ -165,15 +165,20 @@ class RawBERT(nn.Module):
         batch_size = keys.shape[0]
 
         ptr = int(self.queue_ptr)
-        assert self.K % batch_size == 0  # for simplicity
 
-        # replace the keys at ptr (dequeue and enqueue)
-        self.queue[:, ptr : ptr + batch_size] = keys.T
+        # replace the keys at ptr (dequeue and enqueue), handling wrap-around
+        end = ptr + batch_size
+        if end <= self.K:
+            self.queue[:, ptr:end] = keys.T
+        else:
+            first = self.K - ptr
+            self.queue[:, ptr:] = keys.T[:, :first]
+            self.queue[:, : end - self.K] = keys.T[:, first:]
 
         # Store sequence strings and maintain k-mer index
         if sequences is not None:
             for i, seq in enumerate(sequences):
-                slot = ptr + i
+                slot = (ptr + i) % self.K
                 old_seq = self.queue_seqs[slot]
                 if old_seq is not None:
                     self._remove_from_kmer_index(slot, old_seq)
