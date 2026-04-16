@@ -170,6 +170,8 @@ class ExperimentConfig:
     results_dir: Path
     query_type: Literal["raw_read", "logan_contig", "gencode"]
     mutation_rate: float = 0.0
+    do_timing: bool = False
+    timing_runs: int = 5
 
     def __post_init__(self):
         self.results_dir.mkdir(exist_ok=True, parents=True)

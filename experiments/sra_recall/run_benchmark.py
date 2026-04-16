@@ -114,10 +114,28 @@ def main(cfg: ExperimentConfig):
         index.build(accession_paths, index_path)
         index.save(index_path)
 
+    if num_nodes > 1 and node_rank != 0:
+        print(
+            f"[Node {node_rank}] Index built. Skipping search (only node 0 searches)."
+        )
+        sys.exit(0)
+
     if cfg.mutation_rate > 0.0:
         queries = apply_mutations(queries, cfg.mutation_rate)
 
-    results: pl.DataFrame = index.search(queries)  # dataframe
+    if cfg.do_timing:
+        times = []
+        for i in range(cfg.timing_runs):
+            start = time.time()
+            results: pl.DataFrame = index.search(queries)
+            elapsed = time.time() - start
+            times.append(elapsed)
+        avg_time = sum(times[1:]) / (cfg.timing_runs - 1)
+    else:
+        results: pl.DataFrame = index.search(queries)
+        avg_time = -1.0
+
+    results = results.with_columns(pl.lit(avg_time).alias("avg_time"))
     results = results.with_columns(pl.lit(str(cfg.model)).alias("model"))
     results = results.with_columns(pl.lit(cfg.mutation_rate).alias("mutation_rate"))
     results = results.with_columns(pl.lit(cfg.query_type).alias("query_type"))

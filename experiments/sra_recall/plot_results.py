@@ -18,11 +18,17 @@ def calculate_recall_precision(
     checkpoint_step_num: int | None,
     chunk_type: str | None,
     max_k: int,
+    avg_time: float | None,
 ):
+    filtered_retrieval_results = [
+        result
+        for result in retrieval_results
+        if result["score"] and result["accession"]
+    ]
     gt_set: set[str] = set(ground_truth_results)
     num_gt = len(gt_set)
     retrieval_results = sorted(
-        retrieval_results, key=lambda x: x.get("score", 0.0), reverse=True
+        filtered_retrieval_results, key=lambda x: x.get("score", 0.0), reverse=True
     )
 
     outputs = []
@@ -52,6 +58,7 @@ def calculate_recall_precision(
                 "k": k,
                 "precision": precision,
                 "recall": recall,
+                "avg_time": avg_time,
             }
         )
     return outputs
@@ -143,6 +150,7 @@ def calculate_recall_precision_df(ground_truth: pl.DataFrame, data: pl.DataFrame
                 row["checkpoint_step_num"],
                 row["chunk_type"],
                 max_k=max_k,
+                avg_time=row["avg_time"],
             )
             all_recalls_precisions.extend(recalls_precisions)
 
@@ -159,6 +167,7 @@ def calculate_recall_precision_df(ground_truth: pl.DataFrame, data: pl.DataFrame
             "k": pl.Int64,
             "precision": pl.Float64,
             "recall": pl.Float64,
+            "avg_time": pl.Float64,
         }
     )
     data = pl.from_dicts(all_recalls_precisions, schema=schema)
@@ -276,6 +285,7 @@ def get_average_precision_recall_df(recall_precision_df: pl.DataFrame):
         .agg(
             pl.col("recall").mean().alias("average_recall"),
             pl.col("precision").mean().alias("average_precision"),
+            pl.col("avg_time").max().alias("avg_time"),
         )
         .sort("average_recall")
     )
@@ -444,6 +454,7 @@ def raw_read_oracle_results(raw_read_queries_df):
         pl.lit(None).alias("max_len"),
         pl.lit(None).alias("checkpoint_step_num"),
         pl.lit(None).alias("chunk_type"),
+        pl.lit(None).alias("avg_time"),
     )
     return oracle_df
 
@@ -469,6 +480,7 @@ def gencode_oracle_results(gencode_queries_df):
         pl.lit(None).alias("max_len"),
         pl.lit(None).alias("checkpoint_step_num"),
         pl.lit(None).alias("chunk_type"),
+        pl.lit(None).alias("avg_time"),
     )
     return oracle_df
 
@@ -498,6 +510,7 @@ def get_ground_truth(raw_read_queries_df, gencode_oracle_data, combos):
         pl.lit(None).alias("max_len"),
         pl.lit(None).alias("checkpoint_step_num"),
         pl.lit(None).alias("chunk_type"),
+        pl.lit(None).alias("avg_time"),
     )
     oracle_raw_read_data_with_contig_len = oracle_raw_read_data_with_contig_len.join(
         combos, how="cross"
@@ -505,6 +518,157 @@ def get_ground_truth(raw_read_queries_df, gencode_oracle_data, combos):
     return pl.concat(
         [oracle_raw_read_data_with_contig_len, gencode_oracle_data], how="diagonal"
     )
+
+
+def plot_recall_vs_noise_line(
+    recall_precision_df: pl.DataFrame,
+    plots_dir: Path,
+    k: int = 7,
+):
+    avg_recall_precision_df = get_average_precision_recall_df(recall_precision_df)
+    avg_recall_precision_df = avg_recall_precision_df.filter(pl.col("k") == k)
+    avg_recall_precision_df = avg_recall_precision_df.filter(
+        ~pl.col("model").is_in(["random", "oracle", "mmseqs"])
+    )
+    avg_recall_precision_df = avg_recall_precision_df.with_columns(
+        pl.col("model").str.split("_").list.get(0)
+    )
+    title_names = {
+        "llmed": "LLM-ED",
+        "rawbert": "RawBERT",
+        "metagraph": "MetaGraph",
+        "dna2vec": "Embed-Search-Align",
+    }
+    avg_recall_precision_df = avg_recall_precision_df.with_columns(
+        pl.col("model").replace(title_names)
+    )
+
+    for name, data in avg_recall_precision_df.group_by("query_type"):
+        query_type = name[0]
+        match query_type:
+            case "raw_read":
+                title = f"Recall @ {k} for Raw Read Queries vs Mutation Rate"
+            case "logan_contig":
+                title = f"Recall @ {k} for Logan Contig Queries v Mutation Rate"
+            case "gencode":
+                title = f"Recall @ {k} for Gencode Queries v Mutation Rate"
+
+        chart = (
+            alt.Chart(data)
+            .mark_line(point=True)
+            .encode(
+                x=alt.X(
+                    "mutation_rate:Q",
+                    title="Mutation Rate",
+                    scale=alt.Scale(domain=[0, 0.1]),
+                ),
+                y=alt.Y(
+                    "average_recall:Q",
+                    title=f"Mean Recall@{k}",
+                    scale=alt.Scale(domain=[0.2, 1.0]),
+                ),
+                color=alt.Color(
+                    "model:N",
+                    title="Model",
+                    sort=["RawBERT", "LLM-ED", "Embed-Search-Align", "MetaGraph"],
+                ).scale(scheme="viridis"),
+            )
+            .properties(
+                title=title,
+                width=650,
+                height=450,
+            )
+            .configure_axis(labelFontSize=15, titleFontSize=20)
+            .configure_legend(labelFontSize=14, titleFontSize=16)
+        )
+        chart.save(plots_dir / f"{query_type}_recall_at_{k}_vs_mut_rate_curve.png")
+
+
+def plot_recall_vs_noise_bar(
+    recall_precision_df: pl.DataFrame,
+    plots_dir: Path,
+    k: int = 7,
+):
+    avg_recall_precision_df = get_average_precision_recall_df(recall_precision_df)
+    avg_recall_precision_df = avg_recall_precision_df.filter(pl.col("k") == k)
+    avg_recall_precision_df = avg_recall_precision_df.filter(
+        ~pl.col("model").is_in(["random", "oracle", "mmseqs"])
+    )
+    for name, data in avg_recall_precision_df.group_by("query_type"):
+        query_type = name[0]
+        match query_type:
+            case "raw_read":
+                title = f"Recall @ {k} for Raw Read Queries vs Mutation Rate"
+            case "logan_contig":
+                title = f"Recall @ {k} for Logan Contig Queries v Mutation Rate"
+            case "gencode":
+                title = f"Recall @ {k} for Gencode Queries v Mutation Rate"
+        chart = (
+            alt.Chart(data)
+            .mark_bar()
+            .encode(
+                x=alt.X("model:N"),
+                y=alt.Y("average_recall:Q", title=f"Mean Recall@{k}"),
+                column="mutation_rate:Q",
+            )
+            .properties(
+                title=title,
+                width=650,
+                height=450,
+            )
+            .configure_axis(labelFontSize=15, titleFontSize=20)
+            .configure_legend(labelFontSize=14, titleFontSize=16)
+        )
+        chart.save(plots_dir / f"{query_type}_recall_at_{k}_vs_mut_rate_bar.png")
+
+
+def plot_recall_vs_time(
+    recall_precision_df: pl.DataFrame,
+    plots_dir: Path,
+    k: int = 7,
+    mutation_rate: float = 0.1,
+):
+    avg_recall_precision_df = get_average_precision_recall_df(recall_precision_df)
+    avg_recall_precision_df = avg_recall_precision_df.filter(pl.col("k") == k)
+    avg_recall_precision_df = avg_recall_precision_df.filter(
+        pl.col("mutation_rate") == mutation_rate
+    )
+    avg_recall_precision_df = avg_recall_precision_df.filter(
+        ~pl.col("model").is_in(["random", "oracle"])
+    )
+    for name, data in avg_recall_precision_df.group_by("query_type"):
+        # data: model, checkpoint, max_len, checkpoint_step_num, chunk_type, avg_time
+        query_type = name[0]
+        match query_type:
+            case "raw_read":
+                title = f"Recall @ {k} for Raw Read Queries"
+            case "logan_contig":
+                title = f"Recall @ {k} for Logan Contig Queries"
+            case "gencode":
+                title = f"Recall @ {k} for Gencode Queries"
+        chart = (
+            alt.Chart(data)
+            .mark_point()
+            .encode(
+                x=alt.X(
+                    "avg_time:Q",
+                    title="Query Time (Log Scale)",
+                ).scale(type="log"),
+                y=alt.Y("average_recall:Q", title=f"Mean Recall@{k}"),
+                color=alt.Color(
+                    "model:N",
+                    title="Model",
+                ),
+            )
+            .properties(
+                title=title,
+                width=650,
+                height=450,
+            )
+            .configure_axis(labelFontSize=15, titleFontSize=20)
+            .configure_legend(labelFontSize=14, titleFontSize=16)
+        )
+        chart.save(plots_dir / f"{query_type}_recall_at_{k}_vs_time_scatterplot.png")
 
 
 def main(
@@ -533,6 +697,7 @@ def main(
             "max_len": pl.Int64,
             "checkpoint_step_num": pl.Int64,
             "chunk_type": pl.String,
+            "avg_time": pl.Float64,
         }
     )
     for f in list(results_dir.rglob("*.parquet")):
@@ -556,6 +721,9 @@ def main(
     plot_recall_at_k(recall_precision_df, plots_dir)
     plot_auprc(recall_precision_df, plots_dir)
     plot_contig_len_hit_at_k(ground_truth, data, plots_dir)
+    plot_recall_vs_time(recall_precision_df, plots_dir)
+    plot_recall_vs_noise_line(recall_precision_df, plots_dir)
+    plot_recall_vs_noise_bar(recall_precision_df, plots_dir)
 
 
 if __name__ == "__main__":
