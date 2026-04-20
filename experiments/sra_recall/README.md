@@ -102,9 +102,33 @@ Alternatively, use `build_index_parallel.py` to build index shards across many t
 
 ## Plotting Results
 
+### Static plots (saved to disk)
+
 ```bash
 uv run python plot_results.py results/ \
-  /pscratch/sd/r/rsynk/rawbert_data/data/sra_recall/raw_read_queries_final.parquet
+  /pscratch/sd/r/rsynk/rawbert_data/data/sra_recall/raw_read_queries_final.parquet \
+  /pscratch/sd/r/rsynk/rawbert_data/data/sra_recall/gencode/gencode_queries.parquet
 ```
 
 Recall@k curves are written to `plots/`.
+
+### Interactive Streamlit app
+
+Lets you select any subset of models, mutation rates, and query types from a sidebar and view all plots interactively.
+
+**On Perlmutter**, start the app on a login node:
+
+```bash
+cd /pscratch/sd/r/rsynk/rawbert/experiments/sra_recall
+uv run streamlit run app.py
+```
+
+Note which login node you are on (e.g. `login25`).
+
+**On your local machine**, open a tunnel to that specific login node:
+
+```bash
+ssh -L 8501:login25:8501 rsynk@perlmutter.nersc.gov
+```
+
+Then open `http://localhost:8501` in your browser.

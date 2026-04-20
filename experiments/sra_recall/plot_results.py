@@ -176,14 +176,17 @@ def calculate_recall_precision_df(ground_truth: pl.DataFrame, data: pl.DataFrame
 
 
 def plot_contig_len_hit_at_k(
-    ground_truth: pl.DataFrame, data: pl.DataFrame, plots_dir: Path, k: int = 7
-):
+    ground_truth: pl.DataFrame,
+    data: pl.DataFrame,
+    plots_dir: Path | None = None,
+    k: int = 7,
+) -> list[tuple[str, alt.Chart]]:
     data = data.filter(pl.col("query_type") == "raw_read")
     data = data.filter(
         (pl.col("chunk_type") == "exact") | (pl.col("chunk_type").is_null())
     )
     if data.is_empty():
-        return
+        return []
     ground_truth = ground_truth.filter(pl.col("query_type") == "raw_read")
     results_df = (
         data.explode("results")
@@ -196,7 +199,6 @@ def plot_contig_len_hit_at_k(
         ground_truth.select(["query_id", "results", "contig_len", "mutation_rate"]),
         on=["query_id", "mutation_rate"],
     )
-    # results_df = results_df.explode(["contig_accession", "identity", "contig_len"])
     results_df = results_df.explode(["results", "contig_len"]).unnest("results")
     results_df = results_df.with_columns(
         pl.col("accession")
@@ -219,23 +221,16 @@ def plot_contig_len_hit_at_k(
         .str.replace("-inf", str(min_contig_len), literal=True)
         .str.replace("inf", str(max_contig_len), literal=True)
     )
-    # sort_order = plot_df["contig_len_group"].cat.get_categories().to_list()
     unsorted_bins = plot_df["contig_len_group"].cast(pl.String).unique().to_list()
 
-    # 2. Define a sorting key to extract the lower bound
     def get_lower_bound(interval_str):
-        # Strip brackets/parentheses: "(4844, 14290]" -> "4844, 14290"
         clean_str = interval_str.strip("()[]")
-
-        # Split by the comma and grab the first value: "4844"
         lower_bound_str = clean_str.split(",")[0]
-
-        # Convert to float so python handles '-inf' and standard numbers correctly
         return float(lower_bound_str)
 
-    # 3. Sort the list numerically based on that lower bound
     sort_order = sorted(unsorted_bins, key=get_lower_bound)
 
+    charts = []
     for name, mut_df in plot_df.group_by("mutation_rate"):
         mutation_rate = name[0]
         chart = (
@@ -265,7 +260,10 @@ def plot_contig_len_hit_at_k(
                 ),
             )
         )
-        chart.save(plots_dir / f"mut_{mutation_rate}_contig_lens_bar_chart.png")
+        if plots_dir:
+            chart.save(plots_dir / f"mut_{mutation_rate}_contig_lens_bar_chart.png")
+        charts.append((f"Contig Len Hit@{k} — mut={mutation_rate}", chart))
+    return charts
 
 
 def get_average_precision_recall_df(recall_precision_df: pl.DataFrame):
@@ -291,8 +289,11 @@ def get_average_precision_recall_df(recall_precision_df: pl.DataFrame):
     )
 
 
-def plot_recall_precision(recall_precision_df: pl.DataFrame, plots_dir: Path):
+def plot_recall_precision(
+    recall_precision_df: pl.DataFrame, plots_dir: Path | None = None
+) -> list[tuple[str, alt.Chart]]:
     avg_recall_precision_df = get_average_precision_recall_df(recall_precision_df)
+    charts = []
     for name, data in avg_recall_precision_df.group_by("mutation_rate", "query_type"):
         mut_rate = name[0]
         query_type = name[1]
@@ -303,6 +304,8 @@ def plot_recall_precision(recall_precision_df: pl.DataFrame, plots_dir: Path):
                 title = "Average Precision-Recall Curve for Logan Contig Queries"
             case "gencode":
                 title = "Average Precision-Recall Curve for Gencode Queries"
+            case _:
+                title = f"Average Precision-Recall Curve for {query_type}"
         chart = (
             alt.Chart(data)
             .mark_line(point=True)
@@ -321,9 +324,7 @@ def plot_recall_precision(recall_precision_df: pl.DataFrame, plots_dir: Path):
                     "model:N",
                     title="Model",
                 ),
-                strokeDash=alt.StrokeDash(
-                    "mutation_rate:N"
-                ),  # Optional: visually separate mutation rates by line style
+                strokeDash=alt.StrokeDash("mutation_rate:N"),
             )
             .properties(
                 title=title,
@@ -333,15 +334,21 @@ def plot_recall_precision(recall_precision_df: pl.DataFrame, plots_dir: Path):
             .configure_axis(labelFontSize=15, titleFontSize=20)
             .configure_legend(labelFontSize=14, titleFontSize=16)
         )
-        chart.save(
-            plots_dir
-            / f"{query_type}_precision_recall_curve_mutation_rate_{str(mut_rate)}.png"
-        )
+        if plots_dir:
+            chart.save(
+                plots_dir
+                / f"{query_type}_precision_recall_curve_mutation_rate_{str(mut_rate)}.png"
+            )
+        charts.append((f"Precision-Recall — {query_type} mut={mut_rate}", chart))
+    return charts
 
 
-def plot_recall_at_k(recall_precision_df: pl.DataFrame, plots_dir: Path):
+def plot_recall_at_k(
+    recall_precision_df: pl.DataFrame, plots_dir: Path | None = None
+) -> list[tuple[str, alt.Chart]]:
     max_k = recall_precision_df.select(pl.col("k")).max().item()
     avg_recall_precision_df = get_average_precision_recall_df(recall_precision_df)
+    charts = []
     for name, data in avg_recall_precision_df.group_by("mutation_rate", "query_type"):
         mut_rate = name[0]
         query_type = name[1]
@@ -352,6 +359,8 @@ def plot_recall_at_k(recall_precision_df: pl.DataFrame, plots_dir: Path):
                 title = "Recall @ k for Logan Contig Queries"
             case "gencode":
                 title = "Recall @ k for Gencode Queries"
+            case _:
+                title = f"Recall @ k for {query_type}"
         chart = (
             alt.Chart(data)
             .mark_line(point=True)
@@ -371,12 +380,18 @@ def plot_recall_at_k(recall_precision_df: pl.DataFrame, plots_dir: Path):
             .configure_axis(labelFontSize=15, titleFontSize=20)
             .configure_legend(labelFontSize=14, titleFontSize=16)
         )
-        chart.save(
-            plots_dir / f"{query_type}_recall_vs_k_curve_mutation_rate_{mut_rate}.png"
-        )
+        if plots_dir:
+            chart.save(
+                plots_dir
+                / f"{query_type}_recall_vs_k_curve_mutation_rate_{mut_rate}.png"
+            )
+        charts.append((f"Recall@K — {query_type} mut={mut_rate}", chart))
+    return charts
 
 
-def plot_auprc(recall_precision_df: pl.DataFrame, plots_dir: Path):
+def plot_auprc(
+    recall_precision_df: pl.DataFrame, plots_dir: Path | None = None
+) -> list[tuple[str, alt.Chart]]:
     sorted_df = recall_precision_df.sort(
         ["model", "mutation_rate", "query_id", "query_type", "recall"]
     )
@@ -393,7 +408,6 @@ def plot_auprc(recall_precision_df: pl.DataFrame, plots_dir: Path):
         ],
         maintain_order=True,
     ).agg(
-        # 2. Apply trapezoidal rule to the explicitly sorted columns
         (
             0.5
             * (pl.col("recall") - pl.col("recall").shift(1))
@@ -415,6 +429,7 @@ def plot_auprc(recall_precision_df: pl.DataFrame, plots_dir: Path):
         ]
     ).agg(pl.col("read_auprc").mean().alias("auprc"))
 
+    charts = []
     for name, df in macro_auprc.group_by("query_type"):
         query_type = name[0]
         chart = (
@@ -422,13 +437,14 @@ def plot_auprc(recall_precision_df: pl.DataFrame, plots_dir: Path):
             .mark_bar()
             .encode(
                 x=alt.X("model:N"),
-                y=alt.Y(
-                    "auprc:Q", scale=alt.Scale(domain=[0, 0.4])
-                ),  # oracle performance is around 0.39
+                y=alt.Y("auprc:Q", scale=alt.Scale(domain=[0, 0.4])),
                 column="mutation_rate:Q",
             )
         )
-        chart.save(plots_dir / f"{query_type}_auprc_bar_chart.png")
+        if plots_dir:
+            chart.save(plots_dir / f"{query_type}_auprc_bar_chart.png")
+        charts.append((f"AUPRC — {query_type}", chart))
+    return charts
 
 
 def raw_read_oracle_results(raw_read_queries_df):
@@ -522,27 +538,13 @@ def get_ground_truth(raw_read_queries_df, gencode_oracle_data, combos):
 
 def plot_recall_vs_noise_line(
     recall_precision_df: pl.DataFrame,
-    plots_dir: Path,
+    plots_dir: Path | None = None,
     k: int = 7,
-):
+) -> list[tuple[str, alt.Chart]]:
     avg_recall_precision_df = get_average_precision_recall_df(recall_precision_df)
     avg_recall_precision_df = avg_recall_precision_df.filter(pl.col("k") == k)
-    avg_recall_precision_df = avg_recall_precision_df.filter(
-        ~pl.col("model").is_in(["random", "oracle", "mmseqs"])
-    )
-    avg_recall_precision_df = avg_recall_precision_df.with_columns(
-        pl.col("model").str.split("_").list.get(0)
-    )
-    title_names = {
-        "llmed": "LLM-ED",
-        "rawbert": "RawBERT",
-        "metagraph": "MetaGraph",
-        "dna2vec": "Embed-Search-Align",
-    }
-    avg_recall_precision_df = avg_recall_precision_df.with_columns(
-        pl.col("model").replace(title_names)
-    )
 
+    charts = []
     for name, data in avg_recall_precision_df.group_by("query_type"):
         query_type = name[0]
         match query_type:
@@ -552,7 +554,8 @@ def plot_recall_vs_noise_line(
                 title = f"Recall @ {k} for Logan Contig Queries v Mutation Rate"
             case "gencode":
                 title = f"Recall @ {k} for Gencode Queries v Mutation Rate"
-
+            case _:
+                title = f"Recall @ {k} for {query_type} v Mutation Rate"
         chart = (
             alt.Chart(data)
             .mark_line(point=True)
@@ -581,19 +584,20 @@ def plot_recall_vs_noise_line(
             .configure_axis(labelFontSize=15, titleFontSize=20)
             .configure_legend(labelFontSize=14, titleFontSize=16)
         )
-        chart.save(plots_dir / f"{query_type}_recall_at_{k}_vs_mut_rate_curve.png")
+        if plots_dir:
+            chart.save(plots_dir / f"{query_type}_recall_at_{k}_vs_mut_rate_curve.png")
+        charts.append((f"Recall@{k} vs Mutation Rate — {query_type}", chart))
+    return charts
 
 
 def plot_recall_vs_noise_bar(
     recall_precision_df: pl.DataFrame,
-    plots_dir: Path,
+    plots_dir: Path | None = None,
     k: int = 7,
-):
+) -> list[tuple[str, alt.Chart]]:
     avg_recall_precision_df = get_average_precision_recall_df(recall_precision_df)
     avg_recall_precision_df = avg_recall_precision_df.filter(pl.col("k") == k)
-    avg_recall_precision_df = avg_recall_precision_df.filter(
-        ~pl.col("model").is_in(["random", "oracle", "mmseqs"])
-    )
+    charts = []
     for name, data in avg_recall_precision_df.group_by("query_type"):
         query_type = name[0]
         match query_type:
@@ -603,6 +607,8 @@ def plot_recall_vs_noise_bar(
                 title = f"Recall @ {k} for Logan Contig Queries v Mutation Rate"
             case "gencode":
                 title = f"Recall @ {k} for Gencode Queries v Mutation Rate"
+            case _:
+                title = f"Recall @ {k} for {query_type} v Mutation Rate"
         chart = (
             alt.Chart(data)
             .mark_bar()
@@ -619,15 +625,18 @@ def plot_recall_vs_noise_bar(
             .configure_axis(labelFontSize=15, titleFontSize=20)
             .configure_legend(labelFontSize=14, titleFontSize=16)
         )
-        chart.save(plots_dir / f"{query_type}_recall_at_{k}_vs_mut_rate_bar.png")
+        if plots_dir:
+            chart.save(plots_dir / f"{query_type}_recall_at_{k}_vs_mut_rate_bar.png")
+        charts.append((f"Recall@{k} vs Mutation Rate Bar — {query_type}", chart))
+    return charts
 
 
 def plot_recall_vs_time(
     recall_precision_df: pl.DataFrame,
-    plots_dir: Path,
+    plots_dir: Path | None = None,
     k: int = 7,
     mutation_rate: float = 0.1,
-):
+) -> list[tuple[str, alt.Chart]]:
     avg_recall_precision_df = get_average_precision_recall_df(recall_precision_df)
     avg_recall_precision_df = avg_recall_precision_df.filter(pl.col("k") == k)
     avg_recall_precision_df = avg_recall_precision_df.filter(
@@ -636,8 +645,8 @@ def plot_recall_vs_time(
     avg_recall_precision_df = avg_recall_precision_df.filter(
         ~pl.col("model").is_in(["random", "oracle"])
     )
+    charts = []
     for name, data in avg_recall_precision_df.group_by("query_type"):
-        # data: model, checkpoint, max_len, checkpoint_step_num, chunk_type, avg_time
         query_type = name[0]
         match query_type:
             case "raw_read":
@@ -646,6 +655,8 @@ def plot_recall_vs_time(
                 title = f"Recall @ {k} for Logan Contig Queries"
             case "gencode":
                 title = f"Recall @ {k} for Gencode Queries"
+            case _:
+                title = f"Recall @ {k} for {query_type}"
         chart = (
             alt.Chart(data)
             .mark_point()
@@ -668,7 +679,12 @@ def plot_recall_vs_time(
             .configure_axis(labelFontSize=15, titleFontSize=20)
             .configure_legend(labelFontSize=14, titleFontSize=16)
         )
-        chart.save(plots_dir / f"{query_type}_recall_at_{k}_vs_time_scatterplot.png")
+        if plots_dir:
+            chart.save(
+                plots_dir / f"{query_type}_recall_at_{k}_vs_time_scatterplot.png"
+            )
+        charts.append((f"Recall@{k} vs Time — {query_type}", chart))
+    return charts
 
 
 def main(
