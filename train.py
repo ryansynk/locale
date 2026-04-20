@@ -1,5 +1,6 @@
 import os
 from dataclasses import asdict
+from pathlib import Path
 
 import torch.distributed as dist
 from jsonargparse import CLI
@@ -58,8 +59,16 @@ def main(cfg: TrainConfig):
             project="rawbert",
             config=asdict(cfg),
         )
+        task_id = os.environ.get("SLURM_ARRAY_TASK_ID", "0")
+        log_dir = Path(cfg.log_dir)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        with open(log_dir / f"wandb_run_id_{task_id}.txt", "w") as f:
+            f.write(run.id)
     else:
         run = None
+
+    if is_distributed:
+        dist.barrier()
 
     if cfg.kl:
         train_kl(

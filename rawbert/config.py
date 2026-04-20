@@ -97,6 +97,7 @@ class TrainConfig:
     moco_filter_queue: bool = False
     moco_filter_queue_identity_cutoff: float = 0.91
     checkpoint_dir: str | None = None
+    log_dir: str = "logs"
     checkpoint_interval_samples: int = 65_536
     starting_checkpoint_path: Path | None = None
     num_val_queries: int = 100
