@@ -17,12 +17,12 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, get_cosine_schedule_with_warmup
 from transformers.utils import logging as transformers_logging
 
-from rawbert.config import TrainConfig
+from rawbert.config import TrainConfig, AugmentConfig
 from rawbert.modeling.model import RawBERT
 from rawbert.training.containment_batcher import ContainmentBatcher
 from rawbert.training.reference_batcher import ReferenceBatcher
 from rawbert.training.supervised_batcher import SupervisedBatcher
-from rawbert.training.unsupervised_batcher import UnsupervisedBatcher
+from rawbert.training.unsupervised_batcher import UnsupervisedBatcher, Augmenter
 from wandb import Run
 
 
@@ -156,6 +156,14 @@ def train(
     else:
         ddp_rawbert = rawbert
 
+    val_config: AugmentConfig = AugmentConfig(
+        disable_mutations=True,
+        min_seq_len=100,
+        max_seq_len=256,
+        containment_prob=1.0,
+        overlap_prob=0.0,
+    )
+
     if cfg.unsupervised:
         par_print("Unsupervised Training Mode")
         if cfg.data_type == "contig":
@@ -165,7 +173,7 @@ def train(
             val_reader = UnsupervisedBatcher(
                 cfg.val_dataset_path,
                 False,
-                cfg.augment_config,
+                val_config,
                 num_examples=cfg.num_val_keys,
             )
             sampler = (
@@ -331,7 +339,14 @@ def train(
                         assert isinstance(module, torch.nn.Module)
                         model_state_dict = module.state_dict()
 
-                        val_acc1, val_acc5 = get_val_accuracy(
+                        (
+                            val_acc1,
+                            val_acc5,
+                            val_acc1_mut_95,
+                            val_acc5_mut_95,
+                            val_acc1_mut_90,
+                            val_acc5_mut_90,
+                        ) = get_val_accuracy(
                             val_dataloader,
                             cfg.num_val_queries,
                             cfg.num_val_keys,
@@ -339,12 +354,17 @@ def train(
                             local_rank,
                             tokenizer,
                             cfg.moco_filter_queue_identity_cutoff,
+                            val_config,
                         )
 
                         run.log(
                             {
-                                "val/acc1": val_acc1[0],
-                                "val/acc5": val_acc5[0],
+                                "val/acc1_100_identity": val_acc1[0],
+                                "val/acc5_100_identity": val_acc5[0],
+                                "val/acc1_95_identity": val_acc1_mut_95[0],
+                                "val/acc5_95_identity": val_acc5_mut_95[0],
+                                "val/acc1_90_identity": val_acc1_mut_90[0],
+                                "val/acc5_90_identity": val_acc5_mut_90[0],
                                 "val/samples_seen": global_step * global_batch_size,
                             }
                         )
@@ -388,7 +408,14 @@ def train(
         assert isinstance(module, torch.nn.Module)
         model_state_dict = module.state_dict()
 
-        val_acc1, val_acc5 = get_val_accuracy(
+        (
+            val_acc1,
+            val_acc5,
+            val_acc1_mut_95,
+            val_acc5_mut_95,
+            val_acc1_mut_90,
+            val_acc5_mut_90,
+        ) = get_val_accuracy(
             val_dataloader,
             cfg.num_val_queries,
             cfg.num_val_keys,
@@ -396,12 +423,17 @@ def train(
             local_rank,
             tokenizer,
             cfg.moco_filter_queue_identity_cutoff,
+            val_config,
         )
 
         run.log(
             {
-                "val/acc1": val_acc1[0],
-                "val/acc5": val_acc5[0],
+                "val/acc1_100_identity": val_acc1[0],
+                "val/acc5_100_identity": val_acc5[0],
+                "val/acc1_95_identity": val_acc1_mut_95[0],
+                "val/acc5_95_identity": val_acc5_mut_95[0],
+                "val/acc1_90_identity": val_acc1_mut_90[0],
+                "val/acc5_90_identity": val_acc5_mut_90[0],
                 "val/samples_seen": global_step * global_batch_size,
             }
         )
@@ -854,12 +886,15 @@ def get_val_accuracy(
     local_rank,
     tokenizer,
     similarity_cutoff,
+    augment_config,
 ):
     par_tqdm_write("Evaluating val accuracy")
     model.eval()
-
+    augmenter = Augmenter(augment_config)
     with torch.no_grad():
         all_q = []
+        all_q_mut_95 = []
+        all_q_mut_90 = []
         all_k = []
         all_query_seqs = []
         all_key_seqs = []
@@ -868,6 +903,20 @@ def get_val_accuracy(
             q_tokens, query_seqs, k_tokens, key_seqs = batch
             len_q = sum([embedded_q.shape[0] for embedded_q in all_q])
             if len_q < num_queries:
+                q_tokens_mut_95 = tokenizer(
+                    [augmenter.augment(query, identity=0.95) for query in query_seqs],
+                    return_tensors="pt",
+                    padding=True,
+                ).to(local_rank)
+                q_tokens_mut_90 = tokenizer(
+                    [augmenter.augment(query, identity=0.90) for query in query_seqs],
+                    return_tensors="pt",
+                    padding=True,
+                ).to(local_rank)
+                q_mut_95 = model.encode(q_tokens_mut_95)
+                all_q_mut_95.append(q_mut_95)
+                q_mut_90 = model.encode(q_tokens_mut_90)
+                all_q_mut_90.append(q_mut_90)
                 q_tokens = q_tokens.to(local_rank)
                 q = model.encode(q_tokens)
                 all_q.append(q)
@@ -879,21 +928,37 @@ def get_val_accuracy(
             all_key_seqs.extend(key_seqs)
 
         all_q = torch.cat(all_q, dim=0)
+        all_q_mut_95 = torch.cat(all_q_mut_95, dim=0)
+        all_q_mut_90 = torch.cat(all_q_mut_90, dim=0)
         all_k = torch.cat(all_k, dim=0)
         logits = torch.matmul(all_q, all_k.T)
+        logits_mut_95 = torch.matmul(all_q_mut_95, all_k.T)
+        logits_mut_90 = torch.matmul(all_q_mut_90, all_k.T)
 
         # Filter out aligned sequences from consideration
         logits = _filter_aligned_sequences(
             logits, all_query_seqs, all_key_seqs, similarity_cutoff
         )
+        logits_mut_95 = _filter_aligned_sequences(
+            logits_mut_95, all_query_seqs, all_key_seqs, similarity_cutoff
+        )
+        logits_mut_90 = _filter_aligned_sequences(
+            logits_mut_90, all_query_seqs, all_key_seqs, similarity_cutoff
+        )
 
         labels = torch.arange(all_q.shape[0]).to(local_rank)
+        labels_mut_95 = torch.arange(all_q_mut_95.shape[0]).to(local_rank)
+        labels_mut_90 = torch.arange(all_q_mut_90.shape[0]).to(local_rank)
 
     acc1 = accuracy(logits, labels, topk=(1,))
     acc5 = accuracy(logits, labels, topk=(5,))
+    acc1_mut_95 = accuracy(logits_mut_95, labels_mut_95, topk=(1,))
+    acc5_mut_95 = accuracy(logits_mut_95, labels_mut_95, topk=(5,))
+    acc1_mut_90 = accuracy(logits_mut_90, labels_mut_90, topk=(1,))
+    acc5_mut_90 = accuracy(logits_mut_90, labels_mut_90, topk=(5,))
 
     torch.cuda.empty_cache()
-    return acc1, acc5
+    return acc1, acc5, acc1_mut_95, acc5_mut_95, acc1_mut_90, acc5_mut_90
 
 
 def _filter_aligned_sequences(logits, query_seqs, key_seqs, similarity_cutoff):
