@@ -90,7 +90,7 @@ def main(cfg: ExperimentConfig):
     node_rank = int(os.environ.get("SLURM_NODEID", "0"))
     num_nodes = int(os.environ.get("SLURM_NNODES", "1"))
 
-    if index_path.exists():
+    if (index_path / ".done").exists():
         index.load(index_path)
     elif num_nodes > 1:
         node_accessions = accession_paths[node_rank::num_nodes]
@@ -109,10 +109,12 @@ def main(cfg: ExperimentConfig):
         print(f"[Node 0] Waiting for {num_nodes - 1} other node(s) to finish...")
         _wait_for_shards(index_path, num_nodes)
         DenseIndex.merge_shards(index_path, num_nodes)
+        (index_path / ".done").touch()
         index.load(index_path)
     else:
         index.build(accession_paths, index_path)
         index.save(index_path)
+        (index_path / ".done").touch()
 
     if num_nodes > 1 and node_rank != 0:
         print(
