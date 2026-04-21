@@ -80,6 +80,14 @@ class RawBERT(nn.Module):
         else:
             self.projector_q = None
 
+        total_cpus = os.cpu_count() or 4
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            num_gpus = torch.distributed.get_world_size()
+        else:
+            num_gpus = 1
+        workers = max(1, total_cpus // num_gpus)
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+
         if self.is_moco:
             self.bert_k = deepcopy(self.bert_q)
             self._remove_pooler(self.bert_k)
@@ -282,17 +290,9 @@ class RawBERT(nn.Module):
                     return slot, True
             return slot, False
 
-        total_cpus = os.cpu_count() or 4
-        if torch.distributed.is_available() and torch.distributed.is_initialized():
-            num_gpus = torch.distributed.get_world_size()
-        else:
-            num_gpus = 1
-        workers = max(1, total_cpus // num_gpus)
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-            for slot, is_aligned in executor.map(check_single_candidate, candidates):
-                if is_aligned:
-                    aligned_mask[slot] = True
+        for slot, is_aligned in self._executor.map(check_single_candidate, candidates):
+            if is_aligned:
+                aligned_mask[slot] = True
 
         return aligned_mask
 
@@ -340,19 +340,11 @@ class RawBERT(nn.Module):
             scored.sort(key=lambda x: x[0], reverse=True)
             return i, scored[:k]
 
-        total_cpus = os.cpu_count() or 4
-        if torch.distributed.is_available() and torch.distributed.is_initialized():
-            num_gpus = torch.distributed.get_world_size()
-        else:
-            num_gpus = 1
-        workers = max(1, total_cpus // num_gpus)
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-            for i, scored in executor.map(score_query, enumerate(batch_sequences)):
-                for j, (sw_score, slot) in enumerate(scored):
-                    top_k_idx[i, j] = slot
-                    hn_seqs_per_query[i][j] = self.queue_seqs[slot]
-                    hn_sw_scores[i, j] = sw_score
+        for i, scored in self._executor.map(score_query, enumerate(batch_sequences)):
+            for j, (sw_score, slot) in enumerate(scored):
+                top_k_idx[i, j] = slot
+                hn_seqs_per_query[i][j] = self.queue_seqs[slot]
+                hn_sw_scores[i, j] = sw_score
 
         return top_k_idx, hn_seqs_per_query, hn_sw_scores
 
