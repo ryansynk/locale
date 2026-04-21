@@ -1,4 +1,5 @@
 import warnings
+import math
 from dataclasses import asdict
 from functools import partial
 from pathlib import Path
@@ -126,6 +127,11 @@ def train(
         rawbert.set_kmer_k(cfg.moco_filter_queue_identity_cutoff)
     rawbert = rawbert.to(local_rank)
     rawbert.train()
+
+    global_batch_size = per_device_batch_size * world_size
+    ratio = global_batch_size / cfg.reference_global_batch_size
+    scaled_backbone_lr = cfg.backbone_lr * math.sqrt(ratio)
+    scaled_proj_lr = cfg.lr * math.sqrt(ratio)
     backbone_params = list(
         filter(lambda p: p.requires_grad, rawbert.bert_q.parameters())
     )
@@ -137,16 +143,24 @@ def train(
         optimizer = AdamW(
             [
                 # Backbones usually need a much lower learning rate (e.g., 1e-5)
-                {"params": backbone_params, "lr": cfg.backbone_lr, "name": "backbone"},
+                {
+                    "params": backbone_params,
+                    "lr": scaled_backbone_lr,
+                    "name": "backbone",
+                },
                 # Heads need a higher learning rate to learn quickly (e.g., 1e-3 or cfg.lr)
-                {"params": head_params, "lr": cfg.lr, "name": "head"},
+                {"params": head_params, "lr": scaled_proj_lr, "name": "head"},
             ]
         )
     else:
         optimizer = AdamW(
             [
                 # Backbones usually need a much lower learning rate (e.g., 1e-5)
-                {"params": backbone_params, "lr": cfg.backbone_lr, "name": "backbone"},
+                {
+                    "params": backbone_params,
+                    "lr": scaled_backbone_lr,
+                    "name": "backbone",
+                },
             ]
         )
 
@@ -236,8 +250,6 @@ def train(
         shuffle=True,
         num_workers=1,
     )
-
-    global_batch_size = per_device_batch_size * world_size
 
     if cfg.total_samples is not None:
         total_steps = cfg.total_samples // global_batch_size
@@ -465,6 +477,7 @@ def train_kl(
     world_size: int,
     is_distributed: bool,
 ):
+    # TODO FIX A BUNCH OF SHIT AND SCALE LEARNING RATE
     par_print("Executing KL Divergence Training")
     warnings.filterwarnings("ignore", message=".*Increasing alibi size.*")
     warnings.filterwarnings("ignore", message=".*Unable to import Triton.*")

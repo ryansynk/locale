@@ -3,8 +3,8 @@
 #SBATCH --account=m5083_g
 #SBATCH --constraint=gpu
 #SBATCH --qos=regular
-#SBATCH --time=0:30:00
-#SBATCH --nodes=88-127
+#SBATCH --time=0:55:00
+#SBATCH --nodes=52-63
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=128
 #SBATCH --mem=0

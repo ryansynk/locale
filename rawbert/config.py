@@ -114,4 +114,5 @@ class TrainConfig:
         0  # hard negatives per query mined from queue (0 = disabled)
     )
     use_hard_negatives: bool = False
+    reference_global_batch_size: int = 1024
     augment_config: AugmentConfig = field(default_factory=AugmentConfig)

@@ -24,6 +24,7 @@ pooling: mean
 num_workers: 24
 sanity_test: false
 use_projection_head: False
+reference_global_batch_size: 1024
 augment_config:
   max_len: 256
   max_seq_len: 256
