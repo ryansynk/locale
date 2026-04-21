@@ -543,6 +543,9 @@ def plot_recall_vs_noise_line(
 ) -> list[tuple[str, alt.Chart]]:
     avg_recall_precision_df = get_average_precision_recall_df(recall_precision_df)
     avg_recall_precision_df = avg_recall_precision_df.filter(pl.col("k") == k)
+    avg_recall_precision_df = avg_recall_precision_df.filter(
+        ~pl.col("model").is_in(["random", "oracle"])
+    )
 
     charts = []
     for name, data in avg_recall_precision_df.group_by("query_type"):
@@ -597,6 +600,9 @@ def plot_recall_vs_noise_bar(
 ) -> list[tuple[str, alt.Chart]]:
     avg_recall_precision_df = get_average_precision_recall_df(recall_precision_df)
     avg_recall_precision_df = avg_recall_precision_df.filter(pl.col("k") == k)
+    avg_recall_precision_df = avg_recall_precision_df.filter(
+        ~pl.col("model").is_in(["random", "oracle"])
+    )
     charts = []
     for name, data in avg_recall_precision_df.group_by("query_type"):
         query_type = name[0]
