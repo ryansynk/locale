@@ -29,7 +29,7 @@ elif [ "$SLURM_ARRAY_TASK_ID" -eq 3 ]; then
     NOISE_ARGS="--augment_config.disable_mutations True"
 fi
 
-srun uv run python -m torch.distributed.run \
+srun uv run --no-sync python -m torch.distributed.run \
     --nnodes=$SLURM_NNODES \
     --nproc_per_node=4 \
     --rdzv_id=$SLURM_JOB_ID \
