@@ -74,6 +74,9 @@ def main(cfg: ExperimentConfig):
             f"Expected query_type to be 'raw_read', 'logan_contig', or 'gencode'. Got: {cfg.query_type}"
         )
 
+    # subsample queries
+    queries = queries.sample(min(cfg.num_queries, len(queries)), seed=cfg.random_seed)
+
     if isinstance(cfg.model, DenseConfig):
         index = DenseIndex(cfg)
         if cfg.model.chunk_type == "exact_chunk":

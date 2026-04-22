@@ -1,0 +1,16 @@
+model:
+  name: dna2vec
+  checkpoint_path: null
+  batch_size: 1000
+  device: cuda
+  pooling: max
+  max_seq_len: 256
+  chunk_type: stride
+  chunk_overlap: 150
+accessions_dir: /pscratch/sd/r/rsynk/test_data_500/logan_contig
+raw_read_queries_path: /pscratch/sd/r/rsynk/rawbert_data/data/sra_recall_500/raw_read_queries_positive_500_final.parquet
+logan_contig_queries_path: /pscratch/sd/r/rsynk/rawbert_data/data/sra_recall/logan_contig_queries_final.parquet
+gencode_queries_path: /pscratch/sd/r/rsynk/rawbert_data/data/sra_recall/gencode/gencode_queries.parquet
+index_dir: /pscratch/sd/r/rsynk/rawbert/experiments/sra_recall/indexes_500
+results_dir: /pscratch/sd/r/rsynk/rawbert/experiments/sra_recall/results_500
+mutation_rate: 0.0

@@ -172,6 +172,8 @@ class ExperimentConfig:
     mutation_rate: float = 0.0
     do_timing: bool = False
     timing_runs: int = 5
+    num_queries: int = 1000
+    random_seed: int = 1337
 
     def __post_init__(self):
         self.results_dir.mkdir(exist_ok=True, parents=True)
