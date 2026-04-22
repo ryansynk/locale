@@ -375,19 +375,21 @@ class RawBERT(nn.Module):
         # Sum masked embeddings and divide by valid token count
         if pooling == "class":
             embeddings = outputs[:, 0, :]
-        if pooling == "mean":
+        elif pooling == "mean":
             embeddings = (outputs * mask).sum(dim=1) / mask.sum(dim=1)
         elif pooling == "max":
             mask_expanded = mask.expand(outputs.size())
             outputs[mask_expanded == 0] = -1e9
             embeddings, _ = outputs.max(dim=1)
+        else:
+            raise ValueError("Unknown pooling")
 
         # 3. Apply MLP Projection Head
         if self.use_projection_head:
             outputs = projector(embeddings)
         else:
             outputs = embeddings
-        return embeddings
+        return outputs
 
     def forward(
         self,
