@@ -198,10 +198,13 @@ class DenseIndex(BaseIndex):
                 try:
                     srr_ids, embeddings = future.result()
 
-                    # Group the returned embeddings back by their original file
+                    # Group indices by srr_id at the batch level to avoid
+                    # creating one tensor object per sequence (40M allocations)
+                    srr_groups: dict[str, list[int]] = defaultdict(list)
                     for i, srr_id in enumerate(srr_ids):
-                        # Extract the single embedding vector and append
-                        temp_tensor_map[srr_id].append(embeddings[i].unsqueeze(0))
+                        srr_groups[srr_id].append(i)
+                    for srr_id, indices in srr_groups.items():
+                        temp_tensor_map[srr_id].append(embeddings[indices])
                 except process.BrokenProcessPool:
                     # Catch the specific abrupt termination error
                     print(
