@@ -1,5 +1,5 @@
 model:
-  name: rawbert
+  name: llmed 
   checkpoint_path: null
   batch_size: 1000
   device: cuda
