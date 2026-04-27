@@ -1,4 +1,5 @@
 import copy
+import faulthandler
 import multiprocessing as mp
 import os
 import random
@@ -49,6 +50,7 @@ _worker_encoder = None
 def _init_worker(cfg, gpu_queue):
     """Initializes the model once per worker process on a specific GPU."""
     global _worker_encoder
+    faulthandler.enable(file=sys.stderr)  # dump traceback on SIGSEGV/SIGFPE/etc.
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     device_id = gpu_queue.get()
 
@@ -157,23 +159,50 @@ class DenseIndex(BaseIndex):
         rows: list[dict] = []
         offset = 0
 
+        # Window size caps how many completed-but-uncollected results sit in RAM.
+        # Submitting all futures at once lets workers race far ahead of the main
+        # loop, causing unbounded result accumulation that triggers OOM kills.
+        window_size = num_gpus * 2
+        batch_iter = iter(batched(self._iter_chunks(accessions), submission_batch_size))
+        total_batches = -(-total_chunks // submission_batch_size)  # ceil div
+
+        def _next_future(ex):
+            batch = next(batch_iter, None)
+            return (
+                ex.submit(_process_sequence_batch, batch) if batch is not None else None
+            )
+
         with ProcessPoolExecutor(
             max_workers=num_gpus,
             mp_context=ctx,
             initializer=_init_worker,
             initargs=(self.cfg, gpu_queue),
         ) as executor:
-            futures = [
-                executor.submit(_process_sequence_batch, batch)
-                for batch in batched(
-                    self._iter_chunks(accessions), submission_batch_size
-                )
+            # Seed the window
+            window = [
+                f
+                for _ in range(window_size)
+                if (f := _next_future(executor)) is not None
             ]
-            # Process in submission order: chunks from the same accession land
-            # contiguously in the memmap, so no post-hoc compaction is needed.
-            for future in tqdm(futures, total=len(futures), desc="Embedding batches"):
-                try:
-                    srr_ids, embeddings = future.result()
+
+            # Process in submission order so accession chunks land contiguously.
+            with tqdm(total=total_batches, desc="Embedding batches") as pbar:
+                while window:
+                    future = window.pop(0)
+                    try:
+                        srr_ids, embeddings = future.result()
+                    except process.BrokenProcessPool:
+                        print("\n[!] A worker died abruptly. Halting.")
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        break
+                    except Exception as e:
+                        print(f"Worker failed: {e}")
+                        pbar.update(1)
+                        nxt = _next_future(executor)
+                        if nxt:
+                            window.append(nxt)
+                        continue
+
                     arr = embeddings.numpy()
                     srr_groups: dict[str, list[int]] = defaultdict(list)
                     for i, srr_id in enumerate(srr_ids):
@@ -186,12 +215,11 @@ class DenseIndex(BaseIndex):
                             {"srr_id": srr_id, "start_row": offset, "num_rows": n}
                         )
                         offset += n
-                except process.BrokenProcessPool:
-                    print("\n[!] A worker died abruptly. Halting.")
-                    executor.shutdown(wait=False, cancel_futures=True)
-                    break
-                except Exception as e:
-                    print(f"Worker failed: {e}")
+
+                    pbar.update(1)
+                    nxt = _next_future(executor)
+                    if nxt:
+                        window.append(nxt)
 
         raw_mmap.flush()
         del raw_mmap
