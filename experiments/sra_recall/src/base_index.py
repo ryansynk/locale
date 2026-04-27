@@ -18,7 +18,7 @@ class BaseIndex(ABC):
         pass
 
     @abstractmethod
-    def indexed_accessions(self) -> list[Path]:
+    def indexed_accessions(self) -> list[str]:
         pass
 
     @abstractmethod

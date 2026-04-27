@@ -5,11 +5,12 @@ import random
 import sys
 import traceback
 from collections import defaultdict
-from concurrent.futures import ProcessPoolExecutor, as_completed, process
+from concurrent.futures import ProcessPoolExecutor, process
 from itertools import islice
 from pathlib import Path
 from typing import Literal
 
+import numpy as np
 import polars as pl
 import torch
 from Bio import SeqIO
@@ -85,8 +86,6 @@ class DenseIndex(BaseIndex):
     def __init__(self, cfg: ExperimentConfig):
         assert isinstance(cfg.model, DenseConfig)
         self.model = DenseEncoder(cfg.model)
-        self.indexed = []
-        self.accessions_tensor_map: dict[str, torch.Tensor] = {}
         self.k = cfg.model.k
         self.cfg = cfg
         self.model_cfg = cfg.model
@@ -95,43 +94,37 @@ class DenseIndex(BaseIndex):
         self.contig_align_intervals: dict[str, list[tuple[int, int]]] | None = None
 
     def load(self, index_path: Path):
-        index_file = index_path / "index.pt"
-        self.accessions_tensor_map = torch.load(index_file)
-        self._build_flat_index()
+        mmap = np.load(index_path / "embeddings.npy", mmap_mode="r")
+        meta = pl.read_parquet(index_path / "meta.parquet")
+        self._mmap = mmap  # keep reference to prevent GC closing the mapping
+        self.acc_names_flat = meta["srr_id"].to_list()
+        starts = meta["start_row"].to_list()
+        counts = meta["num_rows"].to_list()
+        self.acc_offsets = starts + [starts[-1] + counts[-1]] if starts else [0]
+        self.all_embeddings = torch.from_numpy(mmap)
+        print(
+            f"Loaded {len(starts)} accessions ({mmap.shape[0]} vectors) [memory-mapped]"
+        )
 
-    def _build_flat_index(self):
-        items = list(self.accessions_tensor_map.items())
-        self.acc_names_flat = [acc for acc, _ in items]
-        tensors = [t.half() for _, t in items]
-        sizes = [len(t) for t in tensors]
-        cumsum = torch.tensor(sizes).cumsum(0).tolist()
-        self.acc_offsets = [0] + [int(x) for x in cumsum]
-        self.all_embeddings = torch.cat(tensors, dim=0).to(self.model_cfg.device)
-
-    def build_serial(self, accessions: list[Path], index_path: Path):
-        for accession in tqdm(accessions, desc="Indexing accessions..."):
-            sequences = [
-                (str(record.seq), str(record.id))
-                for record in SeqIO.parse(accession, "fasta")
-            ]
-            chunked_sequences = []
-            for seq, contig_id in sequences:
+    def _iter_chunks(self, accessions: list[Path]):
+        """Yield (srr_id, sequence_chunk) for every chunk across all accessions."""
+        for accession in accessions:
+            srr_id = accession.parent.stem
+            for record in SeqIO.parse(accession, "fasta"):
+                seq = str(record.seq)
+                contig_id = str(record.id)
                 if len(seq) <= self.model_cfg.max_seq_len:
-                    chunked_sequences.append(seq)
+                    yield srr_id, seq
                 else:
-                    chunks = chunk_sequence(
+                    for chunk in chunk_sequence(
                         seq,
                         contig_id,
                         self.model_cfg.max_seq_len,
                         self.chunk_overlap,
                         self.chunk_type,
                         self.contig_align_intervals,
-                    )
-                    chunked_sequences.extend(chunks)
-            embeddings = self.model.encode(chunked_sequences)
-            srr_id = accession.parent.stem
-            self.accessions_tensor_map[srr_id] = embeddings.cpu()
-            self.indexed.append(accession)
+                    ):
+                        yield srr_id, chunk
 
     def build(self, accessions: list[Path], index_path: Path):
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -139,44 +132,30 @@ class DenseIndex(BaseIndex):
         if num_gpus == 0:
             raise RuntimeError("No GPUs available for building the index.")
 
-        print(f"Parallelizing sequence-level build across {num_gpus} GPUs...")
+        print("Pre-counting chunks (one-pass FASTA scan)...")
+        total_chunks = sum(1 for _ in self._iter_chunks(accessions))
+        print(f"Total chunks: {total_chunks:,}")
 
-        # 1. Setup the GPU assignment queue for workers
+        embed_dim = self.model.encode(["ACGT"]).shape[1]
+
+        index_path.mkdir(exist_ok=True, parents=True)
+        raw_mmap = np.lib.format.open_memmap(
+            index_path / "embeddings.npy",
+            mode="w+",
+            dtype=np.float32,
+            shape=(total_chunks, embed_dim),
+        )
+
+        print(f"Embedding across {num_gpus} GPUs...")
         ctx = mp.get_context("spawn")
         m = ctx.Manager()
         gpu_queue = m.Queue()
         for i in range(num_gpus):
             gpu_queue.put(i)
 
-        # 2. Define a generator to flatten all files into (srr_id, sequence) tuples
-        def sequence_generator():
-            for accession in accessions:
-                srr_id = accession.parent.stem
-
-                # Yield parsed and chunked sequences
-                for record in SeqIO.parse(accession, "fasta"):
-                    seq = str(record.seq)
-                    contig_id = str(record.id)
-                    if len(seq) <= self.model_cfg.max_seq_len:
-                        yield (srr_id, seq)
-                    else:
-                        chunks = chunk_sequence(
-                            seq,
-                            contig_id,
-                            self.model_cfg.max_seq_len,
-                            self.chunk_overlap,
-                            self.chunk_type,
-                            self.contig_align_intervals,
-                        )
-                        for chunk in chunks:
-                            yield (srr_id, chunk)
-
-        # 3. Create a dictionary to hold lists of tensors per accession
-        temp_tensor_map = defaultdict(list)
-
-        # We will send work to the GPUs in chunks of N sequences.
-        # Make this a multiple of your model's batch_size for optimal throughput.
         submission_batch_size = self.model_cfg.batch_size * 4
+        rows: list[dict] = []
+        offset = 0
 
         with ProcessPoolExecutor(
             max_workers=num_gpus,
@@ -184,43 +163,54 @@ class DenseIndex(BaseIndex):
             initializer=_init_worker,
             initargs=(self.cfg, gpu_queue),
         ) as executor:
-            # Submit batches to the workers
-            futures = []
-            for batch in batched(sequence_generator(), submission_batch_size):
-                futures.append(executor.submit(_process_sequence_batch, batch))
-
-            # 4. Collect results as they complete
-            for future in tqdm(
-                as_completed(futures),
-                total=len(futures),
-                desc="Processing Batches",
-            ):
+            futures = [
+                executor.submit(_process_sequence_batch, batch)
+                for batch in batched(
+                    self._iter_chunks(accessions), submission_batch_size
+                )
+            ]
+            # Process in submission order: chunks from the same accession land
+            # contiguously in the memmap, so no post-hoc compaction is needed.
+            for future in tqdm(futures, total=len(futures), desc="Embedding batches"):
                 try:
                     srr_ids, embeddings = future.result()
-
-                    # Group indices by srr_id at the batch level to avoid
-                    # creating one tensor object per sequence (40M allocations)
+                    arr = embeddings.numpy()
                     srr_groups: dict[str, list[int]] = defaultdict(list)
                     for i, srr_id in enumerate(srr_ids):
                         srr_groups[srr_id].append(i)
                     for srr_id, indices in srr_groups.items():
-                        temp_tensor_map[srr_id].append(embeddings[indices])
+                        chunk = arr[indices]
+                        n = len(chunk)
+                        raw_mmap[offset : offset + n] = chunk
+                        rows.append(
+                            {"srr_id": srr_id, "start_row": offset, "num_rows": n}
+                        )
+                        offset += n
                 except process.BrokenProcessPool:
-                    # Catch the specific abrupt termination error
-                    print(
-                        "\n[!] A worker died abruptly (likely OOM or Segfault). Halting the pool to stop error spam."
-                    )
-                    # Cancel all remaining futures so they don't also print errors
+                    print("\n[!] A worker died abruptly. Halting.")
                     executor.shutdown(wait=False, cancel_futures=True)
-                    break  # Exit the collection loop
+                    break
                 except Exception as e:
                     print(f"Worker failed: {e}")
 
-        # 5. Finalize by concatenating the lists of tensors into standard matrices
-        print("Finalizing tensor map...")
-        for srr_id, tensor_list in temp_tensor_map.items():
-            self.indexed.append(srr_id)
-            self.accessions_tensor_map[srr_id] = torch.cat(tensor_list, dim=0)
+        raw_mmap.flush()
+        del raw_mmap
+
+        # Merge consecutive rows for the same accession into single entries
+        # (a batch boundary may split one accession across two consecutive rows).
+        final_rows: list[dict] = []
+        for r in rows:
+            if final_rows and final_rows[-1]["srr_id"] == r["srr_id"]:
+                final_rows[-1]["num_rows"] += r["num_rows"]
+            else:
+                final_rows.append(dict(r))
+
+        pl.DataFrame(final_rows).write_parquet(index_path / "meta.parquet")
+        self._streamed_to = index_path
+        self.load(index_path)
+        print(
+            f"Built: {offset:,} vectors, {len(final_rows)} accessions -> {index_path}"
+        )
 
     @torch.no_grad()
     def search(self, queries: pl.DataFrame) -> pl.DataFrame:
@@ -243,12 +233,7 @@ class DenseIndex(BaseIndex):
             query_chunks.extend(chunked_query)
             prev_idx = prev_idx + num_chunks
 
-        query_chunk_features = (
-            self.model.encode(query_chunks).to(self.model_cfg.device).half()
-        )
-        if not hasattr(self, "all_embeddings"):
-            self._build_flat_index()
-
+        query_chunk_features = self.model.encode(query_chunks).to(self.model_cfg.device)
         n_chunks = len(query_chunks)
         n_queries = len(queries)
         device = self.model_cfg.device
@@ -263,7 +248,7 @@ class DenseIndex(BaseIndex):
         for i in range(len(self.acc_names_flat)):
             s, e = self.acc_offsets[i], self.acc_offsets[i + 1]
             logits = (
-                query_chunk_features @ self.all_embeddings[s:e].T
+                query_chunk_features @ self.all_embeddings[s:e].to(device).T
             )  # (n_chunks, acc_size)
             chunk_maxes = logits.max(dim=-1).values  # (n_chunks,)
             acc_scores = torch.zeros(n_queries, device=device, dtype=chunk_maxes.dtype)
@@ -298,32 +283,58 @@ class DenseIndex(BaseIndex):
         assert len(df) == len(queries)
         return df
 
-    def indexed_accessions(self) -> list[Path]:
-        return self.indexed
+    def indexed_accessions(self) -> list[str]:
+        return self.acc_names_flat
 
     def save(self, output_path: Path):
-        output_path.mkdir(exist_ok=True, parents=True)
-        output_file = output_path / "index.pt"
-        cpu_map = {}
-        for srr_id, embeddings in self.accessions_tensor_map.items():
-            cpu_map[srr_id] = embeddings.cpu()
-        print(f"Saving index to {output_file}")
-        torch.save(cpu_map, output_file)
+        print(f"Index already written to {output_path} during build.")
 
     @staticmethod
     def merge_shards(index_path: Path, num_nodes: int):
-        """Merge per-node shard index files into a single index.pt."""
-        merged_map = {}
+        """Stream per-node shard embeddings into a single memmap file — no full load into RAM."""
+        all_meta = []
+        total_vectors = 0
+        embed_dim = None
+
         for rank in range(num_nodes):
-            shard_file = index_path / f"shard_{rank}" / "index.pt"
-            shard_map = torch.load(shard_file, weights_only=False)
-            merged_map.update(shard_map)
-            print(f"  Loaded shard {rank} ({len(shard_map)} accessions)")
-        index_file = index_path / "index.pt"
-        torch.save(merged_map, index_file)
-        print(
-            f"Merged {num_nodes} shards ({len(merged_map)} total accessions) -> {index_file}"
+            shard_path = index_path / f"shard_{rank}"
+            arr = np.load(shard_path / "embeddings.npy", mmap_mode="r")
+            if embed_dim is None and arr.ndim == 2:
+                embed_dim = arr.shape[1]
+            meta = pl.read_parquet(shard_path / "meta.parquet")
+            meta = meta.with_columns(
+                (pl.col("start_row") + total_vectors).alias("start_row")
+            )
+            all_meta.append(meta)
+            total_vectors += len(arr)
+            del arr
+            print(f"  Shard {rank}: {len(meta)} accessions")
+
+        if embed_dim is None:
+            raise ValueError("No valid shards found")
+
+        merged = np.lib.format.open_memmap(
+            index_path / "embeddings.npy",
+            mode="w+",
+            dtype=np.float32,
+            shape=(total_vectors, embed_dim),
         )
+        offset = 0
+        for rank in range(num_nodes):
+            arr = np.load(
+                index_path / f"shard_{rank}" / "embeddings.npy", mmap_mode="r"
+            )
+            n = len(arr)
+            merged[offset : offset + n] = arr
+            offset += n
+            del arr
+            print(f"  Streamed shard {rank} ({n} vectors)")
+
+        merged.flush()
+        del merged
+
+        pl.concat(all_meta).write_parquet(index_path / "meta.parquet")
+        print(f"Merged {num_nodes} shards -> {total_vectors} vectors")
 
 
 def chunk_sequence(
