@@ -1,7 +1,12 @@
 model:
-  name: metagraph
-  executable: /fs/nexus-scratch/ryansynk/metagraph/metagraph/build/metagraph
-  k: 31
+  name: dna2vec
+  checkpoint_path: null
+  batch_size: 1000
+  device: cuda
+  pooling: max
+  max_seq_len: 256
+  chunk_type: stride
+  chunk_overlap: 150
 accessions_dir: /fs/nexus-projects/sra_search/data/test/logan_contig
 raw_read_queries_path: /fs/nexus-projects/sra_search/rawbert_datasets/raw_read_queries_final.parquet
 logan_contig_queries_path: /pscratch/sd/r/rsynk/rawbert_data/data/sra_recall/logan_contig_queries_final.parquet
