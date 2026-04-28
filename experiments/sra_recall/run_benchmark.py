@@ -119,6 +119,10 @@ def main(cfg: ExperimentConfig):
         index.save(index_path)
         (index_path / ".done").touch()
 
+    if cfg.no_search:
+        print("[no_search]: Index built. Exiting.")
+        sys.exit(0)
+
     if num_nodes > 1 and node_rank != 0:
         print(
             f"[Node {node_rank}] Index built. Skipping search (only node 0 searches)."

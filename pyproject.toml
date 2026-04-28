@@ -38,6 +38,7 @@ dependencies = [
     "evo2>=0.5.5",
     "setuptools>=82.0.1",
     "streamlit>=1.56.0",
+    "diskannpy>=0.7.0",
 ]
 
 [project.optional-dependencies]

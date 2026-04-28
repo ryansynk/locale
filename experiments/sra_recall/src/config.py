@@ -33,6 +33,7 @@ class DenseConfig(AlgorithmConfig):
     chunk_type: Literal["stride", "exact_chunk"] = "stride"
     chunk_overlap: int = 150
     neuroseed_path: Optional[str] = "/pscratch/sd/r/rsynk/NeuroSEED"
+    use_ann: bool = False
 
     def __post_init__(self):
         config_tag = (
@@ -174,6 +175,7 @@ class ExperimentConfig:
     timing_runs: int = 5
     num_queries: int = 1000
     random_seed: int = 1337
+    no_search: bool = False
 
     def __post_init__(self):
         self.results_dir.mkdir(exist_ok=True, parents=True)

@@ -13,6 +13,7 @@ from typing import Literal
 
 import numpy as np
 import polars as pl
+import diskannpy
 import torch
 from Bio import SeqIO
 from torch import nn
@@ -87,13 +88,17 @@ def _process_sequence_batch(batch):
 class DenseIndex(BaseIndex):
     def __init__(self, cfg: ExperimentConfig):
         assert isinstance(cfg.model, DenseConfig)
-        self.model = DenseEncoder(cfg.model)
+        self.no_search: bool = cfg.no_search
         self.k = cfg.model.k
         self.cfg = cfg
+        self.use_ann: bool = cfg.model.use_ann
         self.model_cfg = cfg.model
-        self.chunk_type: Literal["stride", "exact_chunk"] = cfg.model.chunk_type
-        self.chunk_overlap: int = cfg.model.chunk_overlap
-        self.contig_align_intervals: dict[str, list[tuple[int, int]]] | None = None
+
+        if not self.no_search:
+            self.model = DenseEncoder(cfg.model)
+            self.chunk_type: Literal["stride", "exact_chunk"] = cfg.model.chunk_type
+            self.chunk_overlap: int = cfg.model.chunk_overlap
+            self.contig_align_intervals: dict[str, list[tuple[int, int]]] | None = None
 
     def load(self, index_path: Path):
         mmap = np.load(index_path / "embeddings.npy", mmap_mode="r")
@@ -104,6 +109,17 @@ class DenseIndex(BaseIndex):
         counts = meta["num_rows"].to_list()
         self.acc_offsets = starts + [starts[-1] + counts[-1]] if starts else [0]
         self.all_embeddings = torch.from_numpy(mmap)
+        if self.use_ann:
+            if not (index_path / "vamana_index").exists():
+                self.construct_ann_index(index_path)
+
+            self.index = diskannpy.StaticMemoryIndex(
+                distance_metric="mips",
+                vector_dtype=np.float32,
+                index_directory=str(index_path / "vamana_index"),
+                num_threads=0,
+                initial_search_complexity=100,
+            )
         print(
             f"Loaded {len(starts)} accessions ({mmap.shape[0]} vectors) [memory-mapped]"
         )
@@ -235,6 +251,8 @@ class DenseIndex(BaseIndex):
 
         pl.DataFrame(final_rows).write_parquet(index_path / "meta.parquet")
         self._streamed_to = index_path
+        if self.use_ann:
+            self.construct_ann_index(index_path)
         self.load(index_path)
         print(
             f"Built: {offset:,} vectors, {len(final_rows)} accessions -> {index_path}"
@@ -262,30 +280,63 @@ class DenseIndex(BaseIndex):
             prev_idx = prev_idx + num_chunks
 
         query_chunk_features = self.model.encode(query_chunks).to(self.model_cfg.device)
-        n_chunks = len(query_chunks)
-        n_queries = len(queries)
-        device = self.model_cfg.device
 
-        # Pre-compute once: which query each chunk belongs to
-        chunk_to_query = torch.zeros(n_chunks, dtype=torch.long, device=device)
-        for qi, (s, e) in enumerate(query_indices):
-            chunk_to_query[s:e] = qi
+        if self.use_ann:
+            n_queries = len(queries)
+            n_acc = len(self.acc_names_flat)
+            n_chunks = len(query_chunks)
 
-        # Per-accession loop — 2 GPU ops per accession instead of n_queries
-        all_scores = []
-        for i in range(len(self.acc_names_flat)):
-            s, e = self.acc_offsets[i], self.acc_offsets[i + 1]
-            logits = (
-                query_chunk_features @ self.all_embeddings[s:e].to(device).T
-            )  # (n_chunks, acc_size)
-            chunk_maxes = logits.max(dim=-1).values  # (n_chunks,)
-            acc_scores = torch.zeros(n_queries, device=device, dtype=chunk_maxes.dtype)
-            acc_scores.scatter_add_(0, chunk_to_query, chunk_maxes)  # (n_queries,)
-            all_scores.append(acc_scores)
+            ann_results = self.index.batch_search(
+                query_chunk_features.cpu().numpy(),
+                k_neighbors=100,
+                complexity=128,
+                num_threads=0,
+            )
+            identifiers = ann_results.identifiers  # (n_chunks, 100)
+            distances = ann_results.distances  # (n_chunks, 100)
+
+            chunk_to_query_np = np.zeros(n_chunks, dtype=np.int64)
+            for qi, (s, e) in enumerate(query_indices):
+                chunk_to_query_np[s:e] = qi
+
+            flat_ids = identifiers.ravel()
+            flat_dists = distances.ravel()
+
+            acc_offsets_arr = np.array(self.acc_offsets)
+            acc_idx_flat = np.searchsorted(acc_offsets_arr, flat_ids, side="right") - 1
+
+            chunk_idx_flat = np.repeat(np.arange(n_chunks), 100)
+            query_idx_flat = chunk_to_query_np[chunk_idx_flat]
+
+            scores_cpu = np.zeros((n_queries, n_acc), dtype=np.float32)
+            np.maximum.at(scores_cpu, (query_idx_flat, acc_idx_flat), flat_dists)
+        else:
+            n_chunks = len(query_chunks)
+            n_queries = len(queries)
+            device = self.model_cfg.device
+
+            # Pre-compute once: which query each chunk belongs to
+            chunk_to_query = torch.zeros(n_chunks, dtype=torch.long, device=device)
+            for qi, (s, e) in enumerate(query_indices):
+                chunk_to_query[s:e] = qi
+            # Per-accession loop — 2 GPU ops per accession instead of n_queries
+            all_scores = []
+            for i in range(len(self.acc_names_flat)):
+                s, e = self.acc_offsets[i], self.acc_offsets[i + 1]
+                logits = (
+                    query_chunk_features @ self.all_embeddings[s:e].to(device).T
+                )  # (n_chunks, acc_size)
+                chunk_maxes = logits.max(dim=-1).values  # (n_chunks,)
+                acc_scores = torch.zeros(
+                    n_queries, device=device, dtype=chunk_maxes.dtype
+                )
+                acc_scores.scatter_add_(0, chunk_to_query, chunk_maxes)  # (n_queries,)
+                all_scores.append(acc_scores)
+
+            scores = torch.stack(all_scores, dim=1)  # (n_queries, n_acc)
+            scores_cpu = scores.float().cpu().numpy()
 
         accession_names = self.acc_names_flat
-        scores = torch.stack(all_scores, dim=1)  # (n_queries, n_acc)
-        scores_cpu = scores.float().cpu().numpy()
         # scores_col = []
         scores_df = []
         for i in range(scores_cpu.shape[0]):
@@ -316,6 +367,35 @@ class DenseIndex(BaseIndex):
 
     def save(self, output_path: Path):
         print(f"Index already written to {output_path} during build.")
+
+    def construct_ann_index(self, index_path: Path):
+        print("Constructing vamana index")
+        # Load your vectors as memmap (no full RAM load)
+        # vectors: np.ndarray = np.load(index_path / "embeddings.npy", mmap_mode="r")
+        print("loading vectors")
+        vectors: np.ndarray = np.load(index_path / "embeddings.npy")
+        n, d = vectors.shape
+        assert vectors.dtype == np.float32
+
+        print("calling diskANN")
+        (index_path / "vamana_index").mkdir(exist_ok=True, parents=True)
+        diskannpy.build_memory_index(
+            data=vectors,
+            distance_metric="mips",
+            index_directory=str(index_path / "vamana_index"),
+            complexity=128,
+            graph_degree=64,
+            alpha=1.2,
+            num_threads=0,
+            use_pq_build=False,
+            num_pq_bytes=0,
+            use_opq=False,
+            tags=np.arange(n, dtype=np.uint32),
+            filter_labels=None,
+            universal_label="",
+            filter_complexity=0,
+            index_prefix="ann",
+        )
 
     @staticmethod
     def merge_shards(index_path: Path, num_nodes: int):
