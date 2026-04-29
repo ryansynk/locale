@@ -44,6 +44,22 @@ def batched(iterable, n):
         yield batch
 
 
+def _create_fbin_memmap(path: Path, n: int, d: int) -> np.memmap:
+    """Create an fbin file with a uint32 [n, d] header and return a writable float32 memmap."""
+    with open(path, "wb") as f:
+        np.array([n, d], dtype=np.uint32).tofile(f)
+        f.seek(n * d * np.dtype(np.float32).itemsize - 1, 1)
+        f.write(b"\x00")
+    return np.memmap(path, dtype=np.float32, mode="r+", offset=8, shape=(n, d))
+
+
+def _load_fbin_mmap(path: Path) -> np.memmap:
+    """Memory-map an fbin file and return a read-only float32 array."""
+    with open(path, "rb") as f:
+        n, d = np.frombuffer(f.read(8), dtype=np.uint32)
+    return np.memmap(path, dtype=np.float32, mode="r", offset=8, shape=(int(n), int(d)))
+
+
 # Global variable to hold the model instance per worker process
 _worker_encoder = None
 
@@ -101,7 +117,7 @@ class DenseIndex(BaseIndex):
             self.contig_align_intervals: dict[str, list[tuple[int, int]]] | None = None
 
     def load(self, index_path: Path):
-        mmap = np.load(index_path / "embeddings.npy", mmap_mode="r")
+        mmap = _load_fbin_mmap(index_path / "embeddings.fbin")
         meta = pl.read_parquet(index_path / "meta.parquet")
         self._mmap = mmap  # keep reference to prevent GC closing the mapping
         self.acc_names_flat = meta["srr_id"].to_list()
@@ -157,12 +173,7 @@ class DenseIndex(BaseIndex):
         embed_dim = self.model.encode(["ACGT"]).shape[1]
 
         index_path.mkdir(exist_ok=True, parents=True)
-        raw_mmap = np.lib.format.open_memmap(
-            index_path / "embeddings.npy",
-            mode="w+",
-            dtype=np.float32,
-            shape=(total_chunks, embed_dim),
-        )
+        raw_mmap = _create_fbin_memmap(index_path / "embeddings.fbin", total_chunks, embed_dim)
 
         print(f"Embedding across {num_gpus} GPUs...")
         ctx = mp.get_context("spawn")
@@ -370,10 +381,8 @@ class DenseIndex(BaseIndex):
 
     def construct_ann_index(self, index_path: Path):
         print("Constructing vamana index")
-        # Load your vectors as memmap (no full RAM load)
-        # vectors: np.ndarray = np.load(index_path / "embeddings.npy", mmap_mode="r")
         print("loading vectors")
-        vectors: np.ndarray = np.load(index_path / "embeddings.npy")
+        vectors: np.ndarray = _load_fbin_mmap(index_path / "embeddings.fbin")
         n, d = vectors.shape
         assert vectors.dtype == np.float32
 
@@ -406,7 +415,7 @@ class DenseIndex(BaseIndex):
 
         for rank in range(num_nodes):
             shard_path = index_path / f"shard_{rank}"
-            arr = np.load(shard_path / "embeddings.npy", mmap_mode="r")
+            arr = _load_fbin_mmap(shard_path / "embeddings.fbin")
             if embed_dim is None and arr.ndim == 2:
                 embed_dim = arr.shape[1]
             meta = pl.read_parquet(shard_path / "meta.parquet")
@@ -421,17 +430,10 @@ class DenseIndex(BaseIndex):
         if embed_dim is None:
             raise ValueError("No valid shards found")
 
-        merged = np.lib.format.open_memmap(
-            index_path / "embeddings.npy",
-            mode="w+",
-            dtype=np.float32,
-            shape=(total_vectors, embed_dim),
-        )
+        merged = _create_fbin_memmap(index_path / "embeddings.fbin", total_vectors, embed_dim)
         offset = 0
         for rank in range(num_nodes):
-            arr = np.load(
-                index_path / f"shard_{rank}" / "embeddings.npy", mmap_mode="r"
-            )
+            arr = _load_fbin_mmap(index_path / f"shard_{rank}" / "embeddings.fbin")
             n = len(arr)
             merged[offset : offset + n] = arr
             offset += n
