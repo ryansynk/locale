@@ -538,6 +538,7 @@ def get_ground_truth(raw_read_queries_df, gencode_oracle_data, combos):
 
 def plot_recall_vs_noise_line(
     recall_precision_df: pl.DataFrame,
+    print_df: bool,
     plots_dir: Path | None = None,
     k: int = 7,
 ) -> list[tuple[str, alt.Chart]]:
@@ -546,6 +547,12 @@ def plot_recall_vs_noise_line(
     avg_recall_precision_df = avg_recall_precision_df.filter(
         ~pl.col("model").is_in(["random", "oracle"])
     )
+
+    if print_df:
+        pl.Config.set_tbl_rows(len(avg_recall_precision_df))
+        print(
+            avg_recall_precision_df.select(["model", "mutation_rate", "average_recall"])
+        )
 
     charts = []
     for name, data in avg_recall_precision_df.group_by("query_type"):
@@ -698,6 +705,7 @@ def main(
     raw_read_queries_path: Path_fr,
     gencode_queries_path: Path_fr,
     plots_dir: str = "plots",
+    print_df: bool = False,
 ):
     results_dir: Path = Path(results_dir)
     raw_read_queries_path: Path = Path(raw_read_queries_path)
@@ -744,7 +752,7 @@ def main(
     plot_auprc(recall_precision_df, plots_dir)
     plot_contig_len_hit_at_k(ground_truth, data, plots_dir)
     plot_recall_vs_time(recall_precision_df, plots_dir)
-    plot_recall_vs_noise_line(recall_precision_df, plots_dir)
+    plot_recall_vs_noise_line(recall_precision_df, print_df, plots_dir)
     plot_recall_vs_noise_bar(recall_precision_df, plots_dir)
 
 
