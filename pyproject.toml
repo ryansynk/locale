@@ -21,7 +21,7 @@ dependencies = [
     "biopython",
     "edlib",
     "jsonargparse",
-    "numpy",
+    "numpy>=1.26.1",
     "polars",
     "pyarrow",
     "sourmash",
@@ -38,7 +38,7 @@ dependencies = [
     "evo2>=0.5.5",
     "setuptools>=82.0.1",
     "streamlit>=1.56.0",
-    "diskannpy>=0.7.0",
+    "swig>=4.4.1",
 ]
 
 [project.optional-dependencies]

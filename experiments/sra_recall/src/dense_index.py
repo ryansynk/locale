@@ -11,7 +11,8 @@ from itertools import islice
 from pathlib import Path
 from typing import Literal
 
-import diskannpy
+# import diskannpy
+import faiss
 import numpy as np
 import polars as pl
 import torch
@@ -110,6 +111,8 @@ class DenseIndex(BaseIndex):
         self.use_ann: bool = cfg.model.use_ann
         self.exact_search: bool = cfg.model.exact_search
         self.model_cfg = cfg.model
+        self.index_centroids = cfg.model.index_centroids
+        self.num_centroids = cfg.model.num_centroids
 
         if not self.no_search:
             self.model = DenseEncoder(cfg.model)
@@ -123,6 +126,23 @@ class DenseIndex(BaseIndex):
         starts = meta["start_row"].to_list()
         counts = meta["num_rows"].to_list()
         self.acc_offsets = starts + [starts[-1] + counts[-1]] if starts else [0]
+
+        if self.index_centroids:
+            # do thing
+            if not (index_path / "centroids.fbin").exists():
+                self.construct_centroids(index_path, self.num_centroids)
+            self.embeddings_path = index_path / "centroids.fbin"
+            self.meta_path = index_path / "centroids_meta.parquet"
+
+            meta = pl.read_parquet(self.meta_path)
+            self.acc_names_flat = meta["srr_id"].to_list()
+            starts = meta["start_row"].to_list()
+            counts = meta["num_rows"].to_list()
+            self.acc_offsets = starts + [starts[-1] + counts[-1]] if starts else [0]
+        else:
+            self.embeddings_path = index_path / "embeddings.fbin"
+            self.meta_path = index_path / "meta.parquet"
+
         if self.use_ann:
             if not (index_path / "vamana_index").exists():
                 self.construct_ann_index(index_path)
@@ -136,7 +156,7 @@ class DenseIndex(BaseIndex):
             )
             self.all_embeddings = None
         else:
-            mmap = _load_fbin_mmap(index_path / "embeddings.fbin")
+            mmap = _load_fbin_mmap(self.embeddings_path)
             self._mmap = mmap  # keep reference to prevent GC closing the mapping
             self.all_embeddings = torch.from_numpy(mmap)
             print(
@@ -320,7 +340,7 @@ class DenseIndex(BaseIndex):
             n_chunks = len(query_chunks)
             n_queries = len(queries)
             n_acc = len(self.acc_names_flat)
-            top_k = 10
+            top_k = 100
 
             # Pre-compute once: which query each chunk belongs to
             chunk_to_query_np = np.zeros(n_chunks, dtype=np.int64)
@@ -453,6 +473,66 @@ class DenseIndex(BaseIndex):
             universal_label="",
             filter_complexity=0,
         )
+
+    def construct_centroids(self, index_path: Path, num_centroids: int):
+        print("Building centroids")
+        mmap = _load_fbin_mmap(index_path / "embeddings.fbin")
+        mmap.shape[-1]
+
+        def cluster_accession(
+            vectors: np.ndarray, n_centroids: int, srr_id: str
+        ) -> tuple[np.ndarray, str]:
+            """vectors: (n, d) float32 array. Returns (n_centroids, d) array."""
+            vectors = np.ascontiguousarray(vectors, dtype=np.float32)
+
+            d = vectors.shape[1]
+            n_centroids = min(
+                n_centroids, len(vectors)
+            )  # don't ask for more centroids than points
+
+            kmeans = faiss.Kmeans(d, n_centroids, niter=20, verbose=False, gpu=True)
+            kmeans.train(vectors)
+
+            centroids = kmeans.centroids
+            faiss.normalize_L2(centroids)
+            return centroids, srr_id
+
+        offset = 0
+        all_centroids = []
+        rows = []
+        for i in tqdm(
+            range(len(self.acc_names_flat)),
+            total=len(self.acc_names_flat),
+            desc="Generating centroids...",
+        ):
+            s, e = self.acc_offsets[i], self.acc_offsets[i + 1]
+            num_seqs = e - s
+            if num_seqs < num_centroids:
+                centroids = np.ascontiguousarray(mmap[s:e], dtype=np.float32)
+                centroids = centroids / np.linalg.norm(centroids, axis=1, keepdims=True)
+                srr_id = self.acc_names_flat[i]
+                n_centroids = num_seqs
+            else:
+                n_centroids = num_centroids
+                centroids, srr_id = cluster_accession(
+                    mmap[s:e], num_centroids, self.acc_names_flat[i]
+                )
+            all_centroids.append(centroids)
+            rows.append(
+                {"srr_id": srr_id, "start_row": offset, "num_rows": n_centroids}
+            )
+            offset += n_centroids
+
+        all_centroids = np.concatenate(all_centroids, axis=0)
+        mmap = _create_fbin_memmap(
+            index_path / "centroids.fbin",
+            all_centroids.shape[0],
+            all_centroids.shape[1],
+        )
+        mmap[:] = all_centroids
+        mmap.flush()
+        del mmap
+        pl.DataFrame(rows).write_parquet(index_path / "centroids_meta.parquet")
 
     @staticmethod
     def merge_shards(index_path: Path, num_nodes: int):
