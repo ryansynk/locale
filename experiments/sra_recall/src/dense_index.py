@@ -108,6 +108,7 @@ class DenseIndex(BaseIndex):
         self.k = cfg.model.k
         self.cfg = cfg
         self.use_ann: bool = cfg.model.use_ann
+        self.exact_search: bool = cfg.model.exact_search
         self.model_cfg = cfg.model
 
         if not self.no_search:
@@ -131,7 +132,7 @@ class DenseIndex(BaseIndex):
                 vector_dtype=np.float32,
                 index_directory=str(index_path / "vamana_index"),
                 num_threads=0,
-                initial_search_complexity=500,
+                initial_search_complexity=128,
             )
             self.all_embeddings = None
         else:
@@ -297,7 +298,7 @@ class DenseIndex(BaseIndex):
             n_acc = len(self.acc_names_flat)
             n_chunks = len(query_chunks)
             identifiers, distances = self.index.batch_search(
-                query_chunk_features.cpu().numpy(), 500, 500, num_threads=0
+                query_chunk_features.cpu().numpy(), 10, 128, num_threads=0
             )
 
             chunk_to_query_np = np.zeros(n_chunks, dtype=np.int64)
@@ -306,7 +307,66 @@ class DenseIndex(BaseIndex):
 
             flat_ids = identifiers.ravel()
             flat_dists = distances.ravel()
-            chunk_idx_flat = np.repeat(np.arange(n_chunks), 500)
+            chunk_idx_flat = np.repeat(np.arange(n_chunks), 10)
+
+            acc_offsets_arr = np.array(self.acc_offsets)
+            acc_idx_flat = np.searchsorted(acc_offsets_arr, flat_ids, side="right") - 1
+            query_idx_flat = chunk_to_query_np[chunk_idx_flat]
+
+            scores_cpu = -1 * np.ones((n_queries, n_acc), dtype=np.float32)
+            np.maximum.at(scores_cpu, (query_idx_flat, acc_idx_flat), flat_dists)
+        elif self.exact_search:
+            assert self.all_embeddings is not None
+            n_chunks = len(query_chunks)
+            n_queries = len(queries)
+            n_acc = len(self.acc_names_flat)
+            top_k = 10
+
+            # Pre-compute once: which query each chunk belongs to
+            chunk_to_query_np = np.zeros(n_chunks, dtype=np.int64)
+            for qi, (s, e) in enumerate(query_indices):
+                chunk_to_query_np[s:e] = qi
+
+            # Shard all_embeddings across available GPUs and compute matmul in parallel.
+            # GPU ops release the GIL so threads give true parallelism.
+            all_embeddings = self.all_embeddings
+            n_vecs = all_embeddings.shape[0]
+            n_gpus = torch.cuda.device_count()
+            shard_size = (n_vecs + n_gpus - 1) // n_gpus
+            qcf_cpu = query_chunk_features.cpu()
+
+            def _matmul_shard(gpu_id: int):
+                dev = torch.device(f"cuda:{gpu_id}")
+                s = gpu_id * shard_size
+                e = min(s + shard_size, n_vecs)
+                emb = all_embeddings[s:e].to(dev)
+                q = qcf_cpu.to(dev)
+                logits = q @ emb.T  # (n_chunks, shard_size)
+                k = min(top_k, logits.shape[1])
+                vals, idx = torch.topk(logits, k, dim=-1)
+                if k < top_k:
+                    pad = top_k - k
+                    vals = torch.nn.functional.pad(vals, (0, pad), value=float("-inf"))
+                    idx = torch.nn.functional.pad(idx, (0, pad), value=0)
+                return vals.cpu(), idx.cpu() + s
+
+            import concurrent.futures as _cf
+
+            with _cf.ThreadPoolExecutor(max_workers=n_gpus) as pool:
+                shard_results = list(pool.map(_matmul_shard, range(n_gpus)))
+
+            # Merge per-shard top-k into global top-k
+            all_vals = torch.cat(
+                [r[0] for r in shard_results], dim=1
+            )  # (n_chunks, n_gpus*top_k)
+            all_idx = torch.cat([r[1] for r in shard_results], dim=1)
+            top_vals, top_pos = torch.topk(all_vals, top_k, dim=-1)
+            identifiers = torch.gather(all_idx, 1, top_pos)
+            distances = top_vals
+
+            flat_ids = identifiers.numpy().ravel()
+            flat_dists = distances.numpy().ravel()
+            chunk_idx_flat = np.repeat(np.arange(n_chunks), top_k)
 
             acc_offsets_arr = np.array(self.acc_offsets)
             acc_idx_flat = np.searchsorted(acc_offsets_arr, flat_ids, side="right") - 1
