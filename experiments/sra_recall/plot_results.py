@@ -551,7 +551,9 @@ def plot_recall_vs_noise_line(
     if print_df:
         pl.Config.set_tbl_rows(len(avg_recall_precision_df))
         print(
-            avg_recall_precision_df.select(["model", "mutation_rate", "average_recall"])
+            avg_recall_precision_df.select(
+                ["model", "mutation_rate", "average_recall", "avg_time"]
+            )
         )
 
     charts = []

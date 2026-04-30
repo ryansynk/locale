@@ -93,31 +93,29 @@ def main(cfg: ExperimentConfig):
     node_rank = int(os.environ.get("SLURM_NODEID", "0"))
     num_nodes = int(os.environ.get("SLURM_NNODES", "1"))
 
-    if (index_path / ".done").exists():
-        index.load(index_path)
-    elif num_nodes > 1:
-        node_accessions = accession_paths[node_rank::num_nodes]
-        shard_path = index_path / f"shard_{node_rank}"
-        print(
-            f"[Node {node_rank}/{num_nodes}] Building shard from {len(node_accessions)} accessions..."
-        )
-        index.build(node_accessions, shard_path)
-        index.save(shard_path)
-        (shard_path / ".done").touch()
+    if not (index_path / ".done").exists():
+        if num_nodes > 1:
+            node_accessions = accession_paths[node_rank::num_nodes]
+            shard_path = index_path / f"shard_{node_rank}"
+            print(
+                f"[Node {node_rank}/{num_nodes}] Building shard from {len(node_accessions)} accessions..."
+            )
+            index.build(node_accessions, shard_path)
+            index.save(shard_path)
+            (shard_path / ".done").touch()
 
-        if node_rank != 0:
-            print(f"[Node {node_rank}] Shard saved. Exiting.")
-            sys.exit(0)
+            if node_rank != 0:
+                print(f"[Node {node_rank}] Shard saved. Exiting.")
+                sys.exit(0)
 
-        print(f"[Node 0] Waiting for {num_nodes - 1} other node(s) to finish...")
-        _wait_for_shards(index_path, num_nodes)
-        DenseIndex.merge_shards(index_path, num_nodes)
-        (index_path / ".done").touch()
-        index.load(index_path)
-    else:
-        index.build(accession_paths, index_path)
-        index.save(index_path)
-        (index_path / ".done").touch()
+            print(f"[Node 0] Waiting for {num_nodes - 1} other node(s) to finish...")
+            _wait_for_shards(index_path, num_nodes)
+            DenseIndex.merge_shards(index_path, num_nodes)
+            (index_path / ".done").touch()
+        else:
+            index.build(accession_paths, index_path)
+            index.save(index_path)
+            (index_path / ".done").touch()
 
     if cfg.no_search:
         print("[no_search]: Index built. Exiting.")
@@ -129,6 +127,7 @@ def main(cfg: ExperimentConfig):
         )
         sys.exit(0)
 
+    index.load(index_path)
     if cfg.mutation_rate > 0.0:
         queries = apply_mutations(queries, cfg.mutation_rate)
 
