@@ -34,6 +34,7 @@ class DenseConfig(AlgorithmConfig):
     chunk_overlap: int = 150
     neuroseed_path: Optional[str] = "/pscratch/sd/r/rsynk/NeuroSEED"
     use_ann: bool = False
+    parlayann_pythonpath: Path | None = None
 
     def __post_init__(self):
         config_tag = (

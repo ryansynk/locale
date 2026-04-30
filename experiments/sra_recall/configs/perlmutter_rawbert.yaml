@@ -7,6 +7,7 @@ model:
   max_seq_len: 256
   chunk_type: stride
   chunk_overlap: 150
+  parlayann_pythonpath: /pscratch/sd/r/rsynk/ParlayANN/python
 accessions_dir: /pscratch/sd/r/rsynk/data/test/logan_contig
 raw_read_queries_path: /pscratch/sd/r/rsynk/rawbert_data/data/sra_recall/raw_read_queries_final.parquet
 logan_contig_queries_path: /pscratch/sd/r/rsynk/rawbert_data/data/sra_recall/logan_contig_queries_final.parquet

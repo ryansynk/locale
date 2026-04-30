@@ -39,6 +39,7 @@ dependencies = [
     "setuptools>=82.0.1",
     "streamlit>=1.56.0",
     "diskannpy>=0.7.0",
+    "pybind11>=3.0.4",
 ]
 
 [project.optional-dependencies]

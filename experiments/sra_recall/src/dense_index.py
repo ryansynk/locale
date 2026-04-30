@@ -13,8 +13,8 @@ from typing import Literal
 
 import numpy as np
 import polars as pl
-import diskannpy
 import torch
+import diskannpy
 from Bio import SeqIO
 from torch import nn
 from tqdm import tqdm
@@ -110,6 +110,13 @@ class DenseIndex(BaseIndex):
         self.use_ann: bool = cfg.model.use_ann
         self.model_cfg = cfg.model
 
+        if self.use_ann:
+            assert self.model_cfg.parlayann_pythonpath
+            sys.path.insert(0, str(self.model_cfg.parlayann_pythonpath))
+            import wrapper as pann_wp
+
+            self._pann_wp = pann_wp
+
         if not self.no_search:
             self.model = DenseEncoder(cfg.model)
             self.chunk_type: Literal["stride", "exact_chunk"] = cfg.model.chunk_type
@@ -117,15 +124,13 @@ class DenseIndex(BaseIndex):
             self.contig_align_intervals: dict[str, list[tuple[int, int]]] | None = None
 
     def load(self, index_path: Path):
-        mmap = _load_fbin_mmap(index_path / "embeddings.fbin")
         meta = pl.read_parquet(index_path / "meta.parquet")
-        self._mmap = mmap  # keep reference to prevent GC closing the mapping
         self.acc_names_flat = meta["srr_id"].to_list()
         starts = meta["start_row"].to_list()
         counts = meta["num_rows"].to_list()
         self.acc_offsets = starts + [starts[-1] + counts[-1]] if starts else [0]
-        self.all_embeddings = torch.from_numpy(mmap)
         if self.use_ann:
+            # if not (index_path / "parlayann_index").exists():
             if not (index_path / "vamana_index").exists():
                 self.construct_ann_index(index_path)
 
@@ -134,11 +139,23 @@ class DenseIndex(BaseIndex):
                 vector_dtype=np.float32,
                 index_directory=str(index_path / "vamana_index"),
                 num_threads=0,
-                initial_search_complexity=100,
+                initial_search_complexity=200,
             )
-        print(
-            f"Loaded {len(starts)} accessions ({mmap.shape[0]} vectors) [memory-mapped]"
-        )
+            # self.index = self._pann_wp.load_index(
+            #    "mips",
+            #    "float",
+            #    str(index_path / "embeddings.fbin"),
+            #    str(index_path / "parlayann_index"),
+            #    use_quant=False,
+            # )
+            self.all_embeddings = None
+        else:
+            mmap = _load_fbin_mmap(index_path / "embeddings.fbin")
+            self._mmap = mmap  # keep reference to prevent GC closing the mapping
+            self.all_embeddings = torch.from_numpy(mmap)
+            print(
+                f"Loaded {len(starts)} accessions ({mmap.shape[0]} vectors) [memory-mapped]"
+            )
 
     def _iter_chunks(self, accessions: list[Path]):
         """Yield (srr_id, sequence_chunk) for every chunk across all accessions."""
@@ -173,7 +190,9 @@ class DenseIndex(BaseIndex):
         embed_dim = self.model.encode(["ACGT"]).shape[1]
 
         index_path.mkdir(exist_ok=True, parents=True)
-        raw_mmap = _create_fbin_memmap(index_path / "embeddings.fbin", total_chunks, embed_dim)
+        raw_mmap = _create_fbin_memmap(
+            index_path / "embeddings.fbin", total_chunks, embed_dim
+        )
 
         print(f"Embedding across {num_gpus} GPUs...")
         ctx = mp.get_context("spawn")
@@ -262,9 +281,6 @@ class DenseIndex(BaseIndex):
 
         pl.DataFrame(final_rows).write_parquet(index_path / "meta.parquet")
         self._streamed_to = index_path
-        if self.use_ann:
-            self.construct_ann_index(index_path)
-        self.load(index_path)
         print(
             f"Built: {offset:,} vectors, {len(final_rows)} accessions -> {index_path}"
         )
@@ -291,37 +307,41 @@ class DenseIndex(BaseIndex):
             prev_idx = prev_idx + num_chunks
 
         query_chunk_features = self.model.encode(query_chunks).to(self.model_cfg.device)
-
         if self.use_ann:
             n_queries = len(queries)
             n_acc = len(self.acc_names_flat)
             n_chunks = len(query_chunks)
-
-            ann_results = self.index.batch_search(
-                query_chunk_features.cpu().numpy(),
-                k_neighbors=100,
-                complexity=128,
-                num_threads=0,
+            # identifiers, distances = self.index.batch_search(
+            #    query_chunk_features.cpu().numpy(), 110, 128, True, 1000
+            # )
+            identifiers, distances = self.index.batch_search(
+                query_chunk_features.cpu().numpy(), 500, 500, num_threads=0
             )
-            identifiers = ann_results.identifiers  # (n_chunks, 100)
-            distances = ann_results.distances  # (n_chunks, 100)
+            similarities = distances
 
             chunk_to_query_np = np.zeros(n_chunks, dtype=np.int64)
             for qi, (s, e) in enumerate(query_indices):
                 chunk_to_query_np[s:e] = qi
 
+            n_vectors = self.acc_offsets[-1]
             flat_ids = identifiers.ravel()
-            flat_dists = distances.ravel()
+            flat_sims = similarities.ravel()
+            chunk_idx_flat = np.repeat(np.arange(n_chunks), 500)
+
+            valid = flat_ids < n_vectors
+            print(f"Invalid IDs: {(~valid).sum()} / {valid.size}")
+            flat_ids = flat_ids[valid]
+            flat_sims = flat_sims[valid]
+            chunk_idx_flat = chunk_idx_flat[valid]
 
             acc_offsets_arr = np.array(self.acc_offsets)
             acc_idx_flat = np.searchsorted(acc_offsets_arr, flat_ids, side="right") - 1
-
-            chunk_idx_flat = np.repeat(np.arange(n_chunks), 100)
             query_idx_flat = chunk_to_query_np[chunk_idx_flat]
 
-            scores_cpu = np.zeros((n_queries, n_acc), dtype=np.float32)
-            np.maximum.at(scores_cpu, (query_idx_flat, acc_idx_flat), flat_dists)
+            scores_cpu = -1 * np.ones((n_queries, n_acc), dtype=np.float32)
+            np.maximum.at(scores_cpu, (query_idx_flat, acc_idx_flat), flat_sims)
         else:
+            assert self.all_embeddings is not None
             n_chunks = len(query_chunks)
             n_queries = len(queries)
             device = self.model_cfg.device
@@ -380,30 +400,37 @@ class DenseIndex(BaseIndex):
         print(f"Index already written to {output_path} during build.")
 
     def construct_ann_index(self, index_path: Path):
-        print("Constructing vamana index")
-        print("loading vectors")
-        vectors: np.ndarray = _load_fbin_mmap(index_path / "embeddings.fbin")
-        n, d = vectors.shape
-        assert vectors.dtype == np.float32
+        # print("Constructing ParlayANN index")
+        # self._pann_wp.build_vamana_index(
+        #    "mips",
+        #    "float",
+        #    str(index_path / "embeddings.fbin"),
+        #    str(index_path / "parlayann_index"),
+        #    64,
+        #    128,
+        #    1.2,
+        #    True,
+        # )
 
-        print("calling diskANN")
+        n, d = vectors.shape
+        print("Constructing diskANN index")
         (index_path / "vamana_index").mkdir(exist_ok=True, parents=True)
         diskannpy.build_memory_index(
-            data=vectors,
+            data=str(index_path / "embeddings.fbin"),
             distance_metric="mips",
             index_directory=str(index_path / "vamana_index"),
             complexity=128,
             graph_degree=64,
-            alpha=1.2,
             num_threads=0,
+            alpha=1.2,
             use_pq_build=False,
             num_pq_bytes=0,
             use_opq=False,
-            tags=np.arange(n, dtype=np.uint32),
+            vector_dtype=np.float32,
+            tags="",
             filter_labels=None,
             universal_label="",
             filter_complexity=0,
-            index_prefix="ann",
         )
 
     @staticmethod
@@ -430,7 +457,9 @@ class DenseIndex(BaseIndex):
         if embed_dim is None:
             raise ValueError("No valid shards found")
 
-        merged = _create_fbin_memmap(index_path / "embeddings.fbin", total_vectors, embed_dim)
+        merged = _create_fbin_memmap(
+            index_path / "embeddings.fbin", total_vectors, embed_dim
+        )
         offset = 0
         for rank in range(num_nodes):
             arr = _load_fbin_mmap(index_path / f"shard_{rank}" / "embeddings.fbin")
