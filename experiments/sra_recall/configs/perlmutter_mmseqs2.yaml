@@ -3,7 +3,7 @@ model:
   executable: mmseqs 
   max_seqs: 300
 accessions_dir: /pscratch/sd/r/rsynk/data/test/logan_contig
-raw_read_queries_path: /pscratch/sd/r/rsynk/rawbert_data/data/sra_recall/raw_read_queries_final.parquet
+raw_read_queries_path: /pscratch/sd/r/rsynk/rawbert_data/huggingface_data/raw_read_queries_final.parquet
 logan_contig_queries_path: /pscratch/sd/r/rsynk/rawbert_data/data/sra_recall/logan_contig_queries_final.parquet
 gencode_queries_path: /pscratch/sd/r/rsynk/rawbert_data/data/sra_recall/gencode/gencode_queries.parquet
 index_dir: /pscratch/sd/r/rsynk/rawbert/experiments/sra_recall/indexes
