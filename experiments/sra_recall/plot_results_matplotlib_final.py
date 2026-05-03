@@ -91,7 +91,7 @@ def print_auprc(
     acc_to_idx = {acc: i for i, acc in enumerate(accession_order)}
     n_acc = len(accession_order)
 
-    DEFAULT_SCORE = -1  # ranks below any real score
+    DEFAULT_SCORE = -2.0
     auprc_rows = []
     for name, df in data.group_by(
         [
@@ -173,7 +173,7 @@ def plot_r_precision_vs_noise_line(
     acc_to_idx = {acc: i for i, acc in enumerate(accession_order)}
     n_acc = len(accession_order)
 
-    DEFAULT_SCORE = -1  # ranks below any real score
+    DEFAULT_SCORE = -2.0
     r_precision_rows = []
     for name, df in data.group_by(
         [
@@ -304,7 +304,7 @@ def plot_recall_at_k_vs_noise_line(
     acc_to_idx = {acc: i for i, acc in enumerate(accession_order)}
     n_acc = len(accession_order)
 
-    DEFAULT_SCORE = -1  # ranks below any real score
+    DEFAULT_SCORE = -2.0
     recall_at_k_rows = []
 
     for name, df in data.group_by(

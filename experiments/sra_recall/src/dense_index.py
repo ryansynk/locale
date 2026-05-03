@@ -313,7 +313,7 @@ class DenseIndex(BaseIndex):
             acc_idx_flat = np.searchsorted(acc_offsets_arr, flat_ids, side="right") - 1
             query_idx_flat = chunk_to_query_np[chunk_idx_flat]
 
-            scores_cpu = -1 * np.ones((n_queries, n_acc), dtype=np.float32)
+            scores_cpu = -2 * np.ones((n_queries, n_acc), dtype=np.float32)
             np.maximum.at(scores_cpu, (query_idx_flat, acc_idx_flat), flat_dists)
         elif self.exact_search:
             assert self.all_embeddings is not None
@@ -372,7 +372,7 @@ class DenseIndex(BaseIndex):
             acc_idx_flat = np.searchsorted(acc_offsets_arr, flat_ids, side="right") - 1
             query_idx_flat = chunk_to_query_np[chunk_idx_flat]
 
-            scores_cpu = -1 * np.ones((n_queries, n_acc), dtype=np.float32)
+            scores_cpu = -2 * np.ones((n_queries, n_acc), dtype=np.float32)
             np.maximum.at(scores_cpu, (query_idx_flat, acc_idx_flat), flat_dists)
         else:
             assert self.all_embeddings is not None
