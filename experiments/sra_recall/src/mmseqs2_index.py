@@ -140,3 +140,11 @@ class MMseqs2Index(BaseIndex):
 
     def save(self, output_path: Path):
         pass
+
+    def index_size_gb(self, index_path: Path):
+        total = sum(
+            p.stat().st_size
+            for p in (index_path / "databases").rglob("*")
+            if p.is_file()
+        )
+        return total / (1024**3)

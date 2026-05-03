@@ -143,6 +143,9 @@ def main(cfg: ExperimentConfig):
         results: pl.DataFrame = index.search(queries)
         avg_time = -1.0
 
+    results = results.with_columns(
+        pl.lit(index.index_size_gb(index_path)).alias("index_size_gb")
+    )
     results = results.with_columns(pl.lit(avg_time).alias("avg_time"))
     results = results.with_columns(pl.lit(str(cfg.model)).alias("model"))
     results = results.with_columns(pl.lit(cfg.mutation_rate).alias("mutation_rate"))

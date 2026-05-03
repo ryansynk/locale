@@ -433,6 +433,11 @@ class DenseIndex(BaseIndex):
     def save(self, output_path: Path):
         print(f"Index already written to {output_path} during build.")
 
+    def index_size_gb(self, index_path: Path):
+        meta_gb = (index_path / "meta.parquet").stat().st_size / (1024**3)
+        embeds_gb = (index_path / "embeddings.fbin").stat().st_size / (1024**3)
+        return meta_gb + embeds_gb
+
     def construct_ann_index(self, index_path: Path):
         print("Constructing diskANN index")
         (index_path / "vamana_index").mkdir(exist_ok=True, parents=True)

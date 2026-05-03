@@ -139,6 +139,14 @@ class MetagraphIndex(BaseIndex):
     def save(self, output_path: Path):
         pass
 
+    def index_size_gb(self, index_path: Path):
+        manifest_gb = (index_path / "contig_manifest.txt").stat().st_size / (1024**3)
+        graph_gb = (index_path / "graph_primary.dbg").stat().st_size / (1024**3)
+        annotation_gb = (
+            index_path / "annotation.relaxed.row_diff_brwt.annodbg"
+        ).stat().st_size / (1024**3)
+        return manifest_gb + graph_gb + annotation_gb
+
 
 def get_free_port():
     # Create a new socket using IPv4 and TCP

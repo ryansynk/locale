@@ -24,3 +24,7 @@ class BaseIndex(ABC):
     @abstractmethod
     def save(self, output_path: Path):
         pass
+
+    @abstractmethod
+    def index_size_gb(self, index_path: Path):
+        pass
