@@ -7,13 +7,18 @@ from jsonargparse.typing import Path_fr
 from matplotlib import pyplot as plt
 from sklearn.metrics import average_precision_score
 
-# plt.rcParams.update({"text.usetex": True, "font.family": "mathptmx"})
 plt.rcParams.update(
     {
         "text.usetex": True,
         "font.family": "serif",
-        "font.serif": ["Times"],
-        "text.latex.preamble": r"\usepackage{mathptmx}",
+        "text.latex.preamble": r"""
+        \usepackage[utf8]{inputenc}
+        \usepackage[T1]{fontenc}
+        \usepackage{amsfonts}
+        \usepackage{amsmath}
+        \renewcommand{\rmdefault}{ptm}
+        \renewcommand{\sfdefault}{phv}
+    """,
     }
 )
 
@@ -164,7 +169,7 @@ def plot_r_precision_vs_noise_line(
         "llmed": "LLM-ED",
         "rawbert": "RawBERT",
         "metagraph": "MetaGraph",
-        "dna2vec": "Embed-Search-Align",
+        "dna2vec": "ESA",
     }
     data = data.with_columns(pl.col("model").replace(title_names))
     data = data.with_columns(pl.col("mutation_rate") * 100)
@@ -243,10 +248,10 @@ def plot_r_precision_vs_noise_line(
         query_type = name[0]
 
         model_order = [
-            "MMseqs2",
             "RawBERT",
+            "MMseqs2",
+            "ESA",
             "LLM-ED",
-            "Embed-Search-Align",
             "MetaGraph",
         ]
         models = [m for m in model_order if m in data["model"].to_list()]
@@ -270,11 +275,11 @@ def plot_r_precision_vs_noise_line(
             )
         ax.set_xlim(0, 10)
         ax.set_ylim(0.0, 1.0)
-        ax.set_xlabel("Mutation Rate \%", fontsize=20)
-        ax.set_ylabel("Average Recall@$|\mathcal{A}_q|$ (R-Precision)", fontsize=20)
-        ax.tick_params(labelsize=15)
+        ax.set_xlabel("Mutation Rate \%", fontsize=25)
+        ax.set_ylabel("Average Recall@$|\mathcal{A}_q|$ (R-Precision)", fontsize=25)
+        ax.tick_params(labelsize=20)
         ax.grid(True)
-        ax.legend(title="Model", fontsize=14, title_fontsize=16)
+        ax.legend(fontsize=18, title_fontsize=20)
         plt.tight_layout()
         fig.savefig(plots_dir / f"{query_type}_recall_at_Aq_vs_mut_rate_curve.pdf")
         plt.close(fig)
@@ -295,7 +300,7 @@ def plot_recall_at_k_vs_noise_line(
         "llmed": "LLM-ED",
         "rawbert": "RawBERT",
         "metagraph": "MetaGraph",
-        "dna2vec": "Embed-Search-Align",
+        "dna2vec": "ESA",
     }
     data = data.with_columns(pl.col("model").replace(title_names))
     data = data.with_columns(pl.col("mutation_rate") * 100)
@@ -377,7 +382,7 @@ def plot_recall_at_k_vs_noise_line(
             "MMseqs2",
             "RawBERT",
             "LLM-ED",
-            "Embed-Search-Align",
+            "ESA",
             "MetaGraph",
         ]
         models = [m for m in model_order if m in data["model"].to_list()]
@@ -401,13 +406,135 @@ def plot_recall_at_k_vs_noise_line(
             )
         ax.set_xlim(0, 10)
         ax.set_ylim(0.0, 1.0)
-        ax.set_xlabel("Mutation Rate \%", fontsize=20)
-        ax.set_ylabel(f"Average Recall@{k} ", fontsize=20)
-        ax.tick_params(labelsize=15)
+        ax.set_xlabel("Mutation Rate \%", fontsize=25)
+        ax.set_ylabel(f"Average Recall@{k} ", fontsize=25)
+        ax.tick_params(labelsize=20)
         ax.grid(True)
-        ax.legend(title="Model", fontsize=14, title_fontsize=16)
+        ax.legend(fontsize=18, title_fontsize=20)
         plt.tight_layout()
         fig.savefig(plots_dir / f"{query_type}_recall_at_{k}_vs_mut_rate_curve.pdf")
+        plt.close(fig)
+
+
+def plot_recall_at_k_vs_k_line(
+    data: pl.DataFrame,
+    ground_truth: pl.DataFrame,
+    accessions: list[str],
+    plots_dir: Path,
+    mutation_rate: float = 10,
+):
+    data = data.with_columns(pl.col("model").str.split("_").list.get(0))
+    title_names = {
+        "mmseqs": "MMseqs2",
+        "llmed": "LLM-ED",
+        "rawbert": "RawBERT",
+        "metagraph": "MetaGraph",
+        "dna2vec": "ESA",
+    }
+    data = data.with_columns(pl.col("model").replace(title_names))
+    data = data.with_columns(pl.col("mutation_rate") * 100)
+    data = data.filter(pl.col("mutation_rate") == mutation_rate)
+
+    accession_order = sorted(accessions)  # canonical, stable ordering
+    acc_to_idx = {acc: i for i, acc in enumerate(accession_order)}
+    n_acc = len(accession_order)
+
+    DEFAULT_SCORE = -2.0
+    recall_at_k_rows = []
+
+    for name, df in data.group_by(
+        [
+            "model",
+            "checkpoint",
+            "max_len",
+            "checkpoint_step_num",
+            "chunk_type",
+            "query_type",
+        ]
+    ):
+        joined_true_pred = (
+            ground_truth.filter(pl.col("mutation_rate") == 0.0)
+            .select(["query_id", "results"])
+            .rename({"results": "true_results"})
+            .join(
+                df.select(["query_id", "results"]).rename({"results": "pred_results"}),
+                on="query_id",
+            )
+        )
+        for k in range(n_acc):
+            recalls_at_k = []
+            for row in joined_true_pred.iter_rows(named=True):
+                # Build score vector with defaults
+                y_score = np.full(n_acc, DEFAULT_SCORE)
+                for p in row["pred_results"]:
+                    if p["accession"] in acc_to_idx:
+                        y_score[acc_to_idx[p["accession"]]] = p["score"]
+
+                # Build truth vector
+                y_true = np.zeros(n_acc, dtype=int)
+                for t in row["true_results"]:
+                    if t["accession"] in acc_to_idx:
+                        y_true[acc_to_idx[t["accession"]]] = 1
+
+                if y_true.sum() > 0:
+                    recalls_at_k.append(recall_at_k_per_query(y_true, y_score, k))
+
+            recall_at_k_rows.append(
+                {
+                    "model": name[0],
+                    "checkpoint": name[1],
+                    "max_len": name[2],
+                    "checkpoint_step_num": name[3],
+                    "chunk_type": name[4],
+                    "query_type": name[5],
+                    "average_recall": np.mean(recalls_at_k),
+                    "k": k,
+                }
+            )
+
+    recall_at_k_df = pl.from_dicts(recall_at_k_rows, infer_schema_length=None)
+
+    for name, data in recall_at_k_df.group_by("query_type"):
+        query_type = name[0]
+
+        model_order = [
+            "MMseqs2",
+            "RawBERT",
+            "LLM-ED",
+            "ESA",
+            "MetaGraph",
+        ]
+        models = [m for m in model_order if m in data["model"].to_list()]
+        models += [
+            m for m in data["model"].unique().sort().to_list() if m not in model_order
+        ]
+        viridis = plt.colormaps["viridis"]
+        model_colors = {
+            m: viridis(i / max(len(models) - 1, 1)) for i, m in enumerate(models)
+        }
+
+        fig, ax = plt.subplots(figsize=(8, 6))
+        for model in models:
+            mdf = data.filter(pl.col("model") == model).sort("k")
+            ax.plot(
+                mdf["k"].to_list(),
+                mdf["average_recall"].to_list(),
+                marker="o",
+                label=model,
+                color=model_colors[model],
+            )
+        ax.set_xlim(0, 49)
+        ax.set_ylim(0.0, 1.0)
+        ax.set_xlabel("k", fontsize=25)
+        ax.set_ylabel("Average Recall@k", fontsize=25)
+        ax.tick_params(labelsize=20)
+        ax.grid(True)
+        ax.legend(fontsize=18, title_fontsize=20)
+        plt.tight_layout()
+        fig.savefig(
+            plots_dir
+            / f"{query_type}_recall_at_k_vs_k_curve_mutation_rate_{mutation_rate}.pdf"
+        )
         plt.close(fig)
 
 
@@ -416,7 +543,7 @@ def main(
     raw_read_queries_path: Path_fr,
     accessions: Path_fr,
     plots_dir: str = "plots_matplotlib",
-    k: int = 10,
+    k: int = 7,
 ):
     results_dir: Path = Path(results_dir)
     raw_read_queries_path: Path = Path(raw_read_queries_path)
@@ -460,6 +587,7 @@ def main(
     plot_r_precision_vs_noise_line(data, raw_read_oracle_data, accs, plots_dir)
     plot_recall_at_k_vs_noise_line(data, raw_read_oracle_data, accs, k, plots_dir)
     print_auprc(data, raw_read_oracle_data, accs)
+    plot_recall_at_k_vs_k_line(data, raw_read_oracle_data, accs, plots_dir)
 
 
 if __name__ == "__main__":
