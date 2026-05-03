@@ -217,3 +217,4 @@ logs
 *.old
 experiments/sra_recall/indexes
 experiments/sra_recall/indexes_500
+*.pdf
