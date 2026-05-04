@@ -87,74 +87,6 @@ def raw_read_oracle_results(raw_read_queries_df):
     return oracle_df
 
 
-def print_auprc(
-    data: pl.DataFrame,
-    ground_truth: pl.DataFrame,
-    accessions: list[str],
-):
-    accession_order = sorted(accessions)  # canonical, stable ordering
-    acc_to_idx = {acc: i for i, acc in enumerate(accession_order)}
-    n_acc = len(accession_order)
-
-    DEFAULT_SCORE = -2.0
-    auprc_rows = []
-    for name, df in data.group_by(
-        [
-            "model",
-            "checkpoint",
-            "max_len",
-            "checkpoint_step_num",
-            "chunk_type",
-            "mutation_rate",
-            "query_type",
-        ]
-    ):
-        joined_true_pred = (
-            ground_truth.filter(pl.col("mutation_rate") == 0.0)
-            .select(["query_id", "results"])
-            .rename({"results": "true_results"})
-            .join(
-                df.select(["query_id", "results"]).rename({"results": "pred_results"}),
-                on="query_id",
-            )
-        )
-
-        ap_per_query = []
-        for row in joined_true_pred.iter_rows(named=True):
-            # Build score vector with defaults
-            y_score = np.full(n_acc, DEFAULT_SCORE)
-            for p in row["pred_results"]:
-                if p["accession"] in acc_to_idx:
-                    y_score[acc_to_idx[p["accession"]]] = p["score"]
-
-            # Build truth vector
-            y_true = np.zeros(n_acc, dtype=int)
-            for t in row["true_results"]:
-                if t["accession"] in acc_to_idx:
-                    y_true[acc_to_idx[t["accession"]]] = 1
-
-            if y_true.sum() > 0:
-                ap_per_query.append(average_precision_score(y_true, y_score))
-
-        auprc_rows.append(
-            {
-                "model": name[0],
-                "checkpoint": name[1],
-                "max_len": name[2],
-                "checkpoint_step_num": name[3],
-                "chunk_type": name[4],
-                "mutation_rate": name[5],
-                "query_type": name[6],
-                "auprc": np.mean(ap_per_query),
-            }
-        )
-
-    auprc_df = pl.from_dicts(auprc_rows)
-    pl.Config.set_tbl_rows(len(auprc_df))
-    print("=========== AUPRC DATA =============")
-    print(auprc_df.sort("model", "mutation_rate"))
-
-
 def plot_r_precision_vs_noise_line(
     data: pl.DataFrame,
     ground_truth: pl.DataFrame,
@@ -538,6 +470,90 @@ def plot_recall_at_k_vs_k_line(
         plt.close(fig)
 
 
+def print_auprc(
+    data: pl.DataFrame,
+    ground_truth: pl.DataFrame,
+    accessions: list[str],
+):
+    accession_order = sorted(accessions)  # canonical, stable ordering
+    acc_to_idx = {acc: i for i, acc in enumerate(accession_order)}
+    n_acc = len(accession_order)
+
+    DEFAULT_SCORE = -2.0
+    auprc_rows = []
+    for name, df in data.group_by(
+        [
+            "model",
+            "checkpoint",
+            "max_len",
+            "checkpoint_step_num",
+            "chunk_type",
+            "mutation_rate",
+            "query_type",
+        ]
+    ):
+        joined_true_pred = (
+            ground_truth.filter(pl.col("mutation_rate") == 0.0)
+            .select(["query_id", "results"])
+            .rename({"results": "true_results"})
+            .join(
+                df.select(["query_id", "results"]).rename({"results": "pred_results"}),
+                on="query_id",
+            )
+        )
+
+        ap_per_query = []
+        for row in joined_true_pred.iter_rows(named=True):
+            # Build score vector with defaults
+            y_score = np.full(n_acc, DEFAULT_SCORE)
+            for p in row["pred_results"]:
+                if p["accession"] in acc_to_idx:
+                    y_score[acc_to_idx[p["accession"]]] = p["score"]
+
+            # Build truth vector
+            y_true = np.zeros(n_acc, dtype=int)
+            for t in row["true_results"]:
+                if t["accession"] in acc_to_idx:
+                    y_true[acc_to_idx[t["accession"]]] = 1
+
+            if y_true.sum() > 0:
+                ap_per_query.append(average_precision_score(y_true, y_score))
+
+        auprc_rows.append(
+            {
+                "model": name[0],
+                "checkpoint": name[1],
+                "max_len": name[2],
+                "checkpoint_step_num": name[3],
+                "chunk_type": name[4],
+                "mutation_rate": name[5],
+                "query_type": name[6],
+                "auprc": np.mean(ap_per_query),
+            }
+        )
+
+    auprc_df = pl.from_dicts(auprc_rows)
+    pl.Config.set_tbl_rows(len(auprc_df))
+    print("=========== AUPRC DATA =============")
+    print(auprc_df.sort("model", "mutation_rate"))
+
+
+def print_systems_data(data: pl.DataFrame):
+    print(
+        data.group_by(
+            [
+                "model",
+                "checkpoint",
+                "max_len",
+                "checkpoint_step_num",
+                "chunk_type",
+                "mutation_rate",
+                "query_type",
+            ]
+        ).agg(pl.col("index_size_gb").mean(), pl.col("avg_time").mean())
+    )
+
+
 def main(
     results_dir: str,
     raw_read_queries_path: Path_fr,
@@ -586,8 +602,9 @@ def main(
     # data = pl.concat([data, raw_read_oracle_data], how="diagonal")
     plot_r_precision_vs_noise_line(data, raw_read_oracle_data, accs, plots_dir)
     plot_recall_at_k_vs_noise_line(data, raw_read_oracle_data, accs, k, plots_dir)
-    print_auprc(data, raw_read_oracle_data, accs)
     plot_recall_at_k_vs_k_line(data, raw_read_oracle_data, accs, plots_dir)
+    print_auprc(data, raw_read_oracle_data, accs)
+    print_systems_data(data)
 
 
 if __name__ == "__main__":
