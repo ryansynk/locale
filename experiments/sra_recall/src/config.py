@@ -35,6 +35,7 @@ class DenseConfig(AlgorithmConfig):
     neuroseed_path: Optional[str] = "/pscratch/sd/r/rsynk/NeuroSEED"
     use_ann: bool = False
     exact_search: bool = False
+    use_rabitq: bool = False
 
     def __post_init__(self):
         config_tag = (

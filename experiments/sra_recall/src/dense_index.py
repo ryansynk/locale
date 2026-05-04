@@ -1,5 +1,7 @@
 import copy
 import faulthandler
+import json
+import math
 import multiprocessing as mp
 import os
 import random
@@ -60,6 +62,190 @@ def _load_fbin_mmap(path: Path) -> np.memmap:
     return np.memmap(path, dtype=np.float32, mode="r", offset=8, shape=(int(n), int(d)))
 
 
+# ---------------------------------------------------------------------------
+# RaBitQ 1-bit quantization index
+# ---------------------------------------------------------------------------
+
+
+def _build_rabitq_index(
+    fbin_path: Path,
+    rabitq_dir: Path,
+    chunk_rows: int = 200_000,
+    seed: int = 0,
+) -> None:
+    """Build a RaBitQ index from an existing .fbin file.
+
+    Writes packed 1-bit codes, per-vector norms/dots, centroid, and rotation
+    into rabitq_dir so it can be loaded by RaBitQIndex.load().
+    """
+    rabitq_dir.mkdir(parents=True, exist_ok=True)
+
+    mmap = _load_fbin_mmap(fbin_path)
+    n, d = mmap.shape
+    if d % 8 != 0:
+        raise ValueError(
+            f"Embedding dim={d} must be a multiple of 8 for RaBitQ packing."
+        )
+
+    bytes_per_vec = d // 8
+    sqrt_d = math.sqrt(d)
+
+    # Pass 1: streaming centroid
+    centroid = np.zeros(d, dtype=np.float64)
+    for start in range(0, n, chunk_rows):
+        centroid += mmap[start : start + chunk_rows].sum(axis=0, dtype=np.float64)
+    centroid = (centroid / n).astype(np.float32)
+
+    # Random orthogonal rotation via QR decomposition
+    rng = np.random.default_rng(seed)
+    g = rng.standard_normal((d, d)).astype(np.float32)
+    q, r = np.linalg.qr(g)
+    rotation = (q * np.sign(np.diag(r))).astype(np.float32)
+
+    # Pass 2: rotate, sign, pack; record per-vector scalars
+    with (
+        open(rabitq_dir / "codes.u8", "wb") as fc,
+        open(rabitq_dir / "norms.f32", "wb") as fn,
+        open(rabitq_dir / "dots.f32", "wb") as fd,
+    ):
+        for start in range(0, n, chunk_rows):
+            chunk = np.array(mmap[start : start + chunk_rows], dtype=np.float32)
+            xr = (chunk - centroid) @ rotation
+            norms = np.linalg.norm(xr, axis=1).astype(np.float32)
+            signs = np.where(xr >= 0, 1.0, -1.0).astype(np.float32)
+            dots = (xr * signs).sum(axis=1, dtype=np.float32) / sqrt_d
+            packed = np.packbits(
+                (signs > 0).astype(np.uint8), axis=-1, bitorder="little"
+            )
+            fc.write(packed.tobytes())
+            fn.write(norms.tobytes())
+            fd.write(dots.tobytes())
+
+    np.save(rabitq_dir / "centroid.npy", centroid)
+    np.save(rabitq_dir / "rotation.npy", rotation)
+    with open(rabitq_dir / "meta.json", "w") as f:
+        json.dump({"n": n, "d": d, "bytes_per_vec": bytes_per_vec}, f)
+
+    print(f"RaBitQ index built: {n:,} vectors -> {rabitq_dir}")
+
+
+class RaBitQIndex:
+    """Sharded GPU RaBitQ index for approximate inner-product search.
+
+    Codes are stored as int8 {-1, +1} on each GPU shard. Search is asymmetric:
+    fp32 rotated queries vs int8 codes via fp16 matmul, with per-vector
+    norm/dot scalars to debias the estimator.
+    """
+
+    def __init__(
+        self,
+        n: int,
+        d: int,
+        centroid: torch.Tensor,
+        rotation: torch.Tensor,
+        shards: list[dict],
+    ):
+        self.n = n
+        self.d = d
+        self.centroid = centroid
+        self.rotation = rotation
+        self.shards = shards
+        self.sqrt_d = math.sqrt(d)
+
+    @classmethod
+    def load(cls, rabitq_dir: Path, devices: list[str] | None = None) -> "RaBitQIndex":
+        with open(rabitq_dir / "meta.json") as f:
+            meta = json.load(f)
+        n, d, bytes_per_vec = meta["n"], meta["d"], meta["bytes_per_vec"]
+
+        if devices is None:
+            n_gpus = torch.cuda.device_count()
+            devices = [f"cuda:{i}" for i in range(n_gpus)] if n_gpus > 0 else ["cpu"]
+
+        codes_mm = np.memmap(
+            rabitq_dir / "codes.u8", dtype=np.uint8, mode="r", shape=(n, bytes_per_vec)
+        )
+        norms_mm = np.memmap(
+            rabitq_dir / "norms.f32", dtype=np.float32, mode="r", shape=(n,)
+        )
+        dots_mm = np.memmap(
+            rabitq_dir / "dots.f32", dtype=np.float32, mode="r", shape=(n,)
+        )
+
+        centroid = torch.from_numpy(np.load(rabitq_dir / "centroid.npy"))
+        rotation = torch.from_numpy(np.load(rabitq_dir / "rotation.npy"))
+
+        shard_sizes = [n // len(devices)] * len(devices)
+        for i in range(n % len(devices)):
+            shard_sizes[i] += 1
+
+        shards = []
+        offset = 0
+        for dev, size in zip(devices, shard_sizes):
+            packed = torch.from_numpy(
+                np.ascontiguousarray(codes_mm[offset : offset + size])
+            )
+            unpacked01 = torch.from_numpy(
+                np.unpackbits(packed.numpy(), axis=1, bitorder="little").astype(np.int8)
+            )
+            codes_pm1 = (unpacked01 * 2 - 1).to(dev)
+            norms = torch.from_numpy(
+                np.ascontiguousarray(norms_mm[offset : offset + size])
+            ).to(dev)
+            dots = torch.from_numpy(
+                np.ascontiguousarray(dots_mm[offset : offset + size])
+            ).to(dev)
+            shards.append(
+                {
+                    "device": dev,
+                    "offset": offset,
+                    "codes": codes_pm1,
+                    "norms": norms,
+                    "dots": dots,
+                }
+            )
+            offset += size
+
+        print(f"Loaded RaBitQ index: {n:,} vectors across {len(devices)} device(s)")
+        return cls(n, d, centroid, rotation, shards)
+
+    @torch.no_grad()
+    def search(
+        self, queries: torch.Tensor, k: int
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return (scores, indices) each (q, k); indices are global row ids."""
+        if queries.dtype != torch.float32:
+            queries = queries.float()
+        if queries.dim() == 1:
+            queries = queries.unsqueeze(0)
+
+        q_centered = queries - self.centroid
+        q_rot = q_centered @ self.rotation
+        q_dot_centroid = queries @ self.centroid
+
+        per_shard_scores: list[torch.Tensor] = []
+        per_shard_indices: list[torch.Tensor] = []
+        for shard in self.shards:
+            dev = shard["device"]
+            qd_fp16 = q_rot.to(dev, non_blocking=True).to(torch.float16)
+            codes_fp16 = shard["codes"].to(torch.float16)
+
+            raw = (qd_fp16 @ codes_fp16.T).float()
+            scale = shard["norms"] / (self.sqrt_d * shard["dots"])
+            est = raw * scale + q_dot_centroid.to(dev).unsqueeze(1)
+
+            local_k = min(k, est.shape[1])
+            top_scores, top_local_idx = est.topk(local_k, dim=1)
+            per_shard_scores.append(top_scores.cpu())
+            per_shard_indices.append((top_local_idx + shard["offset"]).cpu())
+
+        all_scores = torch.cat(per_shard_scores, dim=1)
+        all_indices = torch.cat(per_shard_indices, dim=1)
+        final_scores, sel = all_scores.topk(k, dim=1)
+        final_indices = all_indices.gather(1, sel)
+        return final_scores, final_indices
+
+
 # Global variable to hold the model instance per worker process
 _worker_encoder = None
 
@@ -109,6 +295,7 @@ class DenseIndex(BaseIndex):
         self.cfg = cfg
         self.use_ann: bool = cfg.model.use_ann
         self.exact_search: bool = cfg.model.exact_search
+        self.use_rabitq: bool = cfg.model.use_rabitq
         self.model_cfg = cfg.model
 
         if not self.no_search:
@@ -134,6 +321,13 @@ class DenseIndex(BaseIndex):
                 num_threads=0,
                 initial_search_complexity=128,
             )
+            self.all_embeddings = None
+        elif self.use_rabitq:
+            rabitq_dir = index_path / "rabitq"
+            if not rabitq_dir.exists():
+                print("RaBitQ index not found, building from embeddings.fbin...")
+                _build_rabitq_index(index_path / "embeddings.fbin", rabitq_dir)
+            self.rabitq_index = RaBitQIndex.load(rabitq_dir)
             self.all_embeddings = None
         else:
             mmap = _load_fbin_mmap(index_path / "embeddings.fbin")
@@ -271,6 +465,10 @@ class DenseIndex(BaseIndex):
             f"Built: {offset:,} vectors, {len(final_rows)} accessions -> {index_path}"
         )
 
+        if self.use_rabitq:
+            print("Building RaBitQ quantized index...")
+            _build_rabitq_index(index_path / "embeddings.fbin", index_path / "rabitq")
+
     @torch.no_grad()
     def search(self, queries: pl.DataFrame) -> pl.DataFrame:
         # Unified replacement for search/search_short/search_long.
@@ -308,6 +506,30 @@ class DenseIndex(BaseIndex):
             flat_ids = identifiers.ravel()
             flat_dists = distances.ravel()
             chunk_idx_flat = np.repeat(np.arange(n_chunks), 10)
+
+            acc_offsets_arr = np.array(self.acc_offsets)
+            acc_idx_flat = np.searchsorted(acc_offsets_arr, flat_ids, side="right") - 1
+            query_idx_flat = chunk_to_query_np[chunk_idx_flat]
+
+            scores_cpu = -2 * np.ones((n_queries, n_acc), dtype=np.float32)
+            np.maximum.at(scores_cpu, (query_idx_flat, acc_idx_flat), flat_dists)
+        elif self.use_rabitq:
+            n_chunks = len(query_chunks)
+            n_queries = len(queries)
+            n_acc = len(self.acc_names_flat)
+            top_k = 10
+
+            chunk_to_query_np = np.zeros(n_chunks, dtype=np.int64)
+            for qi, (s, e) in enumerate(query_indices):
+                chunk_to_query_np[s:e] = qi
+
+            scores_tensor, ids_tensor = self.rabitq_index.search(
+                query_chunk_features.cpu(), top_k
+            )
+
+            flat_ids = ids_tensor.numpy().ravel()
+            flat_dists = scores_tensor.numpy().ravel()
+            chunk_idx_flat = np.repeat(np.arange(n_chunks), top_k)
 
             acc_offsets_arr = np.array(self.acc_offsets)
             acc_idx_flat = np.searchsorted(acc_offsets_arr, flat_ids, side="right") - 1
@@ -434,9 +656,17 @@ class DenseIndex(BaseIndex):
         print(f"Index already written to {output_path} during build.")
 
     def index_size_gb(self, index_path: Path):
-        meta_gb = (index_path / "meta.parquet").stat().st_size / (1024**3)
-        embeds_gb = (index_path / "embeddings.fbin").stat().st_size / (1024**3)
-        return meta_gb + embeds_gb
+        total = 0
+        if self.use_rabitq:
+            rabitq_dir = index_path / "rabitq"
+            assert rabitq_dir.exists()
+            total += sum(f.stat().st_size for f in rabitq_dir.iterdir()) / (1024**3)
+        else:
+            meta_gb = (index_path / "meta.parquet").stat().st_size / (1024**3)
+            embeds_gb = (index_path / "embeddings.fbin").stat().st_size / (1024**3)
+            total = meta_gb + embeds_gb
+
+        return total
 
     def construct_ann_index(self, index_path: Path):
         print("Constructing diskANN index")
@@ -460,7 +690,7 @@ class DenseIndex(BaseIndex):
         )
 
     @staticmethod
-    def merge_shards(index_path: Path, num_nodes: int):
+    def merge_shards(index_path: Path, num_nodes: int, use_rabitq: bool = False):
         """Stream per-node shard embeddings into a single memmap file — no full load into RAM."""
         all_meta = []
         total_vectors = 0
@@ -500,6 +730,10 @@ class DenseIndex(BaseIndex):
 
         pl.concat(all_meta).write_parquet(index_path / "meta.parquet")
         print(f"Merged {num_nodes} shards -> {total_vectors} vectors")
+
+        if use_rabitq:
+            print("Building RaBitQ quantized index from merged embeddings...")
+            _build_rabitq_index(index_path / "embeddings.fbin", index_path / "rabitq")
 
 
 def chunk_sequence(
