@@ -99,7 +99,7 @@ def plot_r_precision_vs_noise_line(
     title_names = {
         "mmseqs": "MMseqs2",
         "llmed": "LLM-ED",
-        "rawbert": "RawBERT",
+        "rawbert": "LOCALE",
         "metagraph": "MetaGraph",
         "dna2vec": "ESA",
     }
@@ -171,8 +171,8 @@ def plot_r_precision_vs_noise_line(
         print("=========== R PRECISION DATA =============")
         pl.Config.set_tbl_rows(len(r_precision_df))
         print(
-            r_precision_df.sort("model", "mutation_rate").select(
-                ["model", "mutation_rate", "average_recall"]
+            r_precision_df.sort("model", "mutation_rate", "checkpoint").select(
+                ["model", "mutation_rate", "average_recall", "checkpoint"]
             )
         )
 
@@ -180,10 +180,10 @@ def plot_r_precision_vs_noise_line(
         query_type = name[0]
 
         model_order = [
-            "RawBERT",
             "MMseqs2",
-            "ESA",
+            "LOCALE",
             "LLM-ED",
+            "ESA",
             "MetaGraph",
         ]
         models = [m for m in model_order if m in data["model"].to_list()]
@@ -230,7 +230,7 @@ def plot_recall_at_k_vs_noise_line(
     title_names = {
         "mmseqs": "MMseqs2",
         "llmed": "LLM-ED",
-        "rawbert": "RawBERT",
+        "rawbert": "LOCALE",
         "metagraph": "MetaGraph",
         "dna2vec": "ESA",
     }
@@ -312,7 +312,7 @@ def plot_recall_at_k_vs_noise_line(
 
         model_order = [
             "MMseqs2",
-            "RawBERT",
+            "LOCALE",
             "LLM-ED",
             "ESA",
             "MetaGraph",
@@ -359,7 +359,7 @@ def plot_recall_at_k_vs_k_line(
     title_names = {
         "mmseqs": "MMseqs2",
         "llmed": "LLM-ED",
-        "rawbert": "RawBERT",
+        "rawbert": "LOCALE",
         "metagraph": "MetaGraph",
         "dna2vec": "ESA",
     }
@@ -431,7 +431,7 @@ def plot_recall_at_k_vs_k_line(
 
         model_order = [
             "MMseqs2",
-            "RawBERT",
+            "LOCALE",
             "LLM-ED",
             "ESA",
             "MetaGraph",
@@ -535,7 +535,7 @@ def print_auprc(
     auprc_df = pl.from_dicts(auprc_rows)
     pl.Config.set_tbl_rows(len(auprc_df))
     print("=========== AUPRC DATA =============")
-    print(auprc_df.sort("model", "mutation_rate"))
+    print(auprc_df.sort("model", "mutation_rate", "checkpoint"))
 
 
 def print_systems_data(data: pl.DataFrame):
