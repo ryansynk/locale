@@ -187,18 +187,25 @@ def plot_r_precision_vs_noise_line(
     if print_data:
         print("=========== R PRECISION DATA =============")
         pl.Config.set_tbl_rows(len(r_precision_df))
+        order = [
+            "LOCALE",
+            "MMseqs2",
+            "MetaGraph",
+            "LLM-ED",
+            "ESA",
+        ]
         print(
-            r_precision_df.sort("model", "mutation_rate", "checkpoint").select(
-                ["model", "mutation_rate", "range"]
-            )
+            r_precision_df.with_columns(pl.col("model").cast(pl.Enum(order)))
+            .sort("mutation_rate", "model")
+            .select(["model", "mutation_rate", "checkpoint", "range"])
         )
 
     for name, data in r_precision_df.group_by("query_type"):
         query_type = name[0]
 
         model_order = [
-            "MMseqs2",
             "LOCALE",
+            "MMseqs2",
             "LLM-ED",
             "ESA",
             "MetaGraph",
@@ -207,7 +214,7 @@ def plot_r_precision_vs_noise_line(
         models += [
             m for m in data["model"].unique().sort().to_list() if m not in model_order
         ]
-        linestyles = ["--", "-", "-.", ":", (0, (3, 1, 1, 1))]
+        linestyles = ["-", "--", "-.", ":", (0, (3, 1, 1, 1))]
         viridis = plt.colormaps["viridis"]
         model_colors = {
             m: viridis(i / max(len(models) - 1, 1)) for i, m in enumerate(models)
@@ -219,21 +226,28 @@ def plot_r_precision_vs_noise_line(
         fig, ax = plt.subplots(figsize=(8, 6))
         for model in models:
             mdf = data.filter(pl.col("model") == model).sort("mutation_rate")
+            x = mdf["mutation_rate"].to_list()
+            y = mdf["average_recall"].to_numpy()
+            margin = mdf["margin"].to_numpy()
+            color = model_colors[model]
             ax.plot(
-                mdf["mutation_rate"].to_list(),
-                mdf["average_recall"].to_list(),
+                x,
+                y,
                 marker="o",
                 label=model,
-                color=model_colors[model],
+                color=color,
                 linestyle=model_linestyles[model],
+                linewidth=3.5,
+                markersize=12,
             )
+            ax.fill_between(x, y - margin, y + margin, alpha=0.2, color=color)
         ax.set_xlim(0, 10)
-        ax.set_ylim(0.0, 1.0)
-        ax.set_xlabel("Mutation Rate \%", fontsize=25)
-        ax.set_ylabel("Average Recall@$R_q$", fontsize=25)
-        ax.tick_params(labelsize=20)
+        ax.set_ylim(0.0, 0.85)
+        ax.set_xlabel("Mutation Rate \%", fontsize=30)
+        ax.set_ylabel("Average Recall@$R_q$", fontsize=30)
+        ax.tick_params(labelsize=22)
         ax.grid(True)
-        ax.legend(fontsize=18, title_fontsize=20)
+        ax.legend(fontsize=20, loc="lower left")
         plt.tight_layout()
         fig.savefig(plots_dir / f"{query_type}_recall_at_Rq_vs_mut_rate_curve.pdf")
         plt.close(fig)
@@ -338,18 +352,25 @@ def plot_recall_at_k_vs_noise_line(
     if print_data:
         pl.Config.set_tbl_rows(len(recall_at_k_df))
         print(f"=========== RECALL AT {k} DATA =============")
+        order = [
+            "LOCALE",
+            "MMseqs2",
+            "MetaGraph",
+            "LLM-ED",
+            "ESA",
+        ]
         print(
-            recall_at_k_df.sort("model", "mutation_rate").select(
-                ["model", "mutation_rate", "k", "range"]
-            )
+            recall_at_k_df.with_columns(pl.col("model").cast(pl.Enum(order)))
+            .sort("mutation_rate", "model")
+            .select(["model", "mutation_rate", "k", "range"])
         )
 
     for name, data in recall_at_k_df.group_by("query_type"):
         query_type = name[0]
 
         model_order = [
-            "MMseqs2",
             "LOCALE",
+            "MMseqs2",
             "LLM-ED",
             "ESA",
             "MetaGraph",
@@ -358,7 +379,7 @@ def plot_recall_at_k_vs_noise_line(
         models += [
             m for m in data["model"].unique().sort().to_list() if m not in model_order
         ]
-        linestyles = ["--", "-", "-.", ":", (0, (3, 1, 1, 1))]
+        linestyles = ["-", "--", "-.", ":", (0, (3, 1, 1, 1))]
         viridis = plt.colormaps["viridis"]
         model_colors = {
             m: viridis(i / max(len(models) - 1, 1)) for i, m in enumerate(models)
@@ -370,21 +391,28 @@ def plot_recall_at_k_vs_noise_line(
         fig, ax = plt.subplots(figsize=(8, 6))
         for model in models:
             mdf = data.filter(pl.col("model") == model).sort("mutation_rate")
+            x = mdf["mutation_rate"].to_list()
+            y = mdf["average_recall"].to_numpy()
+            margin = mdf["margin"].to_numpy()
+            color = model_colors[model]
             ax.plot(
-                mdf["mutation_rate"].to_list(),
-                mdf["average_recall"].to_list(),
+                x,
+                y,
                 marker="o",
                 label=model,
-                color=model_colors[model],
+                color=color,
                 linestyle=model_linestyles[model],
+                linewidth=3.5,
+                markersize=12,
             )
+            ax.fill_between(x, y - margin, y + margin, alpha=0.2, color=color)
         ax.set_xlim(0, 10)
         ax.set_ylim(0.0, 1.0)
-        ax.set_xlabel("Mutation Rate \%", fontsize=25)
-        ax.set_ylabel(f"Average Recall@{k} ", fontsize=25)
-        ax.tick_params(labelsize=20)
+        ax.set_xlabel("Mutation Rate \%", fontsize=30)
+        ax.set_ylabel(f"Average Recall@{k} ", fontsize=30)
+        ax.tick_params(labelsize=22)
         ax.grid(True)
-        ax.legend(fontsize=18, title_fontsize=20)
+        ax.legend(fontsize=20)
         plt.tight_layout()
         fig.savefig(plots_dir / f"{query_type}_recall_at_{k}_vs_mut_rate_curve.pdf")
         plt.close(fig)
@@ -487,8 +515,8 @@ def plot_recall_at_k_vs_k_line(
         query_type = name[0]
 
         model_order = [
-            "MMseqs2",
             "LOCALE",
+            "MMseqs2",
             "LLM-ED",
             "ESA",
             "MetaGraph",
@@ -497,7 +525,7 @@ def plot_recall_at_k_vs_k_line(
         models += [
             m for m in data["model"].unique().sort().to_list() if m not in model_order
         ]
-        linestyles = ["--", "-", "-.", ":", (0, (3, 1, 1, 1))]
+        linestyles = ["-", "--", "-.", ":", (0, (3, 1, 1, 1))]
         viridis = plt.colormaps["viridis"]
         model_colors = {
             m: viridis(i / max(len(models) - 1, 1)) for i, m in enumerate(models)
@@ -509,21 +537,28 @@ def plot_recall_at_k_vs_k_line(
         fig, ax = plt.subplots(figsize=(8, 6))
         for model in models:
             mdf = data.filter(pl.col("model") == model).sort("k")
+            x = mdf["k"].to_list()
+            y = mdf["average_recall"].to_numpy()
+            margin = mdf["margin"].to_numpy()
+            color = model_colors[model]
             ax.plot(
-                mdf["k"].to_list(),
-                mdf["average_recall"].to_list(),
+                x,
+                y,
                 marker="o",
                 label=model,
-                color=model_colors[model],
+                color=color,
                 linestyle=model_linestyles[model],
+                linewidth=3,
+                markersize=6,
             )
+            ax.fill_between(x, y - margin, y + margin, alpha=0.2, color=color)
         ax.set_xlim(0, 49)
         ax.set_ylim(0.0, 1.0)
-        ax.set_xlabel("$k$", fontsize=25)
-        ax.set_ylabel("Average Recall@$k$", fontsize=25)
-        ax.tick_params(labelsize=20)
+        ax.set_xlabel("$k$", fontsize=30)
+        ax.set_ylabel("Average Recall@$k$", fontsize=30)
+        ax.tick_params(labelsize=22)
         ax.grid(True)
-        ax.legend(fontsize=18, title_fontsize=20)
+        ax.legend(fontsize=20)
         plt.tight_layout()
         fig.savefig(
             plots_dir
@@ -613,17 +648,6 @@ def plot_r_precision_vs_time(
         recall_margin = 1.96 * recall_std_err
 
         time_mean_estimate = np.mean(df["avg_time"].to_list())
-        time_bootstrap_means: list[float] = []
-        for _ in range(bootstrap_samples):
-            resample = np.random.choice(
-                df["avg_time"],
-                size=len(df["avg_time"].to_list()),
-                replace=True,
-            )
-            time_bootstrap_means.append(np.mean(resample))
-
-        time_std_err = np.std(time_bootstrap_means)
-        time_margin = 1.96 * time_std_err
 
         r_precision_rows.append(
             {
@@ -637,7 +661,6 @@ def plot_r_precision_vs_time(
                 "average_recall": recall_mean_estimate,
                 "average_recall_margin": recall_margin,
                 "avg_time": time_mean_estimate,
-                "time_margin": time_margin,
             }
         )
 
@@ -648,8 +671,8 @@ def plot_r_precision_vs_time(
         query_type = name[0]
 
         model_order = [
-            "MMseqs2",
             "LOCALE",
+            "MMseqs2",
             "LLM-ED",
             "ESA",
             "MetaGraph",
@@ -671,11 +694,15 @@ def plot_r_precision_vs_time(
         fig, ax = plt.subplots(figsize=(8, 6))
         for model in models:
             mdf = data.filter(pl.col("model") == model)
-            ax.scatter(
+            ax.errorbar(
                 mdf["avg_time"].to_list(),
                 mdf["average_recall"].to_list(),
+                yerr=mdf["average_recall_margin"].to_list(),
+                fmt="o",
                 label=model,
                 color=model_colors[model],
+                capsize=5,
+                markersize=15,
             )
         ax.set_xscale("log")
         ax.set_xlabel("Query Time (s, Log Scale)", fontsize=25)
