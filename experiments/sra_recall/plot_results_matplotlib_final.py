@@ -190,9 +190,13 @@ def plot_r_precision_vs_noise_line(
         models += [
             m for m in data["model"].unique().sort().to_list() if m not in model_order
         ]
+        linestyles = ["--", "-", "-.", ":", (0, (3, 1, 1, 1))]
         viridis = plt.colormaps["viridis"]
         model_colors = {
             m: viridis(i / max(len(models) - 1, 1)) for i, m in enumerate(models)
+        }
+        model_linestyles = {
+            m: linestyles[i % len(linestyles)] for i, m in enumerate(models)
         }
 
         fig, ax = plt.subplots(figsize=(8, 6))
@@ -204,6 +208,7 @@ def plot_r_precision_vs_noise_line(
                 marker="o",
                 label=model,
                 color=model_colors[model],
+                linestyle=model_linestyles[model],
             )
         ax.set_xlim(0, 10)
         ax.set_ylim(0.0, 1.0)
@@ -321,9 +326,13 @@ def plot_recall_at_k_vs_noise_line(
         models += [
             m for m in data["model"].unique().sort().to_list() if m not in model_order
         ]
+        linestyles = ["--", "-", "-.", ":", (0, (3, 1, 1, 1))]
         viridis = plt.colormaps["viridis"]
         model_colors = {
             m: viridis(i / max(len(models) - 1, 1)) for i, m in enumerate(models)
+        }
+        model_linestyles = {
+            m: linestyles[i % len(linestyles)] for i, m in enumerate(models)
         }
 
         fig, ax = plt.subplots(figsize=(8, 6))
@@ -335,6 +344,7 @@ def plot_recall_at_k_vs_noise_line(
                 marker="o",
                 label=model,
                 color=model_colors[model],
+                linestyle=model_linestyles[model],
             )
         ax.set_xlim(0, 10)
         ax.set_ylim(0.0, 1.0)
@@ -440,9 +450,13 @@ def plot_recall_at_k_vs_k_line(
         models += [
             m for m in data["model"].unique().sort().to_list() if m not in model_order
         ]
+        linestyles = ["--", "-", "-.", ":", (0, (3, 1, 1, 1))]
         viridis = plt.colormaps["viridis"]
         model_colors = {
             m: viridis(i / max(len(models) - 1, 1)) for i, m in enumerate(models)
+        }
+        model_linestyles = {
+            m: linestyles[i % len(linestyles)] for i, m in enumerate(models)
         }
 
         fig, ax = plt.subplots(figsize=(8, 6))
@@ -454,6 +468,7 @@ def plot_recall_at_k_vs_k_line(
                 marker="o",
                 label=model,
                 color=model_colors[model],
+                linestyle=model_linestyles[model],
             )
         ax.set_xlim(0, 49)
         ax.set_ylim(0.0, 1.0)
@@ -466,6 +481,135 @@ def plot_recall_at_k_vs_k_line(
         fig.savefig(
             plots_dir
             / f"{query_type}_recall_at_k_vs_k_curve_mutation_rate_{mutation_rate}.pdf"
+        )
+        plt.close(fig)
+
+
+def plot_r_precision_vs_time(
+    data: pl.DataFrame,
+    ground_truth: pl.DataFrame,
+    accessions: list[str],
+    plots_dir: Path,
+    mutation_rate: float = 10.0,
+):
+    data = data.filter(~pl.col("model").is_in(["random", "oracle"]))
+    data = data.with_columns(pl.col("model").str.split("_").list.get(0))
+    title_names = {
+        "mmseqs": "MMseqs2",
+        "llmed": "LLM-ED",
+        "rawbert": "LOCALE",
+        "metagraph": "MetaGraph",
+        "dna2vec": "ESA",
+    }
+    data = data.with_columns(pl.col("model").replace(title_names))
+    data = data.with_columns(pl.col("mutation_rate") * 100)
+
+    accession_order = sorted(accessions)  # canonical, stable ordering
+    acc_to_idx = {acc: i for i, acc in enumerate(accession_order)}
+    n_acc = len(accession_order)
+
+    DEFAULT_SCORE = -2.0
+    r_precision_rows = []
+    for name, df in data.group_by(
+        [
+            "model",
+            "checkpoint",
+            "max_len",
+            "checkpoint_step_num",
+            "chunk_type",
+            "mutation_rate",
+            "query_type",
+        ]
+    ):
+        joined_true_pred = (
+            ground_truth.filter(pl.col("mutation_rate") == 0.0)
+            .select(["query_id", "results"])
+            .rename({"results": "true_results"})
+            .join(
+                df.select(["query_id", "results"]).rename({"results": "pred_results"}),
+                on="query_id",
+            )
+        )
+
+        r_precision_per_query_array = []
+        for row in joined_true_pred.iter_rows(named=True):
+            # Build score vector with defaults
+            y_score = np.full(n_acc, DEFAULT_SCORE)
+            for p in row["pred_results"]:
+                if p["accession"] in acc_to_idx:
+                    y_score[acc_to_idx[p["accession"]]] = p["score"]
+
+            # Build truth vector
+            y_true = np.zeros(n_acc, dtype=int)
+            for t in row["true_results"]:
+                if t["accession"] in acc_to_idx:
+                    y_true[acc_to_idx[t["accession"]]] = 1
+
+            if y_true.sum() > 0:
+                r_precision_per_query_array.append(
+                    r_precision_per_query(y_true, y_score)
+                )
+
+        r_precision_rows.append(
+            {
+                "model": name[0],
+                "checkpoint": name[1],
+                "max_len": name[2],
+                "checkpoint_step_num": name[3],
+                "chunk_type": name[4],
+                "mutation_rate": name[5],
+                "query_type": name[6],
+                "average_recall": np.mean(r_precision_per_query_array),
+                "avg_time": df.select(pl.col("avg_time").mean()).item(),
+            }
+        )
+
+    r_precision_df = pl.from_dicts(r_precision_rows)
+    r_precision_df = r_precision_df.filter(pl.col("mutation_rate") == mutation_rate)
+
+    for name, data in r_precision_df.group_by("query_type"):
+        query_type = name[0]
+
+        model_order = [
+            "MMseqs2",
+            "LOCALE",
+            "LLM-ED",
+            "ESA",
+            "MetaGraph",
+        ]
+        models = [m for m in model_order if m in data["model"].to_list()]
+        models += [
+            m for m in data["model"].unique().sort().to_list() if m not in model_order
+        ]
+        # linestyles = ["--", "-", "-.", ":", (0, (3, 1, 1, 1))]
+        viridis = plt.colormaps["viridis"]
+        model_colors = {
+            m: viridis(i / max(len(models) - 1, 1)) for i, m in enumerate(models)
+        }
+
+        models = data["model"].unique().sort().to_list()
+        cmap = plt.colormaps["tab10"]
+        model_colors = {m: cmap(i) for i, m in enumerate(models)}
+
+        fig, ax = plt.subplots(figsize=(8, 6))
+        for model in models:
+            mdf = data.filter(pl.col("model") == model)
+            ax.scatter(
+                mdf["avg_time"].to_list(),
+                mdf["average_recall"].to_list(),
+                label=model,
+                color=model_colors[model],
+            )
+        ax.set_xscale("log")
+        ax.set_xlabel("Query Time (s, Log Scale)", fontsize=25)
+        ax.set_ylabel("Average Recall@$R_q$", fontsize=25)
+        ax.tick_params(labelsize=20)
+        ax.grid(True)
+        ax.legend(fontsize=18, title_fontsize=20, loc="lower right")
+        plt.tight_layout()
+        fig.savefig(
+            plots_dir
+            / f"{query_type}_recall_at_Rq_vs_time_scatterplot_mutation_rate_{mutation_rate}.pdf"
         )
         plt.close(fig)
 
@@ -603,6 +747,7 @@ def main(
     plot_r_precision_vs_noise_line(data, raw_read_oracle_data, accs, plots_dir)
     plot_recall_at_k_vs_noise_line(data, raw_read_oracle_data, accs, k, plots_dir)
     plot_recall_at_k_vs_k_line(data, raw_read_oracle_data, accs, plots_dir)
+    plot_r_precision_vs_time(data, raw_read_oracle_data, accs, plots_dir)
     print_auprc(data, raw_read_oracle_data, accs)
     print_systems_data(data)
 
