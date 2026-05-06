@@ -612,12 +612,12 @@ def plot_r_precision_vs_time(
         recall_std_err = np.std(recall_bootstrap_means)
         recall_margin = 1.96 * recall_std_err
 
-        time_mean_estimate = np.mean(df["avg_time"])
+        time_mean_estimate = np.mean(df["avg_time"].to_list())
         time_bootstrap_means: list[float] = []
         for _ in range(bootstrap_samples):
             resample = np.random.choice(
                 df["avg_time"],
-                size=len(df["avg_time"]),
+                size=len(df["avg_time"].to_list()),
                 replace=True,
             )
             time_bootstrap_means.append(np.mean(resample))
