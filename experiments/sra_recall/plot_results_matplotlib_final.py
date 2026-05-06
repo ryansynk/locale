@@ -92,6 +92,7 @@ def plot_r_precision_vs_noise_line(
     ground_truth: pl.DataFrame,
     accessions: list[str],
     plots_dir: Path,
+    bootstrap_samples: int,
     print_data: bool = True,
 ):
     data = data.filter(~pl.col("model").is_in(["random", "oracle"]))
@@ -152,6 +153,20 @@ def plot_r_precision_vs_noise_line(
                     r_precision_per_query(y_true, y_score)
                 )
 
+        mean_estimate = np.mean(r_precision_per_query_array)
+
+        bootstrap_means: list[float] = []
+        for _ in range(bootstrap_samples):
+            resample = np.random.choice(
+                r_precision_per_query_array,
+                size=len(r_precision_per_query_array),
+                replace=True,
+            )
+            bootstrap_means.append(np.mean(resample))
+
+        std_err = np.std(bootstrap_means)
+        margin = 1.96 * std_err
+
         r_precision_rows.append(
             {
                 "model": name[0],
@@ -161,7 +176,9 @@ def plot_r_precision_vs_noise_line(
                 "chunk_type": name[4],
                 "mutation_rate": name[5],
                 "query_type": name[6],
-                "average_recall": np.mean(r_precision_per_query_array),
+                "average_recall": mean_estimate,
+                "margin": margin,
+                "range": f"{mean_estimate:.3f} +- {margin:.3f}",
             }
         )
 
@@ -172,7 +189,7 @@ def plot_r_precision_vs_noise_line(
         pl.Config.set_tbl_rows(len(r_precision_df))
         print(
             r_precision_df.sort("model", "mutation_rate", "checkpoint").select(
-                ["model", "mutation_rate", "average_recall", "checkpoint"]
+                ["model", "mutation_rate", "range"]
             )
         )
 
@@ -228,6 +245,7 @@ def plot_recall_at_k_vs_noise_line(
     accessions: list[str],
     k: int,
     plots_dir: Path,
+    bootstrap_samples: int,
     print_data: bool = True,
 ):
     data = data.filter(~pl.col("model").is_in(["random", "oracle"]))
@@ -287,6 +305,18 @@ def plot_recall_at_k_vs_noise_line(
             if y_true.sum() > 0:
                 recalls_at_k.append(recall_at_k_per_query(y_true, y_score, k))
 
+        mean_estimate = np.mean(recalls_at_k)
+
+        bootstrap_means: list[float] = []
+        for _ in range(bootstrap_samples):
+            resample = np.random.choice(
+                recalls_at_k, size=len(recalls_at_k), replace=True
+            )
+            bootstrap_means.append(np.mean(resample))
+
+        std_err = np.std(bootstrap_means)
+        margin = 1.96 * std_err
+
         recall_at_k_rows.append(
             {
                 "model": name[0],
@@ -296,8 +326,10 @@ def plot_recall_at_k_vs_noise_line(
                 "chunk_type": name[4],
                 "mutation_rate": name[5],
                 "query_type": name[6],
-                "average_recall": np.mean(recalls_at_k),
+                "average_recall": mean_estimate,
                 "k": k,
+                "margin": margin,
+                "range": f"{mean_estimate:.3f} +- {margin:.3f}",
             }
         )
 
@@ -308,7 +340,7 @@ def plot_recall_at_k_vs_noise_line(
         print(f"=========== RECALL AT {k} DATA =============")
         print(
             recall_at_k_df.sort("model", "mutation_rate").select(
-                ["model", "mutation_rate", "average_recall", "k"]
+                ["model", "mutation_rate", "k", "range"]
             )
         )
 
@@ -363,6 +395,7 @@ def plot_recall_at_k_vs_k_line(
     ground_truth: pl.DataFrame,
     accessions: list[str],
     plots_dir: Path,
+    bootstrap_samples: int,
     mutation_rate: float = 10,
 ):
     data = data.with_columns(pl.col("model").str.split("_").list.get(0))
@@ -421,6 +454,18 @@ def plot_recall_at_k_vs_k_line(
                 if y_true.sum() > 0:
                     recalls_at_k.append(recall_at_k_per_query(y_true, y_score, k))
 
+            mean_estimate = np.mean(recalls_at_k)
+
+            bootstrap_means: list[float] = []
+            for _ in range(bootstrap_samples):
+                resample = np.random.choice(
+                    recalls_at_k, size=len(recalls_at_k), replace=True
+                )
+                bootstrap_means.append(np.mean(resample))
+
+            std_err = np.std(bootstrap_means)
+            margin = 1.96 * std_err
+
             recall_at_k_rows.append(
                 {
                     "model": name[0],
@@ -428,9 +473,11 @@ def plot_recall_at_k_vs_k_line(
                     "max_len": name[2],
                     "checkpoint_step_num": name[3],
                     "chunk_type": name[4],
+                    "mutation_rate": mutation_rate,
                     "query_type": name[5],
-                    "average_recall": np.mean(recalls_at_k),
+                    "average_recall": mean_estimate,
                     "k": k,
+                    "margin": margin,
                 }
             )
 
@@ -490,6 +537,7 @@ def plot_r_precision_vs_time(
     ground_truth: pl.DataFrame,
     accessions: list[str],
     plots_dir: Path,
+    bootstrap_samples: int,
     mutation_rate: float = 10.0,
 ):
     data = data.filter(~pl.col("model").is_in(["random", "oracle"]))
@@ -550,6 +598,33 @@ def plot_r_precision_vs_time(
                     r_precision_per_query(y_true, y_score)
                 )
 
+        recall_mean_estimate = np.mean(r_precision_per_query_array)
+
+        recall_bootstrap_means: list[float] = []
+        for _ in range(bootstrap_samples):
+            resample = np.random.choice(
+                r_precision_per_query_array,
+                size=len(r_precision_per_query_array),
+                replace=True,
+            )
+            recall_bootstrap_means.append(np.mean(resample))
+
+        recall_std_err = np.std(recall_bootstrap_means)
+        recall_margin = 1.96 * recall_std_err
+
+        time_mean_estimate = np.mean(df["avg_time"])
+        time_bootstrap_means: list[float] = []
+        for _ in range(bootstrap_samples):
+            resample = np.random.choice(
+                df["avg_time"],
+                size=len(df["avg_time"]),
+                replace=True,
+            )
+            time_bootstrap_means.append(np.mean(resample))
+
+        time_std_err = np.std(time_bootstrap_means)
+        time_margin = 1.96 * time_std_err
+
         r_precision_rows.append(
             {
                 "model": name[0],
@@ -559,8 +634,10 @@ def plot_r_precision_vs_time(
                 "chunk_type": name[4],
                 "mutation_rate": name[5],
                 "query_type": name[6],
-                "average_recall": np.mean(r_precision_per_query_array),
-                "avg_time": df.select(pl.col("avg_time").mean()).item(),
+                "average_recall": recall_mean_estimate,
+                "average_recall_margin": recall_margin,
+                "avg_time": time_mean_estimate,
+                "time_margin": time_margin,
             }
         )
 
@@ -618,6 +695,7 @@ def print_auprc(
     data: pl.DataFrame,
     ground_truth: pl.DataFrame,
     accessions: list[str],
+    bootstrap_samples: int,
 ):
     accession_order = sorted(accessions)  # canonical, stable ordering
     acc_to_idx = {acc: i for i, acc in enumerate(accession_order)}
@@ -663,6 +741,18 @@ def print_auprc(
             if y_true.sum() > 0:
                 ap_per_query.append(average_precision_score(y_true, y_score))
 
+        mean_estimate = np.mean(ap_per_query)
+
+        bootstrap_means: list[float] = []
+        for _ in range(bootstrap_samples):
+            resample = np.random.choice(
+                ap_per_query, size=len(ap_per_query), replace=True
+            )
+            bootstrap_means.append(np.mean(resample))
+
+        std_err = np.std(bootstrap_means)
+        margin = 1.96 * std_err
+
         auprc_rows.append(
             {
                 "model": name[0],
@@ -672,14 +762,19 @@ def print_auprc(
                 "chunk_type": name[4],
                 "mutation_rate": name[5],
                 "query_type": name[6],
-                "auprc": np.mean(ap_per_query),
+                "auprc": mean_estimate,
+                "range": f"{mean_estimate:.3f} +- {margin:.3f}",
             }
         )
 
     auprc_df = pl.from_dicts(auprc_rows)
     pl.Config.set_tbl_rows(len(auprc_df))
     print("=========== AUPRC DATA =============")
-    print(auprc_df.sort("model", "mutation_rate", "checkpoint"))
+    print(
+        auprc_df.sort("model", "mutation_rate", "checkpoint").select(
+            ["model", "checkpoint", "mutation_rate", "range"]
+        )
+    )
 
 
 def print_systems_data(data: pl.DataFrame):
@@ -704,6 +799,7 @@ def main(
     accessions: Path_fr,
     plots_dir: str = "plots_matplotlib",
     k: int = 7,
+    bootstrap_samples: int = 10000,
 ):
     results_dir: Path = Path(results_dir)
     raw_read_queries_path: Path = Path(raw_read_queries_path)
@@ -744,11 +840,19 @@ def main(
     raw_read_oracle_data = raw_read_oracle_data.join(combos, how="cross")
     # breakpoint()
     # data = pl.concat([data, raw_read_oracle_data], how="diagonal")
-    plot_r_precision_vs_noise_line(data, raw_read_oracle_data, accs, plots_dir)
-    plot_recall_at_k_vs_noise_line(data, raw_read_oracle_data, accs, k, plots_dir)
-    plot_recall_at_k_vs_k_line(data, raw_read_oracle_data, accs, plots_dir)
-    plot_r_precision_vs_time(data, raw_read_oracle_data, accs, plots_dir)
-    print_auprc(data, raw_read_oracle_data, accs)
+    plot_r_precision_vs_noise_line(
+        data, raw_read_oracle_data, accs, plots_dir, bootstrap_samples
+    )
+    plot_recall_at_k_vs_noise_line(
+        data, raw_read_oracle_data, accs, k, plots_dir, bootstrap_samples
+    )
+    plot_recall_at_k_vs_k_line(
+        data, raw_read_oracle_data, accs, plots_dir, bootstrap_samples
+    )
+    plot_r_precision_vs_time(
+        data, raw_read_oracle_data, accs, plots_dir, bootstrap_samples
+    )
+    print_auprc(data, raw_read_oracle_data, accs, bootstrap_samples)
     print_systems_data(data)
 
 
