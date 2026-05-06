@@ -2,7 +2,8 @@
 
 ## Todos
 - Update dense_index search method to not fill with sentinel values
-
+- Change repo name/ everything name to locale
+- Move rabitq to faiss
 
 Embedding model for local alignment of DNA sequences. The goal is to convert sequence search over large sets of sequences (e.g. NIH Sequence Read Archive) into vector search — scalable and robust to noise compared to k-mer methods like Metagraph.
 

@@ -8,7 +8,12 @@ import random
 import sys
 import traceback
 from collections import defaultdict
-from concurrent.futures import ProcessPoolExecutor, process
+from concurrent.futures import (
+    ProcessPoolExecutor,
+    ThreadPoolExecutor,
+    as_completed,
+    process,
+)
 from itertools import islice
 from pathlib import Path
 from typing import Literal
@@ -75,8 +80,10 @@ def _build_rabitq_index(
 ) -> None:
     """Build a RaBitQ index from an existing .fbin file.
 
-    Writes packed 1-bit codes, per-vector norms/dots, centroid, and rotation
-    into rabitq_dir so it can be loaded by RaBitQIndex.load().
+    Pass 1 computes the centroid on CPU. Pass 2 rotates and quantizes chunks
+    in parallel across all available GPUs via ThreadPoolExecutor (CUDA ops
+    release the GIL). Output memmaps are pre-allocated so each worker writes
+    directly to its offset with no sequential bottleneck.
     """
     rabitq_dir.mkdir(parents=True, exist_ok=True)
 
@@ -90,9 +97,16 @@ def _build_rabitq_index(
     bytes_per_vec = d // 8
     sqrt_d = math.sqrt(d)
 
-    # Pass 1: streaming centroid
+    n_gpus = torch.cuda.device_count()
+    devices = [f"cuda:{i}" for i in range(n_gpus)] if n_gpus > 0 else ["cpu"]
+    print(f"Building RaBitQ index using {len(devices)} device(s)...")
+
+    # Pass 1: streaming centroid (CPU)
     centroid = np.zeros(d, dtype=np.float64)
-    for start in range(0, n, chunk_rows):
+    num_chunks = n // chunk_rows
+    for start in tqdm(
+        range(0, n, chunk_rows), total=num_chunks, desc="Streaming centroid..."
+    ):
         centroid += mmap[start : start + chunk_rows].sum(axis=0, dtype=np.float64)
     centroid = (centroid / n).astype(np.float32)
 
@@ -102,24 +116,55 @@ def _build_rabitq_index(
     q, r = np.linalg.qr(g)
     rotation = (q * np.sign(np.diag(r))).astype(np.float32)
 
-    # Pass 2: rotate, sign, pack; record per-vector scalars
-    with (
-        open(rabitq_dir / "codes.u8", "wb") as fc,
-        open(rabitq_dir / "norms.f32", "wb") as fn,
-        open(rabitq_dir / "dots.f32", "wb") as fd,
-    ):
-        for start in range(0, n, chunk_rows):
-            chunk = np.array(mmap[start : start + chunk_rows], dtype=np.float32)
-            xr = (chunk - centroid) @ rotation
-            norms = np.linalg.norm(xr, axis=1).astype(np.float32)
-            signs = np.where(xr >= 0, 1.0, -1.0).astype(np.float32)
-            dots = (xr * signs).sum(axis=1, dtype=np.float32) / sqrt_d
-            packed = np.packbits(
-                (signs > 0).astype(np.uint8), axis=-1, bitorder="little"
-            )
-            fc.write(packed.tobytes())
-            fn.write(norms.tobytes())
-            fd.write(dots.tobytes())
+    # Move centroid and rotation to each device once
+    centroid_per_dev = {dev: torch.from_numpy(centroid).to(dev) for dev in devices}
+    rotation_per_dev = {dev: torch.from_numpy(rotation).to(dev) for dev in devices}
+
+    # Pre-allocate output memmaps — random-access writes are safe across threads
+    # since each chunk writes to a non-overlapping offset range.
+    codes_mm = np.memmap(
+        rabitq_dir / "codes.u8", dtype=np.uint8, mode="w+", shape=(n, bytes_per_vec)
+    )
+    norms_mm = np.memmap(
+        rabitq_dir / "norms.f32", dtype=np.float32, mode="w+", shape=(n,)
+    )
+    dots_mm = np.memmap(
+        rabitq_dir / "dots.f32", dtype=np.float32, mode="w+", shape=(n,)
+    )
+
+    def _quantize_chunk(start: int, dev: str):
+        end = min(start + chunk_rows, n)
+        chunk = torch.from_numpy(np.array(mmap[start:end], dtype=np.float32)).to(dev)
+        xr = (chunk - centroid_per_dev[dev]) @ rotation_per_dev[dev]
+        chunk_norms = torch.linalg.norm(xr, dim=1).float().cpu().numpy()
+        signs = torch.where(xr >= 0, torch.ones_like(xr), -torch.ones_like(xr))
+        chunk_dots = (xr * signs).sum(dim=1).float().cpu().numpy() / sqrt_d
+        packed = np.packbits(
+            (signs > 0).to(torch.uint8).cpu().numpy(), axis=-1, bitorder="little"
+        )
+        return start, end, packed, chunk_norms, chunk_dots
+
+    # Pass 2: parallel quantization — distribute chunks round-robin across GPUs
+    chunk_starts = list(range(0, n, chunk_rows))
+    chunk_devs = [devices[i % len(devices)] for i in range(len(chunk_starts))]
+
+    with ThreadPoolExecutor(max_workers=len(devices)) as pool:
+        futures = {
+            pool.submit(_quantize_chunk, start, dev): start
+            for start, dev in zip(chunk_starts, chunk_devs)
+        }
+        for future in tqdm(
+            as_completed(futures), total=len(futures), desc="Quantizing chunks"
+        ):
+            start, end, packed, norms, dots = future.result()
+            codes_mm[start:end] = packed
+            norms_mm[start:end] = norms
+            dots_mm[start:end] = dots
+
+    codes_mm.flush()
+    norms_mm.flush()
+    dots_mm.flush()
+    del codes_mm, norms_mm, dots_mm
 
     np.save(rabitq_dir / "centroid.npy", centroid)
     np.save(rabitq_dir / "rotation.npy", rotation)
@@ -172,8 +217,13 @@ class RaBitQIndex:
             rabitq_dir / "dots.f32", dtype=np.float32, mode="r", shape=(n,)
         )
 
-        centroid = torch.from_numpy(np.load(rabitq_dir / "centroid.npy"))
-        rotation = torch.from_numpy(np.load(rabitq_dir / "rotation.npy"))
+        primary_dev = devices[0]
+        centroid = torch.from_numpy(np.load(rabitq_dir / "centroid.npy")).to(
+            primary_dev
+        )
+        rotation = torch.from_numpy(np.load(rabitq_dir / "rotation.npy")).to(
+            primary_dev
+        )
 
         shard_sizes = [n // len(devices)] * len(devices)
         for i in range(n % len(devices)):
@@ -213,15 +263,99 @@ class RaBitQIndex:
     def search(
         self, queries: torch.Tensor, k: int
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return (scores, indices) each (q, k); indices are global row ids."""
+        """Return (scores, indices) each (q, k); indices are global row ids.
+
+        queries may be on any device; centering and rotation run on the primary
+        device (where centroid/rotation live), then q_rot is scattered to each
+        shard's device for the matmul.
+        """
         if queries.dtype != torch.float32:
             queries = queries.float()
         if queries.dim() == 1:
             queries = queries.unsqueeze(0)
 
-        q_centered = queries - self.centroid
-        q_rot = q_centered @ self.rotation
-        q_dot_centroid = queries @ self.centroid
+        # Pre-rotate on the primary device (GPU if available, else CPU).
+        primary_dev = self.centroid.device
+        q = queries.to(primary_dev, non_blocking=True)
+        q_rot = (q - self.centroid) @ self.rotation  # (n_q, d) on primary_dev
+        q_dot_centroid = q @ self.centroid  # (n_q,)   on primary_dev
+
+        n_q = q.shape[0]
+        per_shard_scores: list[torch.Tensor] = []
+        per_shard_indices: list[torch.Tensor] = []
+        for shard in self.shards:
+            dev = shard["device"]
+            shard_size = shard["codes"].shape[0]
+            local_k = min(k, shard_size)
+
+            qd_fp16 = q_rot.to(dev, non_blocking=True).to(torch.float16)
+            qdot = q_dot_centroid.to(dev)
+
+            # Size sub-batches to stay within ~40% of free GPU memory, avoiding
+            # a full fp16 cast of the entire shard (2x the int8 footprint).
+            if dev != "cpu":
+                free_mem, _ = torch.cuda.mem_get_info(torch.device(dev))
+                sub_batch = max(1, int(free_mem * 0.4 / (self.d * 2 + n_q * 4)))
+            else:
+                sub_batch = shard_size
+
+            # Running top-k merged across sub-batches.
+            running_scores = torch.full((n_q, local_k), float("-inf"), device=dev)
+            running_indices = torch.zeros((n_q, local_k), dtype=torch.long, device=dev)
+
+            for sub_start in range(0, shard_size, sub_batch):
+                sub_end = min(sub_start + sub_batch, shard_size)
+
+                sub_codes = shard["codes"][sub_start:sub_end].to(torch.float16)
+                sub_raw = (qd_fp16 @ sub_codes.T).float()
+                del sub_codes
+
+                sub_scale = shard["norms"][sub_start:sub_end] / (
+                    self.sqrt_d * shard["dots"][sub_start:sub_end]
+                )
+                sub_est = sub_raw * sub_scale + qdot.unsqueeze(1)
+                del sub_raw
+
+                sub_local_k = min(local_k, sub_end - sub_start)
+                sub_scores, sub_local_idx = sub_est.topk(sub_local_k, dim=1)
+                del sub_est
+
+                combined_scores = torch.cat([running_scores, sub_scores], dim=1)
+                combined_indices = torch.cat(
+                    [running_indices, sub_local_idx + sub_start], dim=1
+                )
+                running_scores, sel = combined_scores.topk(local_k, dim=1)
+                running_indices = combined_indices.gather(1, sel)
+
+            per_shard_scores.append(running_scores.cpu())
+            per_shard_indices.append((running_indices + shard["offset"]).cpu())
+
+        all_scores = torch.cat(per_shard_scores, dim=1)
+        all_indices = torch.cat(per_shard_indices, dim=1)
+        final_scores, sel = all_scores.topk(k, dim=1)
+        final_indices = all_indices.gather(1, sel)
+        return final_scores, final_indices
+
+    @torch.no_grad()
+    def search_cpu(
+        self, queries: torch.Tensor, k: int
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return (scores, indices) each (q, k); indices are global row ids.
+
+        queries may be on any device; centering and rotation run on the primary
+        device (where centroid/rotation live), then q_rot is scattered to each
+        shard's device for the matmul.
+        """
+        if queries.dtype != torch.float32:
+            queries = queries.float()
+        if queries.dim() == 1:
+            queries = queries.unsqueeze(0)
+
+        # Pre-rotate on the primary device (GPU if available, else CPU).
+        primary_dev = self.centroid.device
+        q = queries.to(primary_dev, non_blocking=True)
+        q_rot = (q - self.centroid) @ self.rotation  # (n_q, d) on primary_dev
+        q_dot_centroid = q @ self.centroid  # (n_q,)   on primary_dev
 
         per_shard_scores: list[torch.Tensor] = []
         per_shard_indices: list[torch.Tensor] = []
@@ -524,7 +658,7 @@ class DenseIndex(BaseIndex):
                 chunk_to_query_np[s:e] = qi
 
             scores_tensor, ids_tensor = self.rabitq_index.search(
-                query_chunk_features.cpu(), top_k
+                query_chunk_features, top_k
             )
 
             flat_ids = ids_tensor.numpy().ravel()
