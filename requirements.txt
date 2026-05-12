@@ -1,9 +1,0 @@
-torch
-transformers
-einops
-numpy
-tqdm
-pyarrow
-biopython
-wandb
-jsonargparse
