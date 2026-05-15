@@ -1,1 +1,0 @@
-../minimap2/minimap2 -x asm20 -t 30 -a ./data/dataset/gencode.v49.transcripts.ref.mmi <(../aws-bin/aws s3 cp s3://logan-pub/u/SRR17467501/SRR17467501.unitigs.fa.zst - --no-sign-request | zstdcat) > out.paf

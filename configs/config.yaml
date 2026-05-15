@@ -1,0 +1,79 @@
+augment_config:
+  alignment_threshold: 0.6
+  average_deletion_length: 10
+  average_insertion_length: 10
+  containment_prob: 1.0
+  deletion_rate: 0.005
+  disable_mutations: false
+  identity_max: 88.0
+  identity_mean: 80.0
+  identity_stdev: 6.0
+  insertion_rate: 0.005
+  max_alignment_ratio: 1.0
+  max_containment_ratio: 1.0
+  max_len: 256
+  max_read_len: 150
+  max_seq_len: 256
+  min_alignment_len: 149
+  min_coverage: 0.1
+  min_overlap_percent: 0.4
+  min_read_len: 91
+  min_seq_len: 31
+  overlap_prob: 0.0
+  substitution_matrix:
+    A:
+    - 0.0
+    - 0.15
+    - 0.77
+    - 0.08
+    C:
+    - 0.13
+    - 0.0
+    - 0.17
+    - 0.7
+    G:
+    - 0.7
+    - 0.17
+    - 0.0
+    - 0.13
+    T:
+    - 0.08
+    - 0.78
+    - 0.14
+    - 0.0
+  substitution_rate: 0.02
+backbone_lr: 6.0e-05
+checkpoint_dir: /pscratch/sd/r/rsynk/locale/checkpoints/
+checkpoint_interval_samples: 1000000
+containment_only: false
+data_type: contig
+dataset_path: /pscratch/sd/r/rsynk/train_data_500/logan_contig/all_contigs.parquet
+dim: 128
+hnm_num_negatives: 0
+kl: false
+log_dir: logs
+lr: 0.001
+moco_filter_queue: true
+moco_filter_queue_identity_cutoff: 0.88
+moco_momentum: 0.9995
+moco_queue_size: 0
+moco_softmax_temp: 0.05
+num_epochs: 1
+num_val_keys: 10000
+num_val_queries: 100
+num_workers: 24
+per_device_batch_size: 64
+pooling: mean
+reference_global_batch_size: 1024
+sanity_test: false
+schedule: cosine
+smith_waterman_temperature: 0.1
+starting_checkpoint_path: null
+total_samples: 6000000
+unsupervised: true
+use_hard_negatives: false
+use_projection_head: false
+val_batch_size: 512
+val_dataset_path: /pscratch/sd/r/rsynk/data/val/logan_contig/all_contigs.parquet
+warmup_fraction: 0.08
+warmup_samples: null
