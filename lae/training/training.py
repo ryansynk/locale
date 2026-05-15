@@ -1,5 +1,5 @@
-import warnings
 import math
+import warnings
 from dataclasses import asdict
 from functools import partial
 from pathlib import Path
@@ -12,16 +12,15 @@ import torch.nn.functional as F
 import yaml
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import AdamW, lr_scheduler
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 from transformers import AutoTokenizer, get_cosine_schedule_with_warmup
 from transformers.utils import logging as transformers_logging
 
-from lae.config import TrainConfig, AugmentConfig
+from lae.config import AugmentConfig, TrainConfig
 from lae.modeling.model import LOCALE
-from lae.training.reference_batcher import ReferenceBatcher
-from lae.training.unsupervised_batcher import UnsupervisedBatcher, Augmenter
+from lae.training.batcher import Batcher
 from wandb import Run
 
 
@@ -176,37 +175,23 @@ def train(
         overlap_prob=0.0,
     )
 
-    if cfg.data_type == "contig":
-        reader = UnsupervisedBatcher(
-            cfg.dataset_path, cfg.use_hard_negatives, cfg.augment_config
+    reader = Batcher(
+        cfg.dataset_path, cfg.augment_config, cfg.data_type, cfg.use_hard_negatives
+    )
+    val_reader = Batcher(
+        cfg.val_dataset_path,
+        augment_config=val_config,
+        mode=cfg.data_type,
+        use_hard_negatives=False,
+        num_examples=cfg.num_val_keys,
+    )
+    sampler = (
+        DistributedSampler(
+            reader, num_replicas=world_size, rank=global_rank, shuffle=True
         )
-        val_reader = UnsupervisedBatcher(
-            cfg.val_dataset_path,
-            False,
-            val_config,
-            num_examples=cfg.num_val_keys,
-        )
-        sampler = (
-            DistributedSampler(
-                reader, num_replicas=world_size, rank=global_rank, shuffle=True
-            )
-            if is_distributed
-            else None
-        )
-    elif cfg.data_type == "reference":
-        full_reader = ReferenceBatcher(cfg.dataset_path, cfg.augment_config)
-        total_size = len(full_reader)
-        train_size = total_size - cfg.num_val_keys
-
-        # torch.manual_seed(42) # Optional: uncomment for reproducible splits
-        reader, val_reader = random_split(full_reader, [train_size, cfg.num_val_keys])
-        sampler = (
-            DistributedSampler(
-                reader, num_replicas=world_size, rank=global_rank, shuffle=True
-            )
-            if is_distributed
-            else None
-        )
+        if is_distributed
+        else None
+    )
     tokenizer = AutoTokenizer.from_pretrained(
         "zhihan1996/DNABERT-2-117M", trust_remote_code=True
     )

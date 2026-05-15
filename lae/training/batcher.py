@@ -4,51 +4,85 @@ from pathlib import Path
 
 import polars as pl
 import torch
+from Bio import SeqIO
 from torch.utils.data import Dataset
 
 from ..config import AugmentConfig
 
 
-class UnsupervisedBatcher(Dataset):
+class Batcher(Dataset):
     def __init__(
         self,
         dataset_path,
-        use_hard_negatives: bool,
         augment_config: AugmentConfig,
+        mode: str = "contig",
+        use_hard_negatives: bool = False,
         num_examples=None,
     ):
         dataset_path = Path(dataset_path).resolve()
         self.cfg = augment_config
+        self.mode = mode
         self.augmenter = Augmenter(augment_config)
-        self.df = pl.read_parquet(dataset_path)
-        self.df = self.df.with_columns(
-            pl.col("sequence").str.len_chars().alias("sequence_len")
-        )
-        self.df = self.df.filter(pl.col("sequence_len") >= self.cfg.min_seq_len)
-        self.disable_mutations: bool = self.cfg.disable_mutations
-        self.use_hard_negatives: bool = use_hard_negatives
-        if num_examples is not None:
-            self.df = self.df.head(num_examples)
+        self.use_hard_negatives = use_hard_negatives
+
+        if mode == "contig":
+            self.df = pl.read_parquet(dataset_path)
+            self.df = self.df.with_columns(
+                pl.col("sequence").str.len_chars().alias("sequence_len")
+            )
+            self.df = self.df.filter(pl.col("sequence_len") >= self.cfg.min_seq_len)
+            if num_examples is not None:
+                self.df = self.df.head(num_examples)
+        elif mode == "reference":
+            self.max_window_size = int(
+                self.cfg.max_read_len * self.cfg.max_containment_ratio
+            )
+            self.sequences = {}
+            self.chunks = []
+            fasta_files = [
+                f
+                for ext in ("*.fna", "*.fa", "*.fasta")
+                for f in dataset_path.rglob(ext)
+            ]
+            for file_path in fasta_files:
+                for record in SeqIO.parse(file_path, "fasta"):
+                    seq_id = record.id
+                    seq_str = str(record.seq).upper()
+                    self.sequences[seq_id] = seq_str
+                    seq_len = len(seq_str)
+                    for start_idx in range(
+                        0, seq_len - self.max_window_size + 1, self.max_window_size
+                    ):
+                        self.chunks.append((seq_id, start_idx))
+            if num_examples is not None:
+                self.chunks = self.chunks[:num_examples]
+        else:
+            raise ValueError(
+                f"Unknown mode: {mode!r}. Must be 'contig' or 'reference'."
+            )
 
     def __len__(self):
-        return len(self.df)
+        if self.mode == "contig":
+            return len(self.df)
+        return len(self.chunks)
 
     def __getitem__(self, index):
-        row = self.df.row(index, named=True)
-        seq = row["sequence"].upper()
-        return_dict = {}
+        if self.mode == "contig":
+            seq = self.df.row(index, named=True)["sequence"].upper()
+        else:
+            seq_id, window_start = self.chunks[index]
+            seq = self.sequences[seq_id][
+                window_start : window_start + self.max_window_size
+            ]
+
         if self.use_hard_negatives:
             query, ref, negative = self.augmenter.get_pairs(
                 seq, self.use_hard_negatives
             )
-            return_dict["query"] = query
-            return_dict["ref"] = ref
-            return_dict["negative"] = negative
+            return {"query": query, "ref": ref, "negative": negative}
         else:
             query, ref = self.augmenter.get_pairs(seq)
-            return_dict["query"] = query
-            return_dict["ref"] = ref
-        return return_dict
+            return {"query": query, "ref": ref}
 
 
 class CropType(Enum):
