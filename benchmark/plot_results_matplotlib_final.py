@@ -100,7 +100,7 @@ def plot_r_precision_vs_noise_line(
     title_names = {
         "mmseqs": "MMseqs2",
         "llmed": "LLM-ED",
-        "rawbert": "LOCALE",
+        "locale": "LOCALE",
         "metagraph": "MetaGraph",
         "dna2vec": "ESA",
     }
@@ -267,7 +267,7 @@ def plot_recall_at_k_vs_noise_line(
     title_names = {
         "mmseqs": "MMseqs2",
         "llmed": "LLM-ED",
-        "rawbert": "LOCALE",
+        "locale": "LOCALE",
         "metagraph": "MetaGraph",
         "dna2vec": "ESA",
     }
@@ -430,7 +430,7 @@ def plot_recall_at_k_vs_k_line(
     title_names = {
         "mmseqs": "MMseqs2",
         "llmed": "LLM-ED",
-        "rawbert": "LOCALE",
+        "locale": "LOCALE",
         "metagraph": "MetaGraph",
         "dna2vec": "ESA",
     }
@@ -580,7 +580,7 @@ def plot_r_precision_vs_time(
     title_names = {
         "mmseqs": "MMseqs2",
         "llmed": "LLM-ED",
-        "rawbert": "LOCALE",
+        "locale": "LOCALE",
         "metagraph": "MetaGraph",
         "dna2vec": "ESA",
     }

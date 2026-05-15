@@ -17,7 +17,7 @@ from src.metagraph_index import MetagraphIndex
 from src.mantis_index import MantisIndex
 from src.mmseqs2_index import MMseqs2Index
 
-from rawbert.training.unsupervised_batcher import Augmenter
+from lae.training.unsupervised_batcher import Augmenter
 
 
 def apply_mutations(queries: pl.DataFrame, mutation_rate: float) -> pl.DataFrame:

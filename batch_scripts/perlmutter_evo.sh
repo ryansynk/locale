@@ -10,7 +10,7 @@
 #SBATCH --gpus-per-node=4
 #SBATCH --output=logs/job_%j.out
 
-cd /pscratch/sd/r/rsynk/rawbert/experiments/sra_recall
+cd /pscratch/sd/r/rsynk/locale/experiments/sra_recall
 srun --nodes=$SLURM_NNODES --ntasks-per-node=1 uv run --frozen python run_benchmark.py --config configs/perlmutter_evo2.yaml --model.batch_size 128 --query_type raw_read --mutation_rate 0.0
 srun --nodes=$SLURM_NNODES --ntasks-per-node=1 uv run --frozen python run_benchmark.py --config configs/perlmutter_evo2.yaml --model.batch_size 128 --query_type raw_read --mutation_rate 0.05
 srun --nodes=$SLURM_NNODES --ntasks-per-node=1 uv run --frozen python run_benchmark.py --config configs/perlmutter_evo2.yaml --model.batch_size 128 --query_type raw_read --mutation_rate 0.10

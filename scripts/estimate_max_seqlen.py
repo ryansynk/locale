@@ -17,8 +17,8 @@ parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
 
 # Now you can import directly from the package
-from rawbert.modeling.rawbert import RawBERT
-from rawbert.training.batcher import Batcher
+from lae.modeling.model import LOCALE
+from lae.training.batcher import Batcher
 
 
 def collate(batch, tokenizer):
@@ -40,11 +40,11 @@ def main(gencode_fasta: str, batch_size: int, num_sequences: int = 200):
     dataloader = DataLoader(reader, batch_size, shuffle=False, collate_fn=collater)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    rawbert = RawBERT(dim=128, K=4096, m=0.999)
-    rawbert = rawbert.to(device)
-    rawbert.train()
+    locale = LOCALE(dim=128, K=4096, m=0.999)
+    locale = locale.to(device)
+    locale.train()
 
-    optimizer = AdamW(filter(lambda p: p.requires_grad, rawbert.parameters()), lr=0.9)
+    optimizer = AdamW(filter(lambda p: p.requires_grad, locale.parameters()), lr=0.9)
     successful_lengths = []
     unsuccessful_lengths = []
     for batch in tqdm(dataloader):
@@ -55,7 +55,7 @@ def main(gencode_fasta: str, batch_size: int, num_sequences: int = 200):
             f"Attempting forward with sequence length = {seqlen}, batch size = {bsize}"
         )
         try:
-            logits, labels = rawbert(q, k)
+            logits, labels = locale(q, k)
             loss = F.cross_entropy(logits, labels)
             optimizer.zero_grad()
             loss.backward()

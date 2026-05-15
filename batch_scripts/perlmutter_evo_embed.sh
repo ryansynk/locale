@@ -14,5 +14,5 @@
 
 export SLURM_CPU_BIND="cores"
 
-cd /pscratch/sd/r/rsynk/rawbert/experiments/sra_recall
+cd /pscratch/sd/r/rsynk/locale/experiments/sra_recall
 uv run python run_benchmark.py --config configs/perlmutter_evo2.yaml --query_type raw_read

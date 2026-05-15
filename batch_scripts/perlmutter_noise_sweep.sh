@@ -15,7 +15,7 @@
 export MASTER_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]); s.close()")
 export MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)
 
-cd /pscratch/sd/r/rsynk/rawbert
+cd /pscratch/sd/r/rsynk/locale
 
 echo $SLURM_ARRAY_TASK_ID
 
@@ -36,31 +36,31 @@ srun uv run --no-sync python -m torch.distributed.run \
     --rdzv_backend=c10d \
     --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \
     train.py --config configs/unsupervised_perlmutter_containment.yaml \
-    --dataset_path /pscratch/sd/r/rsynk/rawbert_data/reference_genomes/reference_genome_dataset.parquet \
+    --dataset_path /pscratch/sd/r/rsynk/locale_data/reference_genomes/reference_genome_dataset.parquet \
     --use_hard_negatives True \
     --moco_filter_queue_identity_cutoff 0.7 \
     --total_samples 6_000_000 \
     $NOISE_ARGS
 
 RUN_ID=$(cat logs/wandb_run_id_${SLURM_ARRAY_TASK_ID}.txt)
-CHECKPOINT_PATH=$(ls /pscratch/sd/r/rsynk/rawbert/checkpoints/$RUN_ID/checkpoint[0-9]*.pth.tar | sort -V | tail -1)
+CHECKPOINT_PATH=$(ls /pscratch/sd/r/rsynk/locale/checkpoints/$RUN_ID/checkpoint[0-9]*.pth.tar | sort -V | tail -1)
 
-cd /pscratch/sd/r/rsynk/rawbert/experiments/sra_recall
+cd /pscratch/sd/r/rsynk/locale/experiments/sra_recall
 
 srun --nodes=$SLURM_NNODES --ntasks-per-node=1 uv run --no-sync python run_benchmark.py \
-    --config configs/perlmutter_rawbert.yaml \
+    --config configs/perlmutter_locale.yaml \
     --model.checkpoint_path $CHECKPOINT_PATH \
     --query_type raw_read \
     --mutation_rate 0.0
 
 srun --nodes=$SLURM_NNODES --ntasks-per-node=1 uv run --no-sync python run_benchmark.py \
-    --config configs/perlmutter_rawbert.yaml \
+    --config configs/perlmutter_locale.yaml \
     --model.checkpoint_path $CHECKPOINT_PATH \
     --query_type raw_read \
     --mutation_rate 0.05
 
 srun --nodes=$SLURM_NNODES --ntasks-per-node=1 uv run --no-sync python run_benchmark.py \
-    --config configs/perlmutter_rawbert.yaml \
+    --config configs/perlmutter_locale.yaml \
     --model.checkpoint_path $CHECKPOINT_PATH \
     --query_type raw_read \
     --mutation_rate 0.10

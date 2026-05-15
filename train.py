@@ -6,8 +6,8 @@ import torch.distributed as dist
 from jsonargparse import CLI
 
 import wandb
-from rawbert.config import TrainConfig
-from rawbert.training.training import train, train_kl
+from lae.config import TrainConfig
+from lae.training.training import train, train_kl
 
 
 # 1. Basic setup function
@@ -56,7 +56,7 @@ def main(cfg: TrainConfig):
     if global_rank == 0:
         run = wandb.init(
             entity="tomg-group-umd",
-            project="rawbert",
+            project="locale",
             config=asdict(cfg),
         )
         task_id = os.environ.get("SLURM_ARRAY_TASK_ID", "0")
@@ -81,8 +81,8 @@ def main(cfg: TrainConfig):
             is_distributed,
         )
     else:
-        par_print(f"Rawbert dim = {cfg.dim}")
-        par_print(f"Rawbert queue size = {cfg.moco_queue_size}")
+        par_print(f"LOCALE Embedding dim = {cfg.dim}")
+        par_print(f"LOCALE MoCo queue size = {cfg.moco_queue_size}")
         train(
             cfg,
             cfg.per_device_batch_size,

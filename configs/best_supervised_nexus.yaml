@@ -34,9 +34,9 @@ augment_config:
   substitution_rate: 0.02
 backbone_lr: 3.0e-05
 batch_size: 256
-checkpoint_dir: /fs/nexus-scratch/ryansynk/rawbert/checkpoints/
+checkpoint_dir: /fs/nexus-scratch/ryansynk/locale/checkpoints/
 checkpoint_interval_samples: 256_000
-dataset_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/train_contigs.parquet
+dataset_path: /fs/nexus-scratch/ryansynk/locale_data/data/train_contigs.parquet
 dim: 128
 lr: 0.001
 moco_momentum: 0.999
@@ -51,6 +51,6 @@ schedule: cosine
 total_samples: 1_026_560
 unsupervised: false
 val_batch_size: 512
-val_dataset_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/val_contigs.parquet
+val_dataset_path: /fs/nexus-scratch/ryansynk/locale_data/data/val_contigs.parquet
 warmup_fraction: null
 warmup_samples: 76_800

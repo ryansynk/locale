@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "rawbert"
+name = "lae"
 version = "0.1.0"
 description = "Custom BERT implementation with Flash Attention and Triton components"
 readme = "README.md"
@@ -60,7 +60,7 @@ metagraph-api = { git = "https://github.com/ratschlab/metagraph.git", subdirecto
 torch = { index = "pytorch"}
 flash-attn = { url = "https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp311-cp311-linux_x86_64.whl" }
 # CRITICAL for your directory structure
-# This explicitly tells setuptools to look for the 'rawbert' directory
+# This explicitly tells setuptools to look for the 'locale' directory
 [tool.setuptools.packages.find]
-include = ["rawbert*"]
+include = ["lae*"]
 exclude = ["training*", "tests*"]

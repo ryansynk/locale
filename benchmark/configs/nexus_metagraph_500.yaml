@@ -3,9 +3,9 @@ model:
   executable: shifter metagraph
   k: 31
 accessions_dir: /fs/nexus-projects/sra_search/test_data_500/logan_contig
-raw_read_queries_path: /fs/nexus-projects/sra_search/rawbert_datasets/raw_read_queries_positive_500_final.parquet
-logan_contig_queries_path: /pscratch/sd/r/rsynk/rawbert_data/data/sra_recall/logan_contig_queries_final.parquet
-gencode_queries_path: /pscratch/sd/r/rsynk/rawbert_data/data/sra_recall/gencode/gencode_queries.parquet
+raw_read_queries_path: /fs/nexus-projects/sra_search/locale_datasets/raw_read_queries_positive_500_final.parquet
+logan_contig_queries_path: /pscratch/sd/r/rsynk/locale_data/data/sra_recall/logan_contig_queries_final.parquet
+gencode_queries_path: /pscratch/sd/r/rsynk/locale_data/data/sra_recall/gencode/gencode_queries.parquet
 index_dir: /fs/nexus-projects/sra_search/indexes_500
-results_dir: /fs/nexus-scratch/ryansynk/rawbert/experiments/sra_recall/results
+results_dir: /fs/nexus-scratch/ryansynk/locale/experiments/sra_recall/results
 mutation_rate: 0.0

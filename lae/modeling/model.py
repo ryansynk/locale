@@ -22,19 +22,19 @@ import torch
 import torch.nn as nn
 from transformers import BertConfig
 
-from rawbert.modeling.bert_layers import BertModel as DNABertModel
+from lae.modeling.bert_layers import BertModel as DNABertModel
 
 # Try to import the specific varlen function from flash_attn
 try:
     FLASH_ATTN_AVAILABLE = True
-    from rawbert.utils.patch import patch_with_flash_lib
+    from lae.utils.patch import patch_with_flash_lib
 except ImportError:
     FLASH_ATTN_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
 
-class RawBERT(nn.Module):
+class LOCALE(nn.Module):
     def __init__(
         self,
         pooling: str,

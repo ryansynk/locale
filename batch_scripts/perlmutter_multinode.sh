@@ -13,7 +13,7 @@
 export MASTER_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]); s.close()")
 export MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)
 
-cd /pscratch/sd/r/rsynk/rawbert
+cd /pscratch/sd/r/rsynk/locale
 
 srun uv run python -m torch.distributed.run \
     --nnodes=$SLURM_NNODES \
@@ -22,5 +22,5 @@ srun uv run python -m torch.distributed.run \
     --rdzv_backend=c10d \
     --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \
     train.py --config configs/unsupervised_perlmutter_containment.yaml \
-    --dataset_path /pscratch/sd/r/rsynk/rawbert_data/reference_genomes/reference_genome_dataset.parquet \
+    --dataset_path /pscratch/sd/r/rsynk/locale_data/reference_genomes/reference_genome_dataset.parquet \
     --use_hard_negatives True 

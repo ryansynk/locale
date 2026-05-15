@@ -33,9 +33,9 @@ from transformers import (
 )
 from transformers.utils import logging as transformers_logging
 
-from rawbert.modeling.bert_layers import BertModel as DNABertModel
-from rawbert.modeling.model import RawBERT
-from rawbert.utils.patch import patch_with_flash_lib
+from lae.modeling.bert_layers import BertModel as DNABertModel
+from lae.modeling.model import LOCALE
+from lae.utils.patch import patch_with_flash_lib
 
 from .base_index import BaseIndex
 from .config import DenseConfig, ExperimentConfig
@@ -937,8 +937,8 @@ class DenseEncoder:
     def __init__(self, cfg: DenseConfig):
         if cfg.name == "dnabert":
             self._encoder = DNABertEncoder(cfg)
-        elif cfg.name == "rawbert":
-            self._encoder = RawBERTEncoder(cfg)
+        elif cfg.name == "locale":
+            self._encoder = LOCALEEncoder(cfg)
         elif cfg.name == "generator":
             self._encoder = GeneratorEncoder(cfg)
         elif cfg.name == "neuroseed":
@@ -1016,18 +1016,18 @@ class DNABertEncoder:
         return embeddings
 
 
-class RawBERTEncoder:
+class LOCALEEncoder:
     # def __init__(self, model_name, batch_size, pooling, checkpoint_path, device="cuda"):
     def __init__(self, cfg: DenseConfig):
         transformers_logging.set_verbosity_error()
 
         device = cfg.device
-        assert cfg.name == "rawbert"
+        assert cfg.name == "locale"
         assert cfg.checkpoint_path, "No checkpoint provided!"
         checkpoint_path = Path(cfg.checkpoint_path).resolve()
         assert checkpoint_path.is_file(), "Checkpoint does not exist!"
         checkpoint = torch.load(checkpoint_path)
-        model = RawBERT(
+        model = LOCALE(
             pooling="max",
             dim=checkpoint["model_args"]["dim"],
             K=checkpoint["model_args"]["K"],

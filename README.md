@@ -21,7 +21,7 @@ All commands below should be prefixed with `uv run`.
 
 ## Code Structure
 
-### `rawbert/`
+### `locale/`
 Core library used for training and embedding:
 - `modeling/` — BERT-based model definition (`model.py`, `bert_layers.py`, etc.)
 - `training/` — Training logic and data batchers (unsupervised, supervised, containment, badread, etc.)
@@ -74,7 +74,7 @@ Tests the ability to retrieve relevant SRA accessions given query sequences. Eac
 - `build_index_parallel.py` — Parallel index construction
 - `plot_results.py` — Loads result scores and plots recall@k curves
 - `src/` — Index implementations:
-  - `dense_index.py` — Vector embedding search (wraps `rawbert` model); base class for learned methods
+  - `dense_index.py` — Vector embedding search (wraps `locale` model); base class for learned methods
   - `metagraph_index.py` — k-mer graph search via Metagraph
   - `mmseqs2_index.py` — Sequence search via MMseqs2
   - `mantis_index.py` — Search via Mantis
@@ -96,8 +96,8 @@ The following tools must be available on your PATH to run the full benchmark:
 
 ```bash
 uv run python run_benchmark.py \
-  --config configs/perlmutter_rawbert.yaml \
-  --model.checkpoint_path /pscratch/sd/r/rsynk/rawbert/checkpoints/ge6jbfvp/checkpoint7000.pth.tar \
+  --config configs/perlmutter_locale.yaml \
+  --model.checkpoint_path /pscratch/sd/r/rsynk/locale/checkpoints/ge6jbfvp/checkpoint7000.pth.tar \
   --model.pooling mean \
   --model.max_seq_len 256 \
   --model.chunk_type stride \
@@ -108,7 +108,7 @@ uv run python run_benchmark.py \
 ### Plotting results
 
 ```bash
-uv run python plot_results.py results/ /pscratch/sd/r/rsynk/rawbert_data/data/sra_recall/raw_read_queries_final.parquet
+uv run python plot_results.py results/ /pscratch/sd/r/rsynk/locale_data/data/sra_recall/raw_read_queries_final.parquet
 ```
 
 ---

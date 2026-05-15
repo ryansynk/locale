@@ -21,8 +21,8 @@ class AlgorithmConfig:
 @dataclass
 class DenseConfig(AlgorithmConfig):
     name: Literal[
-        "rawbert", "dnabert", "generator", "neuroseed", "dna2vec", "llmed", "evo2"
-    ] = "rawbert"  # "dnabert", "rawbert"
+        "locale", "dnabert", "generator", "neuroseed", "dna2vec", "llmed", "evo2"
+    ] = "locale"  # "dnabert", "locale"
     checkpoint_path: Optional[str] = None
     checkpoint_step_num: Optional[int] = None
     batch_size: int = 128
@@ -53,17 +53,17 @@ class DenseConfig(AlgorithmConfig):
             self.checkpoint: str | None = None
             self.max_len: int = self.max_seq_len
             self.chunk_type: str = self.chunk_type
-        elif self.name == "rawbert":
+        elif self.name == "locale":
             assert self.checkpoint_path is not None
             ckpt_id = Path(self.checkpoint_path).resolve().parent.name
             self.checkpoint_step_num = int(
                 Path(self.checkpoint_path).name.split(".")[0][10:]
             )
             self.index_suffix: Path = (
-                Path("rawbert") / ckpt_id / str(self.checkpoint_step_num) / config_tag
+                Path("locale") / ckpt_id / str(self.checkpoint_step_num) / config_tag
             )
             self.experiment_id: str = (
-                f"rawbert_{ckpt_id}_{str(self.checkpoint_step_num)}_{config_tag}"
+                f"locale_{ckpt_id}_{str(self.checkpoint_step_num)}_{config_tag}"
             )
             self.checkpoint: str | None = ckpt_id
             self.max_len: int = self.max_seq_len
@@ -97,7 +97,7 @@ class DenseConfig(AlgorithmConfig):
             self.chunk_type: str = self.chunk_type
         else:
             raise ValueError(
-                f"name expected: rawbert, dnabert, generator, neuroseed, dna2vec, llmed, or evo2. Got = {self.name}"
+                f"name expected: locale, dnabert, generator, neuroseed, dna2vec, llmed, or evo2. Got = {self.name}"
             )
 
     def __str__(self):

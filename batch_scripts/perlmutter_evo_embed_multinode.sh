@@ -21,7 +21,7 @@ export HF_HOME=/pscratch/sd/r/rsynk/hf
 export UV_PYTHON_INSTALL_DIR=/pscratch/sd/r/rsynk/.uv_python
 export SLURM_CPU_BIND="cores"
 
-cd /pscratch/sd/r/rsynk/rawbert/experiments/sra_recall
+cd /pscratch/sd/r/rsynk/locale/experiments/sra_recall
 
 # srun will execute 32 parallel instances of run_benchmark.py
 srun uv run python build_index_parallel.py --config configs/perlmutter_evo2.yaml

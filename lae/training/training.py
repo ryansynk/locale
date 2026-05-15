@@ -18,12 +18,12 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, get_cosine_schedule_with_warmup
 from transformers.utils import logging as transformers_logging
 
-from rawbert.config import TrainConfig, AugmentConfig
-from rawbert.modeling.model import RawBERT
-from rawbert.training.containment_batcher import ContainmentBatcher
-from rawbert.training.reference_batcher import ReferenceBatcher
-from rawbert.training.supervised_batcher import SupervisedBatcher
-from rawbert.training.unsupervised_batcher import UnsupervisedBatcher, Augmenter
+from lae.config import TrainConfig, AugmentConfig
+from lae.modeling.model import LOCALE
+from lae.training.containment_batcher import ContainmentBatcher
+from lae.training.reference_batcher import ReferenceBatcher
+from lae.training.supervised_batcher import SupervisedBatcher
+from lae.training.unsupervised_batcher import UnsupervisedBatcher, Augmenter
 from wandb import Run
 
 
@@ -115,7 +115,7 @@ def train(
     torch.cuda.set_device(local_rank)
 
     # Instantiate model and move to the correct GPU
-    rawbert = RawBERT(
+    locale = LOCALE(
         pooling=cfg.pooling,
         dim=cfg.dim,
         K=cfg.moco_queue_size,
@@ -124,21 +124,21 @@ def train(
         use_projection_head=cfg.use_projection_head,
     )
     if cfg.moco_filter_queue:
-        rawbert.set_kmer_k(cfg.moco_filter_queue_identity_cutoff)
-    rawbert = rawbert.to(local_rank)
-    rawbert.train()
+        locale.set_kmer_k(cfg.moco_filter_queue_identity_cutoff)
+    locale = locale.to(local_rank)
+    locale.train()
 
     global_batch_size = per_device_batch_size * world_size
     ratio = global_batch_size / cfg.reference_global_batch_size
     scaled_backbone_lr = cfg.backbone_lr * math.sqrt(ratio)
     scaled_proj_lr = cfg.lr * math.sqrt(ratio)
     backbone_params = list(
-        filter(lambda p: p.requires_grad, rawbert.bert_q.parameters())
+        filter(lambda p: p.requires_grad, locale.bert_q.parameters())
     )
     if cfg.use_projection_head:
-        assert rawbert.projector_q
+        assert locale.projector_q
         head_params = list(
-            filter(lambda p: p.requires_grad, rawbert.projector_q.parameters())
+            filter(lambda p: p.requires_grad, locale.projector_q.parameters())
         )
         optimizer = AdamW(
             [
@@ -166,9 +166,9 @@ def train(
 
     # Wrap model with DDP only if distributed
     if is_distributed:
-        ddp_rawbert = DDP(rawbert, device_ids=[local_rank])
+        ddp_locale = DDP(locale, device_ids=[local_rank])
     else:
-        ddp_rawbert = rawbert
+        ddp_locale = locale
 
     val_config: AugmentConfig = AugmentConfig(
         disable_mutations=True,
@@ -289,7 +289,7 @@ def train(
         raise ValueError("No checkpoint_dir provided!")
 
     global_step = 0
-    ddp_rawbert.train()
+    ddp_locale.train()
 
     with tqdm(total=total_steps, desc="Training", unit="step") as pbar:
         for epoch in range(num_epochs):
@@ -304,7 +304,7 @@ def train(
                 q = q.to(local_rank)
                 k = k.to(local_rank)
                 optimizer.zero_grad()
-                logits, labels = ddp_rawbert(
+                logits, labels = ddp_locale(
                     q,
                     k,
                     cfg.moco_filter_queue_identity_cutoff,
@@ -344,9 +344,9 @@ def train(
                     if global_rank == 0:
                         assert run
                         if is_distributed:
-                            module = ddp_rawbert.module
+                            module = ddp_locale.module
                         else:
-                            module = ddp_rawbert
+                            module = ddp_locale
 
                         assert isinstance(module, torch.nn.Module)
                         model_state_dict = module.state_dict()
@@ -399,7 +399,7 @@ def train(
                         )
                     if is_distributed:
                         torch.distributed.barrier()
-                    ddp_rawbert.train()
+                    ddp_locale.train()
 
                 global_step += 1
                 pbar.update(1)
@@ -413,9 +413,9 @@ def train(
     if global_rank == 0:
         assert run
         if is_distributed:
-            module = ddp_rawbert.module
+            module = ddp_locale.module
         else:
-            module = ddp_rawbert
+            module = ddp_locale
 
         assert isinstance(module, torch.nn.Module)
         model_state_dict = module.state_dict()
@@ -486,18 +486,18 @@ def train_kl(
     torch.cuda.set_device(local_rank)
     assert cfg.starting_checkpoint_path, "No checkpoint given"
     checkpoint = torch.load(cfg.starting_checkpoint_path)
-    rawbert = RawBERT(
+    locale = LOCALE(
         pooling="max",
         dim=checkpoint["model_args"]["dim"],
         K=checkpoint["model_args"]["K"],
         m=checkpoint["model_args"]["m"],
         T=checkpoint["model_args"]["T"],
     )
-    rawbert.load_state_dict(checkpoint["model"])
-    rawbert = rawbert.to(local_rank)
-    rawbert.train()
+    locale.load_state_dict(checkpoint["model"])
+    locale = locale.to(local_rank)
+    locale.train()
     backbone_params = list(
-        filter(lambda p: p.requires_grad, rawbert.bert_q.parameters())
+        filter(lambda p: p.requires_grad, locale.bert_q.parameters())
     )
 
     optimizer = AdamW(
@@ -509,9 +509,9 @@ def train_kl(
 
     # Wrap model with DDP only if distributed
     if is_distributed:
-        ddp_rawbert = DDP(rawbert, device_ids=[local_rank])
+        ddp_locale = DDP(locale, device_ids=[local_rank])
     else:
-        ddp_rawbert = rawbert
+        ddp_locale = locale
 
     par_print("Unsupervised Training Mode")
     reader = UnsupervisedBatcher(cfg.dataset_path, cfg.augment_config)
@@ -589,8 +589,8 @@ def train_kl(
         raise ValueError("No checkpoint_dir provided!")
 
     global_step = 0
-    ddp_rawbert.train()
-    model = cast(RawBERT, ddp_rawbert.module if is_distributed else ddp_rawbert)
+    ddp_locale.train()
+    model = cast(LOCALE, ddp_locale.module if is_distributed else ddp_locale)
 
     with tqdm(total=total_steps, desc="Training", unit="step") as pbar:
         for epoch in range(num_epochs):
@@ -717,9 +717,9 @@ def train_kl(
                     if global_rank == 0:
                         assert run
                         if is_distributed:
-                            module = ddp_rawbert.module
+                            module = ddp_locale.module
                         else:
-                            module = ddp_rawbert
+                            module = ddp_locale
 
                         assert isinstance(module, torch.nn.Module)
                         model_state_dict = module.state_dict()
@@ -761,7 +761,7 @@ def train_kl(
                         )
                     if is_distributed:
                         torch.distributed.barrier()
-                    ddp_rawbert.train()
+                    ddp_locale.train()
 
                 global_step += 1
                 pbar.update(1)
@@ -775,9 +775,9 @@ def train_kl(
     if global_rank == 0:
         assert run
         if is_distributed:
-            module = ddp_rawbert.module
+            module = ddp_locale.module
         else:
-            module = ddp_rawbert
+            module = ddp_locale
 
         assert isinstance(module, torch.nn.Module)
         model_state_dict = module.state_dict()

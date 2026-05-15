@@ -12,7 +12,7 @@
 export MASTER_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]); s.close()")
 export MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)
 
-cd /lustre/orion/lrn089/scratch/ryansynk/rawbert
+cd /lustre/orion/lrn089/scratch/ryansynk/locale
 
 srun uv run python -m torch.distributed.run \
     --nnodes=$SLURM_JOB_NUM_NODES \

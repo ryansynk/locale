@@ -1,7 +1,7 @@
 unsupervised: false
 num_epochs: 1
-dataset_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/train_contigs.parquet
-val_dataset_path: /fs/nexus-scratch/ryansynk/rawbert_data/data/val_contigs.parquet
+dataset_path: /fs/nexus-scratch/ryansynk/locale_data/data/train_contigs.parquet
+val_dataset_path: /fs/nexus-scratch/ryansynk/locale_data/data/val_contigs.parquet
 batch_size: 256
 val_batch_size: 512
 schedule: hold
@@ -13,7 +13,7 @@ warmup_samples: 76_800
 moco_queue_size: 65536
 moco_momentum: 0.999
 moco_softmax_temp: 0.07
-checkpoint_dir: /fs/nexus-scratch/ryansynk/rawbert/checkpoints/
+checkpoint_dir: /fs/nexus-scratch/ryansynk/locale/checkpoints/
 checkpoint_interval_samples: 256_000
 num_val_queries: 100
 num_val_keys: 10000

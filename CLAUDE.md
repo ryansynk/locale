@@ -23,6 +23,6 @@ Current experiment is in experiments/sra_recall
 ## Commands
 srun uv run python -m torch.distributed.run --nnodes=4 --nproc_per_node=4 --rdzv_id=$SLURM_JOB_ID --rdzv_backend=c10d --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT train.py --config configs/unsupervised_perlmutter_containment.yaml
 
-uv run python run_benchmark.py --config configs/perlmutter_rawbert.yaml --model.checkpoint_path /pscratch/sd/r/rsynk/rawbert/checkpoints/ge6jbfvp/checkpoint7000.pth.tar --model.pooling mean --model.max_seq_len 256 --model.chunk_type stride --query_type gencode --mutation_rate 0.0
+uv run python run_benchmark.py --config configs/perlmutter_locale.yaml --model.checkpoint_path /pscratch/sd/r/rsynk/locale/checkpoints/ge6jbfvp/checkpoint7000.pth.tar --model.pooling mean --model.max_seq_len 256 --model.chunk_type stride --query_type gencode --mutation_rate 0.0
 
-uv run python plot_results.py results/ /pscratch/sd/r/rsynk/rawbert_data/data/sra_recall/raw_read_queries_final.parquet
+uv run python plot_results.py results/ /pscratch/sd/r/rsynk/locale_data/data/sra_recall/raw_read_queries_final.parquet

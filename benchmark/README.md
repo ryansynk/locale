@@ -12,9 +12,9 @@ Expected paths (configured in `configs/perlmutter_*.yaml`):
 
 | File | Description |
 |---|---|
-| `/pscratch/sd/r/rsynk/rawbert_data/data/sra_recall/raw_read_queries_final.parquet` | Raw read queries |
-| `/pscratch/sd/r/rsynk/rawbert_data/data/sra_recall/logan_contig_queries_final.parquet` | Logan contig queries |
-| `/pscratch/sd/r/rsynk/rawbert_data/data/sra_recall/gencode/gencode_queries.parquet` | Gencode queries |
+| `/pscratch/sd/r/rsynk/locale_data/data/sra_recall/raw_read_queries_final.parquet` | Raw read queries |
+| `/pscratch/sd/r/rsynk/locale_data/data/sra_recall/logan_contig_queries_final.parquet` | Logan contig queries |
+| `/pscratch/sd/r/rsynk/locale_data/data/sra_recall/gencode/gencode_queries.parquet` | Gencode queries |
 | `/pscratch/sd/r/rsynk/data/test/logan_contig/` | Accession FASTA files (`*.contigs.fa`) |
 
 ---
@@ -50,7 +50,7 @@ Three query types are supported via `--query_type`:
 ### Actively maintained
 | Config | Method | Notes |
 |---|---|---|
-| `perlmutter_rawbert.yaml` | Rawbert (this repo) | Requires a checkpoint path |
+| `perlmutter_locale.yaml` | Rawbert (this repo) | Requires a checkpoint path |
 | `perlmutter_metagraph.yaml` | Metagraph | k-mer graph baseline |
 | `perlmutter_mmseqs2.yaml` | MMseqs2 | Sequence alignment baseline |
 | `perlmutter_mantis.yaml` | Mantis | k-mer counting baseline |
@@ -77,7 +77,7 @@ Three query types are supported via `--query_type`:
 
 ```bash
 uv run python run_benchmark.py \
-  --config configs/perlmutter_rawbert.yaml \
+  --config configs/perlmutter_locale.yaml \
   --model.checkpoint_path /path/to/checkpoint.pth.tar \
   --model.pooling mean \
   --model.max_seq_len 256 \
@@ -93,7 +93,7 @@ Results are written to `results/<method_id>/<query_type>_mut<mutation_rate>.parq
 `run_benchmark.py` has built-in SLURM-aware sharding. When run with `srun` across multiple nodes, each node builds a shard of the index independently, then node 0 waits for all shards and merges them before running search.
 
 ```bash
-srun uv run python run_benchmark.py --config configs/perlmutter_rawbert.yaml ...
+srun uv run python run_benchmark.py --config configs/perlmutter_locale.yaml ...
 ```
 
 Alternatively, use `build_index_parallel.py` to build index shards across many tasks (one GPU per task) without the merge step — useful when you want to pre-build a large index separately from the search step. Note: this script only supports `DenseConfig` and `MetagraphConfig`.
@@ -106,8 +106,8 @@ Alternatively, use `build_index_parallel.py` to build index shards across many t
 
 ```bash
 uv run python plot_results.py results/ \
-  /pscratch/sd/r/rsynk/rawbert_data/data/sra_recall/raw_read_queries_final.parquet \
-  /pscratch/sd/r/rsynk/rawbert_data/data/sra_recall/gencode/gencode_queries.parquet
+  /pscratch/sd/r/rsynk/locale_data/data/sra_recall/raw_read_queries_final.parquet \
+  /pscratch/sd/r/rsynk/locale_data/data/sra_recall/gencode/gencode_queries.parquet
 ```
 
 Recall@k curves are written to `plots/`.
@@ -119,7 +119,7 @@ Lets you select any subset of models, mutation rates, and query types from a sid
 **On Perlmutter**, start the app on a login node:
 
 ```bash
-cd /pscratch/sd/r/rsynk/rawbert/experiments/sra_recall
+cd /pscratch/sd/r/rsynk/locale/experiments/sra_recall
 uv run streamlit run app.py
 ```
 
