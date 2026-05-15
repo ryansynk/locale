@@ -70,7 +70,6 @@ schedule: cosine
 smith_waterman_temperature: 0.1
 starting_checkpoint_path: null
 total_samples: 6000000
-unsupervised: true
 use_hard_negatives: false
 use_projection_head: false
 val_batch_size: 512

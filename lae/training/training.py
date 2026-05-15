@@ -20,9 +20,7 @@ from transformers.utils import logging as transformers_logging
 
 from lae.config import TrainConfig, AugmentConfig
 from lae.modeling.model import LOCALE
-from lae.training.containment_batcher import ContainmentBatcher
 from lae.training.reference_batcher import ReferenceBatcher
-from lae.training.supervised_batcher import SupervisedBatcher
 from lae.training.unsupervised_batcher import UnsupervisedBatcher, Augmenter
 from wandb import Run
 
@@ -178,47 +176,30 @@ def train(
         overlap_prob=0.0,
     )
 
-    if cfg.unsupervised:
-        par_print("Unsupervised Training Mode")
-        if cfg.data_type == "contig":
-            reader = UnsupervisedBatcher(
-                cfg.dataset_path, cfg.use_hard_negatives, cfg.augment_config
-            )
-            val_reader = UnsupervisedBatcher(
-                cfg.val_dataset_path,
-                False,
-                val_config,
-                num_examples=cfg.num_val_keys,
-            )
-            sampler = (
-                DistributedSampler(
-                    reader, num_replicas=world_size, rank=global_rank, shuffle=True
-                )
-                if is_distributed
-                else None
-            )
-        elif cfg.data_type == "reference":
-            full_reader = ReferenceBatcher(cfg.dataset_path, cfg.augment_config)
-            total_size = len(full_reader)
-            train_size = total_size - cfg.num_val_keys
-
-            # torch.manual_seed(42) # Optional: uncomment for reproducible splits
-            reader, val_reader = random_split(
-                full_reader, [train_size, cfg.num_val_keys]
-            )
-            sampler = (
-                DistributedSampler(
-                    reader, num_replicas=world_size, rank=global_rank, shuffle=True
-                )
-                if is_distributed
-                else None
-            )
-    else:
-        par_print("Supervised Training Mode")
-        reader = SupervisedBatcher(cfg.dataset_path, cfg.augment_config)
-        val_reader = SupervisedBatcher(
-            cfg.val_dataset_path, cfg.augment_config, num_examples=cfg.num_val_keys
+    if cfg.data_type == "contig":
+        reader = UnsupervisedBatcher(
+            cfg.dataset_path, cfg.use_hard_negatives, cfg.augment_config
         )
+        val_reader = UnsupervisedBatcher(
+            cfg.val_dataset_path,
+            False,
+            val_config,
+            num_examples=cfg.num_val_keys,
+        )
+        sampler = (
+            DistributedSampler(
+                reader, num_replicas=world_size, rank=global_rank, shuffle=True
+            )
+            if is_distributed
+            else None
+        )
+    elif cfg.data_type == "reference":
+        full_reader = ReferenceBatcher(cfg.dataset_path, cfg.augment_config)
+        total_size = len(full_reader)
+        train_size = total_size - cfg.num_val_keys
+
+        # torch.manual_seed(42) # Optional: uncomment for reproducible splits
+        reader, val_reader = random_split(full_reader, [train_size, cfg.num_val_keys])
         sampler = (
             DistributedSampler(
                 reader, num_replicas=world_size, rank=global_rank, shuffle=True

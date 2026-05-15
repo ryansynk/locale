@@ -80,7 +80,6 @@ class AugmentConfig:
 class TrainConfig:
     dataset_path: str
     val_dataset_path: str
-    unsupervised: bool = False
     data_type: Literal["reference", "contig"] = "contig"
     num_epochs: int = 1
     per_device_batch_size: int = 64
