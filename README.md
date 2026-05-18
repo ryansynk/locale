@@ -1,11 +1,9 @@
 # LOCALE
 
-## Todos
-- Update dense_index search method to not fill with sentinel values
-- Change repo name/ everything name to locale
-- Move rabitq to faiss
+This repository contains the code to train and evaluate the model and baselines contained in the paper "LOCALE: Local-Alignment Embeddings for Noise-Robust DNA Search at SRA Scale" by Synk et. al.
 
-Embedding model for local alignment of DNA sequences. The goal is to convert sequence search over large sets of sequences (e.g. NIH Sequence Read Archive) into vector search — scalable and robust to noise compared to k-mer methods like Metagraph.
+
+The paper presents an embedding model for local alignment of DNA sequences with applications to large-scale sequence search. The repository contains code for reproducing the training, inference, and benchmarking of our model and other baselines (which require extra dependencies, see below)
 
 ## Environment
 
@@ -59,7 +57,7 @@ srun uv run python -m torch.distributed.run \
 
 ## Benchmark on SRA Data: `benchmark`
 
-Tests the ability to retrieve relevant SRA accessions given query sequences. Each method implements an index with build and search functionality. Results are scored by recall@k, auprc.
+Tests the ability to retrieve relevant SRA accessions given query sequences. Each method implements an index with build and search functionality. Results are scored by recall@k, auprc. Further details are given in the `benchmark` README.
 
 ### Structure
 
@@ -118,3 +116,28 @@ To view results, run:
 ```bash
 uv run python plot_results.py results/ /pscratch/sd/r/rsynk/locale_data/data/sra_recall/raw_read_queries_final.parquet
 ```
+
+## Citation
+
+If you use LOCALE in your work, you can cite the preprint here:
+```
+@misc{synk2026locale,
+	title = {{LOCALE}: {Local}-{Alignment} {Embeddings} for {Noise}-{Robust} {DNA} {Search} at {SRA} {Scale}},
+	shorttitle = {{LOCALE}},
+	url = {https://www.biorxiv.org/content/10.64898/2026.05.12.724581v1},
+	doi = {10.64898/2026.05.12.724581},
+	urldate = {2026-05-15},
+	publisher = {bioRxiv},
+	author = {Synk, Ryan and Pandey, Prashant and Sahinalp, Cenk and Duraiswami, Ramani},
+	month = may,
+	year = {2026},
+	note = {ISSN: 2692-8205
+Pages: 2026.05.12.724581
+Section: New Results},
+}
+```
+
+## Todos
+- Update dense_index search method to not fill with sentinel values
+- Change repo name/ everything name to locale
+- Move rabitq to faiss
