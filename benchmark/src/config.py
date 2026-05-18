@@ -12,9 +12,9 @@ class AlgorithmConfig:
 
 @dataclass
 class DenseConfig(AlgorithmConfig):
-    name: Literal[
-        "locale", "dnabert", "generator", "neuroseed", "dna2vec", "llmed", "evo2"
-    ] = "locale"  # "dnabert", "locale"
+    name: Literal["locale", "dnabert", "generator", "neuroseed", "dna2vec", "llmed"] = (
+        "locale"  # "dnabert", "locale"
+    )
     checkpoint_path: Optional[str] = None
     checkpoint_step_num: Optional[int] = None
     batch_size: int = 128
@@ -22,7 +22,6 @@ class DenseConfig(AlgorithmConfig):
     pooling: str = "max"
     k: int = 100
     max_seq_len: int = 1024
-    chunk_type: Literal["stride", "exact_chunk"] = "stride"
     chunk_overlap: int = 150
     neuroseed_path: Optional[str] = "/pscratch/sd/r/rsynk/NeuroSEED"
     use_ann: bool = False
@@ -30,21 +29,17 @@ class DenseConfig(AlgorithmConfig):
     use_rabitq: bool = False
 
     def __post_init__(self):
-        config_tag = (
-            f"maxlen{self.max_seq_len}_pool{self.pooling}_chunk{self.chunk_type}"
-        )
+        config_tag = f"maxlen{self.max_seq_len}_pool{self.pooling}_chunkstride"
         if self.name == "dnabert":
             self.index_suffix: Path = Path("dnabert") / config_tag
             self.experiment_id: str = f"dnabert_{config_tag}"
             self.checkpoint: str | None = None
             self.max_len: int = self.max_seq_len
-            self.chunk_type: str = self.chunk_type
         elif self.name == "generator":
             self.index_suffix: Path = Path("generator") / config_tag
             self.experiment_id: str = f"generator_{config_tag}"
             self.checkpoint: str | None = None
             self.max_len: int = self.max_seq_len
-            self.chunk_type: str = self.chunk_type
         elif self.name == "locale":
             assert self.checkpoint_path is not None
             ckpt_id = Path(self.checkpoint_path).resolve().parent.name
@@ -59,7 +54,6 @@ class DenseConfig(AlgorithmConfig):
             )
             self.checkpoint: str | None = ckpt_id
             self.max_len: int = self.max_seq_len
-            self.chunk_type: str = self.chunk_type
         elif self.name == "neuroseed":
             assert self.checkpoint_path is not None
             ckpt_id = Path(self.checkpoint_path).resolve().stem
@@ -67,29 +61,20 @@ class DenseConfig(AlgorithmConfig):
             self.experiment_id: str = f"neuroseed_{ckpt_id}_{config_tag}"
             self.checkpoint: str | None = ckpt_id
             self.max_len: int = self.max_seq_len
-            self.chunk_type: str = self.chunk_type
         elif self.name == "dna2vec":
             self.index_suffix: Path = Path("dna2vec") / config_tag
             self.experiment_id: str = f"dna2vec_{config_tag}"
             self.checkpoint: str | None = None
             self.max_len: int = self.max_seq_len
-            self.chunk_type: str = self.chunk_type
         elif self.name == "llmed":
             # Abusing checkpoint path to distinguish between different kinds of llmed model
             self.index_suffix: Path = Path("llmed") / config_tag
             self.experiment_id: str = f"llmed_{config_tag}"
             self.checkpoint: str | None = None
             self.max_len: int = self.max_seq_len
-            self.chunk_type: str = self.chunk_type
-        elif self.name == "evo2":
-            self.index_suffix: Path = Path("evo2") / config_tag
-            self.experiment_id: str = f"evo2_{config_tag}"
-            self.checkpoint: str | None = None
-            self.max_len: int = self.max_seq_len
-            self.chunk_type: str = self.chunk_type
         else:
             raise ValueError(
-                f"name expected: locale, dnabert, generator, neuroseed, dna2vec, llmed, or evo2. Got = {self.name}"
+                f"name expected: locale, dnabert, generator, neuroseed, dna2vec, or llmed. Got = {self.name}"
             )
 
     def __str__(self):
@@ -135,13 +120,10 @@ class MMseqs2Config(AlgorithmConfig):
 @dataclass
 class ExperimentConfig:
     model: Union[DenseConfig, MetagraphConfig, MMseqs2Config]
-    accessions_dir: Path
-    raw_read_queries_path: Path
-    logan_contig_queries_path: Path
-    gencode_queries_path: Path
+    dataset_name: str
+    dataset_dir: str | None
     index_dir: Path
     results_dir: Path
-    query_type: Literal["raw_read", "logan_contig", "gencode"]
     mutation_rate: float = 0.0
     do_timing: bool = False
     timing_runs: int = 5

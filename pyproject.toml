@@ -40,6 +40,7 @@ dependencies = [
     "streamlit>=1.56.0",
     "diskannpy>=0.7.0",
     "scikit-learn>=1.8.0",
+    "boto3>=1.43.9",
 ]
 
 [project.optional-dependencies]

@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 
 import polars as pl
+from huggingface_hub import snapshot_download
 from jsonargparse import CLI
 from src.config import (
     DenseConfig,
@@ -12,10 +13,26 @@ from src.config import (
     MMseqs2Config,
 )
 from src.dense_index import DenseIndex
+from src.download_accessions import download_accessions
 from src.metagraph_index import MetagraphIndex
 from src.mmseqs2_index import MMseqs2Index
 
 from lae.training.batcher import Augmenter
+
+DATASETS = {
+    "sra50": "rsynk/locale-benchmark-sra50",
+    "sra500": "rsynk/locale-benchmark-sra500",
+}
+
+
+def verify_download(accession_ids: list[str], accession_paths: list[Path]):
+    # Check all accessions in manifest were found
+    manifest_ids = set(accession_ids)
+    downloaded_ids = {p.name.removesuffix(".contigs.fa") for p in accession_paths}
+    if missing := manifest_ids - downloaded_ids:
+        raise RuntimeError(
+            f"{len(missing)} accessions missing after download: {missing}"
+        )
 
 
 def apply_mutations(queries: pl.DataFrame, mutation_rate: float) -> pl.DataFrame:
@@ -24,23 +41,6 @@ def apply_mutations(queries: pl.DataFrame, mutation_rate: float) -> pl.DataFrame
             lambda query_seq: Augmenter.augment(query_seq, identity=1 - mutation_rate)
         )
     )
-
-
-def get_matching_regions_of_contigs(queries_df: pl.DataFrame):
-    contig_interval_pairs = (
-        queries_df.explode("contig_id", "aln_interval_contig")
-        .group_by("contig_id")
-        .agg(pl.col("aln_interval_contig"))
-        .to_dicts()
-    )
-    intervals_dict = {}
-    for contig_interval_pair in contig_interval_pairs:
-        contig_id = contig_interval_pair["contig_id"]
-        intervals_dict[contig_id] = [
-            (interval["aln_start_index_contig"], interval["aln_end_index_contig"])
-            for interval in contig_interval_pair["aln_interval_contig"]
-        ]
-    return intervals_dict
 
 
 def _wait_for_shards(
@@ -59,26 +59,28 @@ def _wait_for_shards(
 
 def main(cfg: ExperimentConfig):
     index_path: Path = cfg.index_dir / cfg.model.index_suffix
-    accession_paths: list[Path] = sorted(list(cfg.accessions_dir.rglob("*.contigs.fa")))
 
-    if cfg.query_type == "raw_read":
-        queries: pl.DataFrame = pl.read_parquet(cfg.raw_read_queries_path)
-    elif cfg.query_type == "logan_contig":
-        queries: pl.DataFrame = pl.read_parquet(cfg.logan_contig_queries_path)
-    elif cfg.query_type == "gencode":
-        queries: pl.DataFrame = pl.read_parquet(cfg.gencode_queries_path)
-    else:
-        raise ValueError(
-            f"Expected query_type to be 'raw_read', 'logan_contig', or 'gencode'. Got: {cfg.query_type}"
-        )
+    # Download datasets and queries
+    local_path = snapshot_download(
+        DATASETS[cfg.dataset_name], local_dir=cfg.dataset_dir
+    )
+    accession_ids_path: Path = Path(local_path).resolve() / "accs.txt"
+    with open(accession_ids_path) as f:
+        accession_ids = f.read().splitlines()
+    accessions_dir = Path(local_path).resolve() / "logan_accessions"
+    queries_path: Path = Path(local_path).resolve() / "queries.parquet"
+    accession_paths: list[Path] = sorted(list(accessions_dir.rglob("*.contigs.fa")))
+    if not accession_paths:
+        download_accessions(accession_ids, accessions_dir)
+        accession_paths = sorted(accessions_dir.rglob("*.contigs.fa"))
+    verify_download(accession_ids, accession_paths)
 
-    # subsample queries
+    queries: pl.DataFrame = pl.read_parquet(queries_path)
+    # subsample queries if needed
     queries = queries.sample(min(cfg.num_queries, len(queries)), seed=cfg.random_seed)
 
     if isinstance(cfg.model, DenseConfig):
         index = DenseIndex(cfg)
-        if cfg.model.chunk_type == "exact_chunk":
-            index.contig_align_intervals = get_matching_regions_of_contigs(queries)
     elif isinstance(cfg.model, MetagraphConfig):
         index = MetagraphIndex(cfg)
     elif isinstance(cfg.model, MMseqs2Config):
@@ -89,6 +91,7 @@ def main(cfg: ExperimentConfig):
     node_rank = int(os.environ.get("SLURM_NODEID", "0"))
     num_nodes = int(os.environ.get("SLURM_NNODES", "1"))
 
+    # Build index if not already built
     if not (index_path / ".done").exists():
         if num_nodes > 1:
             node_accessions = accession_paths[node_rank::num_nodes]
@@ -145,7 +148,7 @@ def main(cfg: ExperimentConfig):
     results = results.with_columns(pl.lit(avg_time).alias("avg_time"))
     results = results.with_columns(pl.lit(str(cfg.model)).alias("model"))
     results = results.with_columns(pl.lit(cfg.mutation_rate).alias("mutation_rate"))
-    results = results.with_columns(pl.lit(cfg.query_type).alias("query_type"))
+    results = results.with_columns(pl.lit("raw_read").alias("query_type"))  # legacy
     results = results.with_columns(
         pl.lit(cfg.model.checkpoint, dtype=pl.String).alias("checkpoint")
     )
@@ -157,11 +160,11 @@ def main(cfg: ExperimentConfig):
             "checkpoint_step_num"
         )
     )
-    results = results.with_columns(pl.lit(cfg.model.chunk_type).alias("chunk_type"))
+    results = results.with_columns(pl.lit("stride").alias("chunk_type"))  # legacy
     output_path: Path = (
         cfg.results_dir
         / cfg.model.experiment_id
-        / f"{cfg.query_type}_mut{cfg.mutation_rate}.parquet"
+        / "raw_read_mut_{cfg.mutation_rate}.parquet"
     )
     output_path.parent.mkdir(exist_ok=True, parents=True)
     results.write_parquet(output_path)

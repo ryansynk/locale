@@ -1,0 +1,13 @@
+model:
+  name: locale                   # locale | dnabert | metagraph | mmseqs | mantis | dna2vec
+  checkpoint_path: null          # path to .pth.tar checkpoint; null to use HF default
+  batch_size: 1000               # embedding batch size
+  device: cuda                   # cuda | cpu
+  pooling: mean                  # mean | max | cls
+  max_seq_len: 256               # max tokens per chunk
+  chunk_overlap: 150             # overlap between stride chunks
+
+dataset_name: sra50
+index_dir: indexes_50
+results_dir: results_50
+mutation_rate: 0.0               # synthetic mutation rate applied to queries

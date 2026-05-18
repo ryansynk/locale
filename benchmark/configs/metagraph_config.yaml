@@ -1,0 +1,8 @@
+model:
+  name: metagraph
+  executable: shifter metagraph
+  k: 31
+dataset_name: sra50
+index_dir: indexes_50
+results_dir: results_50
+mutation_rate: 0.0

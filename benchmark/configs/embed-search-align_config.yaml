@@ -1,0 +1,13 @@
+model:
+  name: dna2vec
+  checkpoint_path: null
+  batch_size: 1000
+  device: cuda
+  pooling: max
+  max_seq_len: 256
+  chunk_type: stride
+  chunk_overlap: 150
+dataset_name: sra50
+index_dir: indexes_50
+results_dir: results_50
+mutation_rate: 0.0
