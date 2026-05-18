@@ -9,15 +9,13 @@ from src.config import (
     DenseConfig,
     ExperimentConfig,
     MetagraphConfig,
-    MantisConfig,
     MMseqs2Config,
 )
 from src.dense_index import DenseIndex
 from src.metagraph_index import MetagraphIndex
-from src.mantis_index import MantisIndex
 from src.mmseqs2_index import MMseqs2Index
 
-from lae.training.unsupervised_batcher import Augmenter
+from lae.training.batcher import Augmenter
 
 
 def apply_mutations(queries: pl.DataFrame, mutation_rate: float) -> pl.DataFrame:
@@ -83,8 +81,6 @@ def main(cfg: ExperimentConfig):
             index.contig_align_intervals = get_matching_regions_of_contigs(queries)
     elif isinstance(cfg.model, MetagraphConfig):
         index = MetagraphIndex(cfg)
-    elif isinstance(cfg.model, MantisConfig):
-        index = MantisIndex(cfg)
     elif isinstance(cfg.model, MMseqs2Config):
         index = MMseqs2Index(cfg)
     else:

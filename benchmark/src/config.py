@@ -10,14 +10,6 @@ class AlgorithmConfig:
     pass
 
 
-# @dataclass
-# class SourMashConfig(AlgorithmConfig):
-#     name: str = "sourmash"
-#     k: int = 31
-#     scaled: int = 1
-#     threshold: float = 0.0
-
-
 @dataclass
 class DenseConfig(AlgorithmConfig):
     name: Literal[
@@ -123,28 +115,6 @@ class MetagraphConfig(AlgorithmConfig):
 
 
 @dataclass
-class MantisConfig(AlgorithmConfig):
-    name: str = "mantis"
-    executable: str = "mantis"
-    seqtk_executable: str = "seqtk"
-    squeakr_executable: str = "squeakr"
-    k: int = 31
-    log_slots: int = 30
-    num_threads: int = 32
-
-    def __post_init__(self):
-        self.index_suffix = Path("mantis") / f"k{self.k}"
-        self.experiment_id = f"mantis_k{self.k}"
-        self.checkpoint: str | None = None
-        self.max_len: int | None = None
-        self.chunk_type: int | None = None
-        self.checkpoint_step_num: int | None = None
-
-    def __str__(self):
-        return self.experiment_id
-
-
-@dataclass
 class MMseqs2Config(AlgorithmConfig):
     name: str = "mmseqs"
     executable: str = "mmseqs"
@@ -164,7 +134,7 @@ class MMseqs2Config(AlgorithmConfig):
 
 @dataclass
 class ExperimentConfig:
-    model: Union[DenseConfig, MetagraphConfig, MantisConfig, MMseqs2Config]
+    model: Union[DenseConfig, MetagraphConfig, MMseqs2Config]
     accessions_dir: Path
     raw_read_queries_path: Path
     logan_contig_queries_path: Path
