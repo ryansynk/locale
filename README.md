@@ -1,4 +1,4 @@
-# Rawbert
+# LOCALE
 
 ## Todos
 - Update dense_index search method to not fill with sentinel values
@@ -21,31 +21,24 @@ All commands below should be prefixed with `uv run`.
 
 ## Code Structure
 
-### `locale/`
+### `lae/`
 Core library used for training and embedding:
 - `modeling/` — BERT-based model definition (`model.py`, `bert_layers.py`, etc.)
-- `training/` — Training logic and data batchers (unsupervised, supervised, containment, badread, etc.)
+- `training/` — Training logic and data batcher
 - `config.py` — Top-level config dataclass
 
 ### `train.py`
 Entry point for model training. Configured via YAML files in `configs/`.
 
 ### `configs/`
-YAML configs for training runs. Key configs:
-- `unsupervised_perlmutter_containment.yaml` — unsupervised MoCo training on Perlmutter
-- `kl_finetune_perlmutter.yaml` — KL divergence finetuning on Perlmutter
+YAML configs for training runs. Given config file matching model used in paper:
+- `config.yaml`
 
 ---
 
-## Training on Perlmutter (4-node)
+## Training (4 Node Example)
 
-Allocate nodes:
-```bash
-salloc --nodes 4 --qos debug --time 0:30:00 --ntasks-per-node 1 -c 128 \
-  --mem 0 --constraint gpu --gpus-per-node 4 --account m5083_g
-```
-
-Set up distributed env vars:
+Set up distributed env vars (may vary for different node counts):
 ```bash
 export MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)
 export MASTER_PORT=29500
@@ -59,26 +52,23 @@ srun uv run python -m torch.distributed.run \
     --rdzv_id=$SLURM_JOB_ID \
     --rdzv_backend=c10d \
     --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \
-    train.py --config configs/kl_finetune_perlmutter.yaml
+    train.py --config configs/config.yaml
 ```
 
 ---
 
-## Main Experiment: `experiments/sra_recall`
+## Benchmark on SRA Data: `benchmark`
 
-Tests the ability to retrieve relevant SRA accessions given query sequences. Each method implements an index with build and search functionality. Results are scored by recall@k.
+Tests the ability to retrieve relevant SRA accessions given query sequences. Each method implements an index with build and search functionality. Results are scored by recall@k, auprc.
 
 ### Structure
 
 - `run_benchmark.py` — Runs a search method against the benchmark queries
-- `build_index_parallel.py` — Parallel index construction
 - `plot_results.py` — Loads result scores and plots recall@k curves
 - `src/` — Index implementations:
   - `dense_index.py` — Vector embedding search (wraps `locale` model); base class for learned methods
   - `metagraph_index.py` — k-mer graph search via Metagraph
   - `mmseqs2_index.py` — Sequence search via MMseqs2
-  - `mantis_index.py` — Search via Mantis
-  - `evo2_index.py` — Evo2-based index (**currently broken**)
   - `base_index.py` — Abstract base class
   - `config.py` — Config dataclasses for all index types
 
@@ -87,37 +77,44 @@ Tests the ability to retrieve relevant SRA accessions given query sequences. Eac
 The following tools must be available on your PATH to run the full benchmark:
 
 - [`metagraph`](https://github.com/ratschlab/metagraph)
-- [`mantis`](https://github.com/splatlab/mantis)
 - [`mmseqs`](https://github.com/soedinglab/MMseqs2)
 
 > **Metagraph on Perlmutter:** Metagraph requires running inside a container. Add `--image=ghcr.io/ratschlab/metagraph:master` to your `salloc` command when using Metagraph.
 
 ### Example benchmark command
 
+First navigate to benchmark dir
+```bash
+cd benchmark
+```
+
+Then run the benchmark:
 ```bash
 uv run python run_benchmark.py \
-  --config configs/perlmutter_locale.yaml \
-  --model.checkpoint_path /pscratch/sd/r/rsynk/locale/checkpoints/ge6jbfvp/checkpoint7000.pth.tar \
-  --model.pooling mean \
-  --model.max_seq_len 256 \
-  --model.chunk_type stride \
-  --query_type gencode \
-  --mutation_rate 0.0
+  --config configs/perlmutter_rawbert.yaml \
+  --query_type raw_read \
+  --mutation_rate 0.0 \
+  --do_timing True \
+  --model.exact_search True \
+  --results_dir results/
+```
+
+To parallelize index construction across multiple nodes run with srun:
+```bash
+srun --nodes=4 --ntasks-per-node=1 \
+  uv run --no-sync python run_benchmark.py \
+  --config configs/perlmutter_rawbert.yaml \
+  --query_type raw_read \
+  --mutation_rate 0.0 \
+  --do_timing True \
+  --model.exact_search True \
+  --results_dir results/
 ```
 
 ### Plotting results
 
+To view results, run:
+
 ```bash
 uv run python plot_results.py results/ /pscratch/sd/r/rsynk/locale_data/data/sra_recall/raw_read_queries_final.parquet
 ```
-
----
-
-## Other Experiments
-
-All other experiment folders are **deprecated** and not actively maintained:
-
-- `experiments/adversarial_benchmark/`
-- `experiments/comparison_benchmark/`
-- `experiments/cutoff/`
-- `experiments/query-read-embedding/`
