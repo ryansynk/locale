@@ -8,6 +8,7 @@ model:
   chunk_overlap: 150             # overlap between stride chunks
 
 dataset_name: sra50
+dataset_dir: null                # where to materialise the HF dataset; null = default HF cache
 index_dir: indexes_50
 results_dir: results_50
 mutation_rate: 0.0               # synthetic mutation rate applied to queries

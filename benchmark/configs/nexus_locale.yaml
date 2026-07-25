@@ -1,0 +1,22 @@
+model:
+  name: locale
+  # DenseConfig asserts this is set for name=locale; override on the CLI to
+  # benchmark a different run. Parent dir becomes the checkpoint id and the
+  # digits after "checkpoint" become the step, giving the index suffix
+  # locale/<ckpt_id>/<step>/maxlen<N>_pool<P>_chunkstride.
+  checkpoint_path: /fs/nexus-scratch/ryansynk/rawbert/checkpoints/8vqiabk9/checkpoint5859.pth.tar
+  batch_size: 1000
+  device: cuda
+  pooling: mean
+  max_seq_len: 256
+  chunk_overlap: 150
+
+dataset_name: sra50
+# Where the HF dataset repo is materialised (accs.txt, queries.parquet,
+# logan_accessions/). Contigs are fetched from logan-pub on first run.
+dataset_dir: /fs/nexus-projects/sra_search/hf/sra50
+# Deliberately NOT the pre-cleanup indexes/ tree, which still holds indexes
+# built under the old "rawbert" naming. Those stay untouched as a fallback.
+index_dir: /fs/nexus-projects/sra_search/indexes_locale
+results_dir: /fs/nexus-scratch/ryansynk/rawbert/benchmark/results
+mutation_rate: 0.0

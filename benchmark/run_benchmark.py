@@ -62,7 +62,7 @@ def main(cfg: ExperimentConfig):
 
     # Download datasets and queries
     local_path = snapshot_download(
-        DATASETS[cfg.dataset_name], local_dir=cfg.dataset_dir
+        DATASETS[cfg.dataset_name], repo_type="dataset", local_dir=cfg.dataset_dir
     )
     accession_ids_path: Path = Path(local_path).resolve() / "accs.txt"
     with open(accession_ids_path) as f:
@@ -164,7 +164,7 @@ def main(cfg: ExperimentConfig):
     output_path: Path = (
         cfg.results_dir
         / cfg.model.experiment_id
-        / "raw_read_mut_{cfg.mutation_rate}.parquet"
+        / f"raw_read_mut_{cfg.mutation_rate}.parquet"
     )
     output_path.parent.mkdir(exist_ok=True, parents=True)
     results.write_parquet(output_path)

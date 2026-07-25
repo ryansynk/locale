@@ -5,9 +5,9 @@ model:
   device: cuda
   pooling: max
   max_seq_len: 256
-  chunk_type: stride
   chunk_overlap: 150
 dataset_name: sra50
+dataset_dir: null
 index_dir: indexes_50
 results_dir: results_50
 mutation_rate: 0.0

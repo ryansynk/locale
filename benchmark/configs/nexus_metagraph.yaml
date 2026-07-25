@@ -1,0 +1,12 @@
+model:
+  name: metagraph
+  # Nexus has a native build; the perlmutter config uses "shifter metagraph"
+  # because NERSC requires the container runtime.
+  executable: /fs/nexus-scratch/ryansynk/metagraph/metagraph/build/metagraph
+  k: 31
+
+dataset_name: sra50
+dataset_dir: /fs/nexus-projects/sra_search/hf/sra50
+index_dir: /fs/nexus-projects/sra_search/indexes_locale
+results_dir: /fs/nexus-scratch/ryansynk/rawbert/benchmark/results
+mutation_rate: 0.0

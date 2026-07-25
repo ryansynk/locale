@@ -434,7 +434,10 @@ class DenseIndex(BaseIndex):
 
         if not self.no_search:
             self.model = DenseEncoder(cfg.model)
-            self.chunk_type: Literal["stride", "exact_chunk"] = cfg.model.chunk_type
+            # chunk_type was dropped from DenseConfig during the v1 cleanup;
+            # stride is the only supported mode (see the hardcoded "chunkstride"
+            # index tag in config.py and the legacy column in run_benchmark.py).
+            self.chunk_type: Literal["stride", "exact_chunk"] = "stride"
             self.chunk_overlap: int = cfg.model.chunk_overlap
             self.contig_align_intervals: dict[str, list[tuple[int, int]]] | None = None
 
