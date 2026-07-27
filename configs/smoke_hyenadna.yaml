@@ -1,0 +1,67 @@
+# hyenadna smoke test — 200 steps on ONE GPU. Not a result, just a wiring check:
+# does the encoder swap produce sane loss curves and does the checkpoint round-
+# trip through the eval path.
+#
+# Differences from the real ladder configs, all for speed:
+#   total_samples 12800        -> 200 steps at per-device batch 64 on 1 GPU
+#   checkpoint_interval_samples 6400 -> saves at step 100 and at the end
+#                                       (must stay >= global batch, or
+#                                        checkpoint_interval_steps rounds to 0
+#                                        and training.py divides by zero)
+#   num_val_keys/queries cut   -> _filter_aligned_sequences is O(queries*keys)
+#                                 edlib; the real 100x10000 would dominate a
+#                                 200-step run
+# Augmentation is held at heavy so the smoke test exercises the mutation path.
+backbone: hyenadna
+
+augment_config:
+  min_seq_len: 31
+  max_seq_len: 256
+  min_overlap_percent: 0.4
+  containment_prob: 1.0
+  overlap_prob: 0.0
+  disable_mutations: false
+  identity_mean: 80.0
+  identity_stdev: 6.0
+  identity_max: 88.0
+
+moco_queue_size: 0
+moco_softmax_temp: 0.05
+moco_momentum: 0.9995
+moco_filter_queue: true
+moco_filter_queue_identity_cutoff: 0.88
+
+pooling: mean
+use_projection_head: false
+dim: 128
+
+backbone_lr: 6.0e-05
+lr: 0.001
+schedule: cosine
+warmup_fraction: 0.08
+warmup_samples: null
+per_device_batch_size: 64
+reference_global_batch_size: 1024
+total_samples: 12800
+num_epochs: 1
+
+data_type: contig
+dataset_path: /fs/nexus-projects/sra_search/rawbert_datasets/train_contigs.parquet
+val_dataset_path: /fs/nexus-projects/sra_search/rawbert_datasets/val_contigs.parquet
+
+checkpoint_dir: /fs/nexus-scratch/ryansynk/rawbert/checkpoints_smoke/
+checkpoint_interval_samples: 6400
+starting_checkpoint_path: null
+log_dir: logs/smoke
+
+num_workers: 3
+val_batch_size: 128
+num_val_queries: 32
+num_val_keys: 512
+
+containment_only: false
+use_hard_negatives: false
+hnm_num_negatives: 0
+smith_waterman_temperature: 0.1
+sanity_test: false
+kl: false

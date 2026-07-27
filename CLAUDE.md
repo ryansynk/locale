@@ -62,6 +62,38 @@ run dies after that file is touched, delete the index dir to force a rebuild.
 - Noise added to crops
 - Config in `configs/config.yaml` (still carries `/pscratch` paths; repoint for nexus)
 
+### Backbone swap
+The encoder is selected by `backbone:` in the training config and resolved in
+`lae/modeling/backbones.py`. Everything downstream — mean-pool + L2-norm head,
+InfoNCE loss, index, search — is shared, so only the encoder varies.
+
+- Ids: `dnabert2` (default, D=768), `nt50m` (D=512), `hyenadna` (D=256).
+- `backbone` is written into the checkpoint's `model_args`, and the benchmark's
+  `LOCALEEncoder` reads it back to pick the matching encoder *and tokenizer*.
+  Pre-swap checkpoints have no such key and fall back to `dnabert2`, so
+  `8vqiabk9/checkpoint5859.pth.tar` still loads with `strict=True`.
+- Two Hub gotchas, both already handled — don't "simplify" them away:
+  - NT-v2's `auto_map` has **no `AutoModel` entry**, so `AutoModel` falls back
+    to native `EsmModel` (plain MLP) and shape-mismatches against NT's SwiGLU
+    weights. Load via `AutoModelForMaskedLM` and take `.esm`.
+  - `HyenaDNATokenizer` pads but returns **no `attention_mask`**; `get_tokenizer`
+    patches `model_input_names` so the pooling head can mask padding.
+  - `EsmModel` builds `embeddings.position_embeddings` (dead — NT-v2 is rotary)
+    and `contact_head` (only used by `predict_contacts`). Left trainable they
+    get no gradient, which aborts DDP's reducer at step 2 and puts a `None`
+    into the grad-norm logging. `_freeze_unused` handles it; it raises if the
+    prefixes stop matching rather than silently regressing.
+- Before any multi-GPU launch, run the opt-in gradient check — it reproduces
+  both DDP failures on CPU in seconds:
+  ```
+  LAE_RUN_BACKBONE_TESTS=1 uv run python -m pytest tests/test_backbone_gradients.py
+  ```
+- Ladder configs are `configs/{nt50m,hyenadna}_{none,light,medium,heavy}.yaml`,
+  generated identically and guarded by `tests/test_ladder_configs.py`, which
+  fails if two rungs differ anywhere but the mutation settings.
+- `train_contigs.parquet` / `val_contigs.parquet` are the 50-accession train and
+  val slices; verified disjoint from each other and from the 47 eval accessions.
+
 ## Nexus
 Data root is `/fs/nexus-projects/sra_search`:
 - `hf/sra50/logan_accessions` -> symlink to `data/test/logan_contig`, so the HF
@@ -91,6 +123,46 @@ every accession. `--no_search` builds and exits.
 Multi-node index build:
 ```
 srun uv run python run_benchmark.py --config configs/nexus_locale.yaml
+```
+
+Augmentation ladder for one backbone (4 array tasks, single node x 8 GPUs each).
+Effective batch is 512, not the paper's 1024 — a deviation applied uniformly to
+all four rungs, so the within-backbone trend is unaffected:
+```
+sbatch nexus_train_ladder.sbatch nt50m
+```
+
+Evaluate one ablation rung, once per eval-noise level. Configs are
+`benchmark/configs/{nt50m,hyenadna}_{none,light,medium,heavy}.yaml`, which differ
+only in `checkpoint_path`; the rung's run id is recorded in
+`benchmark/runs_<backbone>.yaml`:
+```
+cd benchmark
+for r in 0.0 0.05 0.1; do
+  uv run python run_benchmark.py --config configs/nt50m_heavy.yaml --mutation_rate $r
+done
+```
+The first rate builds the index over all 47 accessions and the other two reuse
+it — the index depends on the checkpoint, not the mutation rate. Check
+`meta.parquet` has 47 rows before trusting results: a build that loses a worker
+still gets a `.done` marker, and later runs then load a truncated index and
+report quietly wrong recall.
+
+Table 3 on its own, without re-running any eval (see the module docstring for
+the runs YAML):
+```
+uv run python make_table3.py --results_dir results/ \
+  --queries <dataset_dir>/queries.parquet --runs runs_nt50m.yaml
+```
+
+Smoke test before committing to a ladder — 200 steps, then an end-to-end eval on
+3 accessions. Always give the smoke eval a throwaway `index_dir`: a truncated
+index still gets a `.done` marker:
+```
+uv run python train.py --config configs/smoke_nt50m.yaml
+uv run python run_benchmark.py --config configs/nexus_locale.yaml \
+  --model.checkpoint_path <smoke_ckpt> --index_dir /fs/nexus-scratch/ryansynk/smoke_indexes \
+  --max_accessions 3 --num_queries 20
 ```
 
 Training:

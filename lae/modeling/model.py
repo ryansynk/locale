@@ -20,16 +20,8 @@ import edlib  # ty: ignore unresolved-import
 import einops
 import torch
 import torch.nn as nn
-from transformers import BertConfig
 
-from lae.modeling.bert_layers import BertModel as DNABertModel
-
-# Try to import the specific varlen function from flash_attn
-try:
-    FLASH_ATTN_AVAILABLE = True
-    from lae.utils.patch import patch_with_flash_lib
-except ImportError:
-    FLASH_ATTN_AVAILABLE = False
+from lae.modeling.backbones import DEFAULT_BACKBONE, build_backbone
 
 logger = logging.getLogger(__name__)
 
@@ -43,11 +35,9 @@ class LOCALE(nn.Module):
         m: float = 0.999,
         T: float = 0.07,
         use_projection_head: bool = False,
+        backbone: str = DEFAULT_BACKBONE,
     ):
         super().__init__()
-        self.config = BertConfig.from_pretrained("zhihan1996/DNABERT-2-117M")
-        if not hasattr(self.config, "pad_token_id") or self.config.pad_token_id is None:
-            self.config.pad_token_id = 3  # DNABERT Tokenizer [PAD] token id
         if pooling not in ["class", "mean", "max"]:
             raise ValueError(
                 f"Expected pooling to be one of class, mean, max. Got: {pooling}"
@@ -59,20 +49,15 @@ class LOCALE(nn.Module):
         self.m = m
         self.T = T
         self.use_projection_head = use_projection_head
+        self.backbone = backbone
 
         self.is_moco = K > 0
 
         # 1. Load Encoders
-        self.bert_q = DNABertModel.from_pretrained(
-            "zhihan1996/DNABERT-2-117M",
-            trust_remote_code=True,
-            config=self.config,
-        )
-        self._remove_pooler(self.bert_q)
-        if FLASH_ATTN_AVAILABLE:
-            patch_with_flash_lib(self.bert_q)
-
-        prev_dim = self.config.hidden_size
+        # Only the encoder varies across backbones; the pooling head below and
+        # the loss in forward() are identical for all of them.
+        self.bert_q, prev_dim = build_backbone(backbone)
+        self.hidden_size = prev_dim
         if self.use_projection_head:
             self.projector_q = nn.Sequential(
                 nn.Linear(prev_dim, prev_dim), nn.ReLU(), nn.Linear(prev_dim, dim)

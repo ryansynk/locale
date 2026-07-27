@@ -219,3 +219,4 @@ benchmark/indexes
 benchmark/indexes_500
 *.pdf
 benchmark/configs/local
+checkpoints_smoke

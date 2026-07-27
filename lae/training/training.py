@@ -14,10 +14,11 @@ from torch.optim import AdamW, lr_scheduler
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
-from transformers import AutoTokenizer, get_cosine_schedule_with_warmup
+from transformers import get_cosine_schedule_with_warmup
 from transformers.utils import logging as transformers_logging
 
 from lae.config import AugmentConfig, TrainConfig
+from lae.modeling.backbones import get_tokenizer
 from lae.modeling.model import LOCALE
 from lae.training.batcher import Batcher, Augmenter
 from wandb import Run
@@ -118,6 +119,7 @@ def train(
         m=cfg.moco_momentum,
         T=cfg.moco_softmax_temp,
         use_projection_head=cfg.use_projection_head,
+        backbone=cfg.backbone,
     )
     if cfg.moco_filter_queue:
         locale.set_kmer_k(cfg.moco_filter_queue_identity_cutoff)
@@ -191,9 +193,9 @@ def train(
         if is_distributed
         else None
     )
-    tokenizer = AutoTokenizer.from_pretrained(
-        "zhihan1996/DNABERT-2-117M", trust_remote_code=True
-    )
+    # Tokenization is part of the backbone, not a fixed choice — this is the
+    # axis the backbone swap is meant to vary.
+    tokenizer = get_tokenizer(cfg.backbone)
     hn_collater = partial(collate_w_hard_negatives, tokenizer=tokenizer)
     collater = partial(collate, tokenizer=tokenizer)
 
@@ -356,6 +358,7 @@ def train(
                                     "K": cfg.moco_queue_size,
                                     "m": cfg.moco_momentum,
                                     "T": cfg.moco_softmax_temp,
+                                    "backbone": cfg.backbone,
                                 },
                             },
                             checkpoint_dir,
@@ -425,6 +428,7 @@ def train(
                     "K": cfg.moco_queue_size,
                     "m": cfg.moco_momentum,
                     "T": cfg.moco_softmax_temp,
+                    "backbone": cfg.backbone,
                 },
             },
             checkpoint_dir,

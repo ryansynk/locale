@@ -130,6 +130,10 @@ class ExperimentConfig:
     num_queries: int = 1000
     random_seed: int = 1337
     no_search: bool = False
+    # Smoke-test knob: cap how many accessions enter the index so an end-to-end
+    # run finishes in minutes. Leave unset for real runs — a truncated index is
+    # still marked .done, so always pair this with a throwaway index_dir.
+    max_accessions: int | None = None
 
     def __post_init__(self):
         self.results_dir.mkdir(exist_ok=True, parents=True)

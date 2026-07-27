@@ -103,6 +103,10 @@ class TrainConfig:
     num_val_keys: int = 100_000
     dim: int = 128
     pooling: str = "mean"
+    # Encoder backbone id (see lae.modeling.backbones.BACKBONES). Persisted into
+    # the checkpoint's model_args so the eval path reloads the matching encoder
+    # and tokenizer without a second flag.
+    backbone: str = "dnabert2"
     num_workers: int = 4
     sanity_test: bool = False
     containment_only: bool = False

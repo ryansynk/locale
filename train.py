@@ -7,7 +7,7 @@ from jsonargparse import CLI
 
 import wandb
 from lae.config import TrainConfig
-from lae.training.training import train, train_kl
+from lae.training.training import train
 
 
 # 1. Basic setup function
@@ -71,27 +71,25 @@ def main(cfg: TrainConfig):
         dist.barrier()
 
     if cfg.kl:
-        train_kl(
-            cfg,
-            cfg.per_device_batch_size,
-            run,
-            local_rank,
-            global_rank,
-            world_size,
-            is_distributed,
+        # train_kl was deleted from lae/training/training.py in 3b00460
+        # ("Removed old code") while these call sites were left behind, which
+        # made train.py un-importable on this branch. Recover it from
+        # 3b00460^ if the KL finetuning path is ever needed again.
+        raise NotImplementedError(
+            "KL finetuning (cfg.kl) was removed in 3b00460; set kl: false."
         )
-    else:
-        par_print(f"LOCALE Embedding dim = {cfg.dim}")
-        par_print(f"LOCALE MoCo queue size = {cfg.moco_queue_size}")
-        train(
-            cfg,
-            cfg.per_device_batch_size,
-            run,
-            local_rank,
-            global_rank,
-            world_size,
-            is_distributed,
-        )
+
+    par_print(f"LOCALE Embedding dim = {cfg.dim}")
+    par_print(f"LOCALE MoCo queue size = {cfg.moco_queue_size}")
+    train(
+        cfg,
+        cfg.per_device_batch_size,
+        run,
+        local_rank,
+        global_rank,
+        world_size,
+        is_distributed,
+    )
 
     if global_rank == 0:
         run.finish()  # ty: ignore possibly-missing-attribute

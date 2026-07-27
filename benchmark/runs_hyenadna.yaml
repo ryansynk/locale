@@ -1,0 +1,14 @@
+# Maps each augmentation rung to the wandb run id that trained it, for
+# make_table3.py. All rungs share step 11718 (6,000,000 samples / global batch
+# 512), so a single `step` covers the whole ladder.
+#
+# hyena_sweep.sh appends each rung here as it finishes, and skips any rung
+# already listed with a complete checkpoint — so keep `runs:` as the last key
+# in this file.
+backbone: hyenadna
+step: 11718
+runs:
+  none: 8efcekck
+  light: r0kftndx
+  medium: 41tw5jxb
+  heavy: ek5pjc20

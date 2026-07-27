@@ -33,6 +33,7 @@ from transformers import (
 )
 from transformers.utils import logging as transformers_logging
 
+from lae.modeling.backbones import DEFAULT_BACKBONE, get_tokenizer
 from lae.modeling.bert_layers import BertModel as DNABertModel
 from lae.modeling.model import LOCALE
 from lae.utils.patch import patch_with_flash_lib
@@ -1030,18 +1031,21 @@ class LOCALEEncoder:
         checkpoint_path = Path(cfg.checkpoint_path).resolve()
         assert checkpoint_path.is_file(), "Checkpoint does not exist!"
         checkpoint = torch.load(checkpoint_path)
+        model_args = checkpoint["model_args"]
+        # Checkpoints trained before the backbone swap have no "backbone" key;
+        # those are all DNABERT-2, so default accordingly.
+        backbone = model_args.get("backbone", DEFAULT_BACKBONE)
         model = LOCALE(
-            pooling="max",
-            dim=checkpoint["model_args"]["dim"],
-            K=checkpoint["model_args"]["K"],
-            m=checkpoint["model_args"]["m"],
-            T=checkpoint["model_args"]["T"],
+            pooling=model_args["pooling"],
+            dim=model_args["dim"],
+            K=model_args["K"],
+            m=model_args["m"],
+            T=model_args["T"],
+            backbone=backbone,
         )
         model.load_state_dict(checkpoint["model"])
         model = model.eval().to(device)
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            "zhihan1996/DNABERT-2-117M", trust_remote_code=True
-        )
+        self.tokenizer = get_tokenizer(backbone)
 
         self.model = model
         self.batch_size = cfg.batch_size

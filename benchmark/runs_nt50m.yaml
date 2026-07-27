@@ -1,0 +1,13 @@
+# Maps each augmentation rung to the wandb run id that trained it, for
+# make_table3.py. All rungs share step 11718 (6,000,000 samples / global batch
+# 512), so a single `step` covers the whole ladder.
+#
+# nt_sweep.sh appends `none`, `light` and `heavy` here as they finish, so keep
+# `runs:` as the last key in this file.
+backbone: nt50m
+step: 11718
+runs:
+  medium: id4r4qxi
+  none: 9f7w4l69
+  light: lvv2vyik
+  heavy: 6gkcc735

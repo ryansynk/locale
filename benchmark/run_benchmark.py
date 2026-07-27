@@ -75,6 +75,12 @@ def main(cfg: ExperimentConfig):
         accession_paths = sorted(accessions_dir.rglob("*.contigs.fa"))
     verify_download(accession_ids, accession_paths)
 
+    # Truncate after verifying the full manifest downloaded, so a smoke run
+    # still catches a broken/incomplete dataset.
+    if cfg.max_accessions is not None:
+        accession_paths = accession_paths[: cfg.max_accessions]
+        print(f"[max_accessions] Indexing only {len(accession_paths)} accessions.")
+
     queries: pl.DataFrame = pl.read_parquet(queries_path)
     # subsample queries if needed
     queries = queries.sample(min(cfg.num_queries, len(queries)), seed=cfg.random_seed)

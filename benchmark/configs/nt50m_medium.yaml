@@ -1,0 +1,25 @@
+# NT-v2 / medium rung — eval config for the backbone-swap ablation.
+#
+# Differs from nexus_locale.yaml only in checkpoint_path. Everything else is
+# held fixed across rungs so the four columns are comparable: same benchmark,
+# same chunking, same pooling, same index tree.
+#
+# mutation_rate is the eval-noise axis and is overridden per invocation by
+# --mutation_rate (0.0 / 0.05 / 0.1). The value below is only the default.
+#
+# The encoder and tokenizer are NOT named here — LOCALEEncoder reads
+# backbone: nt50m out of the checkpoint's model_args and selects both.
+model:
+  name: locale
+  checkpoint_path: /fs/nexus-scratch/ryansynk/rawbert/checkpoints/id4r4qxi/checkpoint11718.pth.tar
+  batch_size: 1000
+  device: cuda
+  pooling: mean
+  max_seq_len: 256
+  chunk_overlap: 150
+
+dataset_name: sra50
+dataset_dir: /fs/nexus-projects/sra_search/hf/sra50
+index_dir: /fs/nexus-projects/sra_search/indexes_locale
+results_dir: /fs/nexus-scratch/ryansynk/rawbert/benchmark/results
+mutation_rate: 0.0
