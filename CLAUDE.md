@@ -109,8 +109,25 @@ SLURM: `--account=cml-tomg --qos=cml-very_high`, partition `cml-dpart`
 `benchmark/configs/nexus_locale.yaml` and `nexus_metagraph.yaml`; batch wrapper
 is `benchmark/nexus_benchmark.sbatch`.
 
-Metagraph binary: `/fs/nexus-scratch/ryansynk/metagraph/metagraph/build/metagraph`
-(Perlmutter instead needs `shifter metagraph` inside a container).
+Metagraph runs from a container, not a native build: `metagraph_master.sif` in
+`/fs/nexus-scratch/ryansynk`, pulled from `ghcr.io/ratschlab/metagraph:master`.
+The configs invoke it as a multi-word `executable:` (`apptainer exec --bind ...
+<sif> metagraph`), which works because `metagraph_index.py` `shlex.split`s it
+and `build_metagraph.sh` expands `${METAGRAPH_EXEC}` unquoted — the same trick
+Perlmutter uses for `shifter metagraph`. Both binds are **self-referential**
+(`/fs/nexus-projects/sra_search` and `/fs/nexus-scratch/ryansynk` mapped to
+themselves) and must stay that way: `contig_manifest.txt` is written host-side
+with absolute paths and piped to metagraph's stdin, and `annotate
+--anno-filename` stores those absolute paths as column labels, which `search()`
+parses back into accessions via `.str.split("/").list.get(-2)`.
+
+The old native build at `metagraph/metagraph/build/metagraph` is **broken** —
+linked against `libboost_iostreams.so.1.66.0`, which el9 no longer ships. That
+checkout is also stale (pinned at `e69e128`, Mar 2026) and has drifted from the
+image: upstream made in-place graph construction the default and replaced the
+opt-in `--inplace` with an opt-out `--in-ram`, so `build_metagraph.sh` no longer
+passes `--inplace`. Do not "restore" that flag against a current image; it is a
+hard `Unknown option` error.
 
 ## Commands
 Benchmark, single node, all GPUs on the node:

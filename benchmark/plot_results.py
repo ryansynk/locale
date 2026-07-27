@@ -23,6 +23,26 @@ plt.rcParams.update(
 )
 
 
+# Score assigned to an accession the method returned no result for. Must stay
+# below any real score: LOCALE's cosine similarity bottoms out at -1, so a
+# genuine 0.0 is a middling score and must NOT be treated as "unscored".
+DEFAULT_SCORE = -2.0
+
+
+def _drop_unscored(indices: np.ndarray, y_score: np.ndarray) -> np.ndarray:
+    """Remove accessions the method never scored from a ranked selection.
+
+    Unscored accessions all sit at DEFAULT_SCORE, so they tie. argsort breaks
+    ties by index, which means a tied block is filled with whichever accessions
+    happen to sort first alphabetically - handing out credit for accessions the
+    method never returned. Metagraph returns an empty result set whenever a
+    query shares no k-mer with the index, so on a divergent-query benchmark this
+    is not a rare edge case: it silently inflates exactly the queries the
+    k-mer baseline cannot answer.
+    """
+    return indices[y_score[indices] > DEFAULT_SCORE]
+
+
 def r_precision_per_query(y_true: np.ndarray, y_score: np.ndarray) -> float:
     """Compute R-precision for a single query.
 
@@ -34,6 +54,7 @@ def r_precision_per_query(y_true: np.ndarray, y_score: np.ndarray) -> float:
         return np.nan  # or skip
 
     top_nrelevant_indices = (-y_score).argsort()[:n_relevant]
+    top_nrelevant_indices = _drop_unscored(top_nrelevant_indices, y_score)
 
     # Count how many of those are relevant
     n_retrieved_relevant = int(y_true[top_nrelevant_indices].sum())
@@ -52,6 +73,7 @@ def recall_at_k_per_query(y_true: np.ndarray, y_score: np.ndarray, k: int) -> fl
         return np.nan  # or skip
 
     top_k_indices = (-y_score).argsort()[:k]
+    top_k_indices = _drop_unscored(top_k_indices, y_score)
 
     # Count how many of those are relevant
     n_retrieved_relevant = int(y_true[top_k_indices].sum())
@@ -111,7 +133,6 @@ def plot_r_precision_vs_noise_line(
     acc_to_idx = {acc: i for i, acc in enumerate(accession_order)}
     n_acc = len(accession_order)
 
-    DEFAULT_SCORE = -2.0
     r_precision_rows = []
     for name, df in data.group_by(
         [
@@ -278,7 +299,6 @@ def plot_recall_at_k_vs_noise_line(
     acc_to_idx = {acc: i for i, acc in enumerate(accession_order)}
     n_acc = len(accession_order)
 
-    DEFAULT_SCORE = -2.0
     recall_at_k_rows = []
 
     for name, df in data.group_by(
@@ -442,7 +462,6 @@ def plot_recall_at_k_vs_k_line(
     acc_to_idx = {acc: i for i, acc in enumerate(accession_order)}
     n_acc = len(accession_order)
 
-    DEFAULT_SCORE = -2.0
     recall_at_k_rows = []
 
     for name, df in data.group_by(
@@ -591,7 +610,6 @@ def plot_r_precision_vs_time(
     acc_to_idx = {acc: i for i, acc in enumerate(accession_order)}
     n_acc = len(accession_order)
 
-    DEFAULT_SCORE = -2.0
     r_precision_rows = []
     for name, df in data.group_by(
         [
@@ -728,7 +746,6 @@ def print_auprc(
     acc_to_idx = {acc: i for i, acc in enumerate(accession_order)}
     n_acc = len(accession_order)
 
-    DEFAULT_SCORE = -2.0
     auprc_rows = []
     for name, df in data.group_by(
         [

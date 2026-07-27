@@ -51,7 +51,10 @@ class MetagraphIndex(BaseIndex):
         index_path: Path = index_path.resolve()
         index_path.mkdir(exist_ok=True, parents=True)
         bash_script_path = Path(__file__).parent / "build_metagraph.sh"
-        num_threads = os.cpu_count()
+        # os.cpu_count() reports the whole node, not the cgroup, so under a
+        # partial SLURM allocation it oversubscribes -- build_metagraph.sh
+        # divides this by 8 to size annotate's parallelism.
+        num_threads = int(os.environ.get("SLURM_CPUS_PER_TASK") or 0) or os.cpu_count()
         if not Path(bash_script_path).is_file():
             print(
                 f"Error: Bash script not found at {bash_script_path}", file=sys.stderr

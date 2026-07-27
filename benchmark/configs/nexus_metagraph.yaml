@@ -1,8 +1,21 @@
 model:
   name: metagraph
-  # Nexus has a native build; the perlmutter config uses "shifter metagraph"
-  # because NERSC requires the container runtime.
-  executable: /fs/nexus-scratch/ryansynk/metagraph/metagraph/build/metagraph
+  # No working native build on Nexus: the checkout at metagraph/metagraph/build/
+  # was linked against libboost_iostreams.so.1.66.0, which el9 no longer ships.
+  # Run the published image under apptainer instead; the perlmutter config uses
+  # "shifter metagraph" for the same reason.
+  #
+  # Binds are self-referential on purpose. build() writes contig_manifest.txt on
+  # the host with absolute paths and pipes it to metagraph's stdin inside the
+  # container, and `annotate --anno-filename` records those paths as column
+  # names that search() parses back into accessions. Remapping the prefix (e.g.
+  # to /mnt as the docker docs do) breaks both.
+  executable: >-
+    apptainer exec
+    --bind /fs/nexus-projects/sra_search:/fs/nexus-projects/sra_search
+    --bind /fs/nexus-scratch/ryansynk:/fs/nexus-scratch/ryansynk
+    /fs/nexus-scratch/ryansynk/metagraph_master.sif
+    metagraph
   k: 31
 
 dataset_name: sra50

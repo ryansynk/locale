@@ -1,0 +1,22 @@
+# MMseqs2 (alignment) on the cross-genotype HBV benchmark (sra52viral).
+#
+# The middle baseline: alignment degrades across ~11% divergence but does not
+# fail outright the way exact k-mer matching does. For reference, minimap2 maps
+# 46.5% of these same query reads to a genotype-B reference versus 83.9% to
+# their own genotype.
+#
+# Unlike perlmutter_mmseqs2.yaml this pins an absolute executable path - mmseqs
+# is NOT on PATH on nexus.
+#
+# See nexus_locale_sra52viral.yaml for why the dirs must be fresh.
+model:
+  name: mmseqs
+  executable: /fs/nexus-scratch/ryansynk/mmseqs/bin/mmseqs
+  max_seqs: 300
+
+dataset_name: sra52viral
+dataset_dir: /fs/nexus-projects/sra_search/hf/sra52viral
+index_dir: /fs/nexus-projects/sra_search/indexes_sra52viral
+results_dir: /fs/nexus-scratch/ryansynk/rawbert/benchmark/results_sra52viral
+mutation_rate: 0.0
+num_queries: 500

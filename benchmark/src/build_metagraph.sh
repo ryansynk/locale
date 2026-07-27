@@ -20,7 +20,11 @@ fi
 mkdir -p "${OUTPUT_DIR}"
 
 # 1. Build the joint canonical graph from your pre-cleaned .fa contigs
-cat "${CONTIG_MANIFEST}" | ${METAGRAPH_EXEC} build -v -k "${K}" --inplace --mode canonical -p "${NUM_THREADS}" -o "${OUTPUT_DIR}/graph"
+# No --inplace: upstream made in-place construction the default and replaced the
+# flag with an opt-out --in-ram. Passing --inplace is a hard "Unknown option"
+# error on current metagraph, so this is not backwards compatible with builds
+# older than that change (e.g. the Mar 2026 source checkout in ~/metagraph).
+cat "${CONTIG_MANIFEST}" | ${METAGRAPH_EXEC} build -v -k "${K}" --mode canonical -p "${NUM_THREADS}" -o "${OUTPUT_DIR}/graph"
 
 # 2. Extract primary contigs (Required to prevent 50% sparsity in RowDiff annotations)
 ${METAGRAPH_EXEC} transform -v --to-fasta --primary-kmers -p "${NUM_THREADS}" -o "${OUTPUT_DIR}/primary_contigs" "${OUTPUT_DIR}/graph.dbg"

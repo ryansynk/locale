@@ -22,6 +22,12 @@ from lae.training.batcher import Augmenter
 DATASETS = {
     "sra50": "rsynk/locale-benchmark-sra50",
     "sra500": "rsynk/locale-benchmark-sra500",
+    # Cross-genotype HBV retrieval: query with genotype-D reads, retrieve
+    # genotype-B accessions (~11% divergent). Unlike sra50/sra500, ground truth
+    # comes from SRA genotype metadata rather than from aligning reads to
+    # contigs - the point being that no aligner decides the correct answer.
+    # 52 accessions = 47 sra50 distractors + 5 genotype-B targets.
+    "sra52viral": "rsynk/locale-benchmark-sra52-viral",
 }
 
 

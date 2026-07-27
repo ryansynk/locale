@@ -1,0 +1,32 @@
+# LOCALE on the cross-genotype HBV benchmark (sra52viral).
+#
+# Query with genotype-D HBV reads; retrieve genotype-B accessions ~11% divergent.
+# Ground truth comes from SRA genotype metadata, not from aligning reads to
+# contigs as in sra50/sra500 - no aligner decides the correct answer, which is
+# the point when the baselines are themselves k-mer and alignment methods.
+#
+# FRESH DIRS ARE MANDATORY, NOT TIDINESS. Neither index_suffix nor
+# experiment_id encodes the dataset, so this 52-accession run would land on the
+# exact same paths as the 47-accession sra50 run. An existing .done marker would
+# make it silently load the sra50 index and report quietly wrong recall.
+model:
+  name: locale
+  checkpoint_path: /fs/nexus-scratch/ryansynk/rawbert/checkpoints/8vqiabk9/checkpoint5859.pth.tar
+  batch_size: 1000
+  device: cuda
+  pooling: mean
+  max_seq_len: 256
+  chunk_overlap: 150
+
+dataset_name: sra52viral
+# Must start EMPTY. run_benchmark only downloads contigs when logan_accessions
+# is completely empty, so do not symlink this at the sra50 contig tree the way
+# hf/sra50 does - it would find the 47 distractors, skip the download, and then
+# fail verify_download on the 5 missing genotype-B targets.
+dataset_dir: /fs/nexus-projects/sra_search/hf/sra52viral
+index_dir: /fs/nexus-projects/sra_search/indexes_sra52viral
+results_dir: /fs/nexus-scratch/ryansynk/rawbert/benchmark/results_sra52viral
+mutation_rate: 0.0
+# The dataset ships exactly 500 queries; stated explicitly so a smaller run is a
+# deliberate choice rather than a silent subsample.
+num_queries: 500

@@ -1,0 +1,22 @@
+# Embed-Search-Align (dna2vec / "ESA") on the cross-genotype HBV benchmark.
+#
+# Dense-embedding baseline, mirroring embed-search-align_config.yaml. Keeps that
+# config's pooling: max (LOCALE uses mean) so the comparison reflects the
+# published method rather than a re-tuned variant.
+#
+# See nexus_locale_sra52viral.yaml for why the dirs must be fresh.
+model:
+  name: dna2vec
+  checkpoint_path: null
+  batch_size: 1000
+  device: cuda
+  pooling: max
+  max_seq_len: 256
+  chunk_overlap: 150
+
+dataset_name: sra52viral
+dataset_dir: /fs/nexus-projects/sra_search/hf/sra52viral
+index_dir: /fs/nexus-projects/sra_search/indexes_sra52viral
+results_dir: /fs/nexus-scratch/ryansynk/rawbert/benchmark/results_sra52viral
+mutation_rate: 0.0
+num_queries: 500
