@@ -7,7 +7,9 @@ name = "lae"
 version = "0.1.0"
 description = "Custom BERT implementation with Flash Attention and Triton components"
 readme = "README.md"
-requires-python = ">=3.11,<3.12"
+# The base install is not tied to a single interpreter. The `flash` extra is:
+# its wheel is cp311-only, so `uv sync --extra flash` requires Python 3.11.
+requires-python = ">=3.11,<3.13"
 license = {text = "MIT"}
 authors = [
   {name = "Ryan Synk", email = "ryansynk@umd.edu"}
@@ -17,38 +19,45 @@ dependencies = [
     "torch>=2.6",
     "transformers<=4.57.1",
     "einops",
-    "altair",
     "biopython",
     "edlib",
+    "huggingface-hub",
     "jsonargparse",
+    "matplotlib",
     "numpy",
     "polars",
     "pyarrow",
-    "sourmash",
     "tqdm",
     "wandb",
     "pyyaml",
     "zstandard",
-    "flash-attn==2.7.4.post1+cu12torch2.6cxx11abiFALSE",
-    "ipython>=9.10.0",
-    "ipdb>=0.13.13",
-    "pyfaidx>=0.9.0.3",
-    "vl-convert-python>=1.9.0.post1",
     "metagraph-api",
-    "evo2>=0.5.5",
     "setuptools>=82.0.1",
-    "streamlit>=1.56.0",
     "diskannpy>=0.7.0",
     "scikit-learn>=1.8.0",
     "boto3>=1.43.9",
 ]
 
 [project.optional-dependencies]
+# flash-attn is distributed as a prebuilt wheel tied to one exact
+# python/torch/CUDA/C++-ABI combination. Keeping it out of the base
+# dependencies is what lets this project install on any of them; without it
+# `patch_with_flash_lib` is a no-op and attention falls back to the model's
+# native ALiBi path, which is slower but still correct.
+flash = [
+    "flash-attn==2.7.4.post1+cu12torch2.6cxx11abiFALSE",
+]
+# Only needed for the Evo2 baseline in benchmark/src/dense_index.py, which
+# imports it lazily and errors with an install hint if it is missing.
+evo2 = [
+    "evo2>=0.5.5",
+]
 dev = [
     "pytest",
     "black",
     "ruff",
-    "ipython"
+    "ipython>=9.10.0",
+    "ipdb>=0.13.13",
 ]
 
 [[tool.uv.index]]
@@ -60,8 +69,6 @@ explicit = true
 metagraph-api = { git = "https://github.com/ratschlab/metagraph.git", subdirectory = "metagraph/api/python" }
 torch = { index = "pytorch"}
 flash-attn = { url = "https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp311-cp311-linux_x86_64.whl" }
-# CRITICAL for your directory structure
-# This explicitly tells setuptools to look for the 'locale' directory
 [tool.setuptools.packages.find]
 include = ["lae*"]
 exclude = ["training*", "tests*"]

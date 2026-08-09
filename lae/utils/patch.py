@@ -1,15 +1,43 @@
 import math
+import warnings
 
 import einops
 import torch
-from flash_attn import flash_attn_varlen_qkvpacked_func
+
+# flash-attn ships as a prebuilt wheel pinned to one exact
+# python/torch/CUDA/C++-ABI combination, so it cannot be a hard requirement
+# without pinning the whole project to that combination. It is a throughput
+# optimisation here, never a correctness one -- see patch_with_flash_lib.
+try:
+    from flash_attn import flash_attn_varlen_qkvpacked_func
+except ImportError:
+    flash_attn_varlen_qkvpacked_func = None
 
 
 def patch_with_flash_lib(model):
     """
     Replaces BertUnpadSelfAttention.forward with a direct call to
     flash_attn_varlen_qkvpacked_func, passing ALiBi slopes directly.
+
+    A no-op when flash-attn is not installed. The model then keeps its own
+    attention, which applies the same ALiBi through the ``bias`` argument this
+    patch ignores, so embeddings stay valid -- but it is slower, and this patch
+    casts to fp16 where the native path may not, so numerics can differ slightly
+    from the paper's runs. The warning is deliberately loud: a silent fallback
+    would make that difference invisible when comparing against published
+    numbers.
     """
+    if flash_attn_varlen_qkvpacked_func is None:
+        warnings.warn(
+            "flash-attn is not installed; leaving attention unpatched. ALiBi is "
+            "still applied via the model's native bias path, so results remain "
+            "valid, but throughput is lower and fp16 numerics may differ "
+            "slightly. Install with: uv sync --extra flash",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return
+
     # 1. Locate the class
     try:
         first_layer_attn = model.encoder.layer[0].attention.self
