@@ -23,6 +23,7 @@ import numpy as np
 import polars as pl
 import torch
 from Bio import SeqIO
+from huggingface_hub import hf_hub_download
 from torch import nn
 from tqdm import tqdm
 from transformers import (
@@ -39,7 +40,7 @@ from lae.modeling.model import LOCALE
 from lae.utils.patch import patch_with_flash_lib
 
 from .base_index import BaseIndex
-from .config import DenseConfig, ExperimentConfig
+from .config import PAPER_CHECKPOINT, DenseConfig, ExperimentConfig
 
 
 def batched(iterable, n):
@@ -1027,9 +1028,23 @@ class LOCALEEncoder:
 
         device = cfg.device
         assert cfg.name == "locale"
-        assert cfg.checkpoint_path, "No checkpoint provided!"
-        checkpoint_path = Path(cfg.checkpoint_path).resolve()
-        assert checkpoint_path.is_file(), "Checkpoint does not exist!"
+        if cfg.checkpoint_path is None:
+            # Unset checkpoint_path means the checkpoint published with the
+            # paper. DenseConfig has already pinned the matching ckpt_id and
+            # step, so the index lands where a local copy of the same
+            # checkpoint would. Cached after the first call.
+            checkpoint_path = Path(
+                hf_hub_download(
+                    repo_id=PAPER_CHECKPOINT["repo_id"],
+                    filename=PAPER_CHECKPOINT["filename"],
+                    revision=PAPER_CHECKPOINT["revision"],
+                )
+            )
+        else:
+            checkpoint_path = Path(cfg.checkpoint_path).resolve()
+            assert checkpoint_path.is_file(), (
+                f"Checkpoint does not exist: {checkpoint_path}"
+            )
         checkpoint = torch.load(checkpoint_path)
         model_args = checkpoint["model_args"]
         # Checkpoints trained before the backbone swap have no "backbone" key;

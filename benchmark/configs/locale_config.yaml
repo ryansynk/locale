@@ -1,6 +1,9 @@
 model:
   name: locale                   # locale | dnabert | metagraph | mmseqs | mantis | dna2vec
-  checkpoint_path: null          # path to .pth.tar checkpoint; null to use HF default
+  # null downloads the checkpoint published with the paper (see PAPER_CHECKPOINT
+  # in src/config.py), which reproduces the paper's index paths exactly. Set a
+  # local .pth.tar path to benchmark your own run instead.
+  checkpoint_path: null
   batch_size: 1000               # embedding batch size
   device: cuda                   # cuda | cpu
   pooling: mean                  # mean | max | cls

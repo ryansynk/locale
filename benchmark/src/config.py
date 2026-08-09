@@ -2,6 +2,28 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Optional, Union
 
+# The LOCALE checkpoint published with the paper, downloaded when a locale
+# config leaves checkpoint_path unset.
+#
+# ckpt_id and step are pinned here rather than parsed from the file. For a local
+# checkpoint both are read off the path -- the parent directory is the wandb run
+# id and the digits after "checkpoint" are the step -- but a Hub download lands
+# in a content-addressed cache under a blob hash, which encodes neither. Pinning
+# them is what makes a downloaded checkpoint produce the same index_suffix and
+# experiment_id as the original run, so results land beside the paper's instead
+# of in a directory named after a hash.
+#
+# revision is a commit sha, not a branch: a downloaded checkpoint that silently
+# changes underneath a published benchmark is exactly the failure this pin
+# exists to prevent.
+PAPER_CHECKPOINT = {
+    "repo_id": "rsynk/locale",
+    "filename": "checkpoint5859.pth.tar",
+    "revision": "2ab2b18f0b93bd0051e5a7d9e4e8696123cfab5a",
+    "ckpt_id": "8vqiabk9",
+    "step": 5859,
+}
+
 
 @dataclass
 class AlgorithmConfig:
@@ -41,11 +63,15 @@ class DenseConfig(AlgorithmConfig):
             self.checkpoint: str | None = None
             self.max_len: int = self.max_seq_len
         elif self.name == "locale":
-            assert self.checkpoint_path is not None
-            ckpt_id = Path(self.checkpoint_path).resolve().parent.name
-            self.checkpoint_step_num = int(
-                Path(self.checkpoint_path).name.split(".")[0][10:]
-            )
+            if self.checkpoint_path is None:
+                # Unset means the published checkpoint; dense_index fetches it.
+                ckpt_id = PAPER_CHECKPOINT["ckpt_id"]
+                self.checkpoint_step_num = PAPER_CHECKPOINT["step"]
+            else:
+                ckpt_id = Path(self.checkpoint_path).resolve().parent.name
+                self.checkpoint_step_num = int(
+                    Path(self.checkpoint_path).name.split(".")[0][10:]
+                )
             self.index_suffix: Path = (
                 Path("locale") / ckpt_id / str(self.checkpoint_step_num) / config_tag
             )
