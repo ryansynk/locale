@@ -220,3 +220,6 @@ benchmark/indexes_500
 *.pdf
 benchmark/configs/local
 checkpoints_smoke
+# Local agent working notes, not part of the published repo
+CLAUDE.md
+.claude/
