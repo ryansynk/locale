@@ -15,6 +15,64 @@ uv sync
 
 All commands below should be prefixed with `uv run`.
 
+### Optional extras
+
+| Extra | Install | Needed for |
+|---|---|---|
+| `flash` | `uv sync --extra flash` | Faster attention on DNABERT-2. **Requires Python 3.11 + CUDA 12 + torch 2.6** — the wheel is pinned to that exact combination. |
+| `evo2` | `uv sync --extra evo2` | The Evo2 baseline only. |
+| `dev` | `uv sync --extra dev` | Tests (`pytest`), linting. |
+
+Without `flash`, attention falls back to the model's native path. ALiBi is still
+applied, so embeddings remain valid, but throughput is lower and fp16 numerics
+can differ slightly from the runs reported in the paper. A warning is printed
+whenever the fallback is in use — do not ignore it when comparing against
+published numbers.
+
+---
+
+## Quickstart
+
+Smallest end-to-end run: retrieve 20 queries against an index built over 3 SRA
+accessions, using the checkpoint published with the paper.
+
+```bash
+uv sync
+cd benchmark
+uv run python run_benchmark.py \
+  --config configs/locale_config.yaml \
+  --max_accessions 3 \
+  --num_queries 20 \
+  --index_dir /tmp/locale_smoke_index
+```
+
+The throwaway `--index_dir` is not optional hygiene. A truncated index still
+gets its `.done` marker, and an index is only rebuilt when that marker is
+absent — so a 3-accession smoke index left in the default location would be
+silently reused by a later full run, which then reports quietly wrong recall.
+
+`locale_config.yaml` leaves `checkpoint_path` unset, which downloads the paper's
+checkpoint (466 MB) from [`rsynk/locale`](https://huggingface.co/rsynk/locale),
+pinned to a fixed revision. Everything is cached after the first run.
+
+**Requires at least one CUDA GPU.** Index building fans out one worker process
+per GPU and raises `RuntimeError: No GPUs available for building the index.` on
+a CPU-only machine. There is currently no CPU path for the benchmark; embedding
+sequences directly with `LOCALEEncoder` does work on CPU.
+
+What the first run fetches, all cached afterwards:
+
+| Item | Size | Notes |
+|---|---|---|
+| `sra50` dataset | 4 files | `accs.txt`, `queries.parquet`, metadata |
+| Logan contigs | 1.3 GB | All 47 accessions, ~10 s from the `logan-pub` S3 bucket |
+| LOCALE checkpoint | 466 MB | From the Hub, unless `checkpoint_path` is set |
+| DNABERT-2 | ~500 MB | Backbone weights and tokenizer |
+
+`--max_accessions` limits what gets **indexed**, not what gets downloaded: the
+full accession manifest is verified before truncation, so a smoke run still
+fails loudly on an incomplete dataset rather than quietly indexing a subset.
+
 ---
 
 ## Code Structure
@@ -29,8 +87,11 @@ Core library used for training and embedding:
 Entry point for model training. Configured via YAML files in `configs/`.
 
 ### `configs/`
-YAML configs for training runs. Given config file matching model used in paper:
-- `config.yaml`
+YAML configs for training runs.
+- `config.yaml` — the configuration used for the model in the paper
+- `{nt50m,hyenadna,dna2vec}_{none,light,medium,heavy}.yaml` — the augmentation
+  ladder, one file per backbone and augmentation strength
+- `smoke_{nt50m,hyenadna,dna2vec}.yaml` — 200-step runs for checking a setup
 
 ---
 
@@ -89,20 +150,20 @@ cd benchmark
 Then run the benchmark:
 ```bash
 uv run python run_benchmark.py \
-  --config configs/perlmutter_rawbert.yaml \
-  --query_type raw_read \
+  --config configs/locale_config.yaml \
   --mutation_rate 0.0 \
   --do_timing True \
   --model.exact_search True \
   --results_dir results/
 ```
 
-To parallelize index construction across multiple nodes run with srun:
+To parallelize index construction across multiple nodes run with srun. Each node
+builds a shard independently; node 0 waits for all shards and merges them before
+searching:
 ```bash
 srun --nodes=4 --ntasks-per-node=1 \
   uv run --no-sync python run_benchmark.py \
-  --config configs/perlmutter_rawbert.yaml \
-  --query_type raw_read \
+  --config configs/locale_config.yaml \
   --mutation_rate 0.0 \
   --do_timing True \
   --model.exact_search True \
@@ -111,11 +172,21 @@ srun --nodes=4 --ntasks-per-node=1 \
 
 ### Plotting results
 
-To view results, run:
+`plot_results.py` takes three positional arguments: the results directory, the
+queries parquet, and the accessions list. The latter two come from the
+downloaded dataset — `snapshot_download` reports where it materialised the repo,
+or pass `dataset_dir` in the config to choose the location yourself.
 
 ```bash
-uv run python plot_results.py results/ /pscratch/sd/r/rsynk/locale_data/data/sra_recall/raw_read_queries_final.parquet
+uv run python plot_results.py \
+  results/ \
+  <dataset_dir>/queries.parquet \
+  <dataset_dir>/accs.txt
 ```
+
+Recall@k curves are written to `plots_matplotlib/` (`--plots_dir` to override).
+Rendering uses LaTeX, so a working `latex` installation is required; to print the
+metric tables without plotting, use `print_results.py` with the same arguments.
 
 ## Citation
 
@@ -136,8 +207,3 @@ Pages: 2026.05.12.724581
 Section: New Results},
 }
 ```
-
-## Todos
-- Update dense_index search method to not fill with sentinel values
-- Change repo name/ everything name to locale
-- Move rabitq to faiss
