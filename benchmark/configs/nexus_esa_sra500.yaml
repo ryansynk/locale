@@ -1,0 +1,34 @@
+# Embed-Search-Align (dna2vec / "ESA") on the 500-accession sra500 benchmark.
+#
+# Same task as sra50, ten times the haystack: 500 accessions, 500 queries,
+# ground truth from aligning reads to the contigs. Keeps embed-search-align_
+# config.yaml's pooling: max (LOCALE uses mean) so the comparison reflects the
+# published method rather than a re-tuned variant.
+#
+# FRESH index_dir, DELIBERATELY. The ESA index_suffix is just
+# dna2vec/maxlen256_poolmax_chunkstride -- no dataset in it -- so pointing this
+# at indexes_50 or indexes_sra52viral would find an existing .done marker and
+# silently search a 47- or 52-accession index while reporting sra500 recall.
+model:
+  name: dna2vec
+  checkpoint_path: null
+  batch_size: 1000
+  device: cuda
+  pooling: max
+  max_seq_len: 256
+  chunk_overlap: 150
+
+dataset_name: sra500
+# logan_accessions here is symlinked at test_data_500/logan_contig, which holds
+# all 500 contig sets (23 GB) already fetched from logan-pub. run_benchmark only
+# downloads when that tree is completely empty, so the symlink skips the refetch.
+# Sharing a tree this way is only safe because the manifest and the tree are the
+# same 500 accessions, verified exactly -- no partial overlap to hide a missing
+# target. Do not reuse the pattern for a dataset that merely overlaps this one.
+dataset_dir: /fs/nexus-projects/sra_search/hf/sra500
+index_dir: /fs/nexus-projects/sra_search/indexes_sra500
+results_dir: /fs/nexus-scratch/ryansynk/rawbert/benchmark/results_sra500
+mutation_rate: 0.0
+# The dataset ships exactly 500 queries; stated explicitly so a smaller run is a
+# deliberate choice rather than a silent subsample.
+num_queries: 500

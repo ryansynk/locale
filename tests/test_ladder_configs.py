@@ -16,7 +16,7 @@ from lae.modeling.backbones import BACKBONES
 
 CONFIG_DIR = Path(__file__).parent.parent / "configs"
 
-BACKBONE_IDS = ["nt50m", "hyenadna"]
+BACKBONE_IDS = ["nt50m", "hyenadna", "dna2vec"]
 RUNGS = ["none", "light", "medium", "heavy"]
 
 # The paper's augmentation ladder (method_context.md, Table 3 rows).
@@ -100,12 +100,17 @@ def test_rungs_differ_only_in_mutation_settings(backbone):
 
 def test_backbones_differ_only_in_backbone_field():
     """Across backbones, the recipe must be identical at every rung."""
+    reference_id, *other_ids = BACKBONE_IDS
     for rung in RUNGS:
-        a = _load("nt50m", rung)
-        b = _load("hyenadna", rung)
-        assert a.pop("backbone") == "nt50m"
-        assert b.pop("backbone") == "hyenadna"
-        assert a == b, f"rung {rung} differs between backbones beyond the backbone id"
+        reference = _load(reference_id, rung)
+        assert reference.pop("backbone") == reference_id
+        for backbone in other_ids:
+            other = _load(backbone, rung)
+            assert other.pop("backbone") == backbone
+            assert other == reference, (
+                f"rung {rung} differs between {reference_id} and {backbone} "
+                "beyond the backbone id"
+            )
 
 
 @pytest.mark.parametrize("backbone", BACKBONE_IDS)

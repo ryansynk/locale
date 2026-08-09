@@ -67,12 +67,13 @@ The encoder is selected by `backbone:` in the training config and resolved in
 `lae/modeling/backbones.py`. Everything downstream — mean-pool + L2-norm head,
 InfoNCE loss, index, search — is shared, so only the encoder varies.
 
-- Ids: `dnabert2` (default, D=768), `nt50m` (D=512), `hyenadna` (D=256).
+- Ids: `dnabert2` (default, D=768), `nt50m` (D=512), `hyenadna` (D=256),
+  `dna2vec` (D=1020 — Embed-Search-Align's encoder, 54M params).
 - `backbone` is written into the checkpoint's `model_args`, and the benchmark's
   `LOCALEEncoder` reads it back to pick the matching encoder *and tokenizer*.
   Pre-swap checkpoints have no such key and fall back to `dnabert2`, so
   `8vqiabk9/checkpoint5859.pth.tar` still loads with `strict=True`.
-- Two Hub gotchas, both already handled — don't "simplify" them away:
+- Hub gotchas, all already handled — don't "simplify" them away:
   - NT-v2's `auto_map` has **no `AutoModel` entry**, so `AutoModel` falls back
     to native `EsmModel` (plain MLP) and shape-mismatches against NT's SwiGLU
     weights. Load via `AutoModelForMaskedLM` and take `.esm`.
@@ -83,14 +84,27 @@ InfoNCE loss, index, search — is shared, so only the encoder varies.
     get no gradient, which aborts DDP's reducer at step 2 and puts a `None`
     into the grad-norm logging. `_freeze_unused` handles it; it raises if the
     prefixes stop matching rather than silently regressing.
+  - dna2vec's `DNAEncoder.forward` returns a **bare tensor**, not a tuple. The
+    shared head does `model(...)[0]`, which on a bare tensor picks sequence 0
+    and still broadcasts against the mask into a plausible-looking
+    `(B, S, H)` — it trains on garbage without erroring. `DNA2VecBackbone`
+    wraps the output in a tuple; do not unwrap it. It also absorbs the
+    `token_type_ids` the tokenizer emits, and its positions are a fixed
+    1024-row sinusoidal table (fine for 256bp crops, an index error above it).
 - Before any multi-GPU launch, run the opt-in gradient check — it reproduces
   both DDP failures on CPU in seconds:
   ```
   LAE_RUN_BACKBONE_TESTS=1 uv run python -m pytest tests/test_backbone_gradients.py
   ```
-- Ladder configs are `configs/{nt50m,hyenadna}_{none,light,medium,heavy}.yaml`,
-  generated identically and guarded by `tests/test_ladder_configs.py`, which
-  fails if two rungs differ anywhere but the mutation settings.
+- Ladder configs are
+  `configs/{nt50m,hyenadna,dna2vec}_{none,light,medium,heavy}.yaml`, generated
+  identically and guarded by `tests/test_ladder_configs.py`, which fails if two
+  rungs differ anywhere but the mutation settings.
+- `dna2vec` is also a benchmark `model.name` — the *untrained* ESA baseline in
+  `benchmark/configs/embed-search-align_config.yaml`. Same weights, opposite
+  role: `benchmark/configs/dna2vec_*.yaml` are trained LOCALE checkpoints
+  (`model.name: locale`). Their indexes live under `locale/<runid>/`, so the
+  two never collide on disk.
 - `train_contigs.parquet` / `val_contigs.parquet` are the 50-accession train and
   val slices; verified disjoint from each other and from the 47 eval accessions.
 
@@ -148,10 +162,26 @@ all four rungs, so the within-backbone trend is unaffected:
 ```
 sbatch nexus_train_ladder.sbatch nt50m
 ```
+That sbatch wrapper is **not in the repo** (nor are the old `*_sweep.sh`). For
+the dna2vec ladder use `train_dna2vec_ladder.sh`, which trains all four rungs
+back-to-back inside an existing 8-GPU allocation, then records each wandb run id
+in `benchmark/runs_dna2vec.yaml` and repoints the matching eval config:
+```
+./train_dna2vec_ladder.sh              # or: ./train_dna2vec_ladder.sh medium heavy
+```
+It refuses to start on anything but 8 GPUs, because the step number the eval
+configs name (11718) is `total_samples / (per_device_batch * num_gpus)`.
 
-Evaluate one ablation rung, once per eval-noise level. Configs are
-`benchmark/configs/{nt50m,hyenadna}_{none,light,medium,heavy}.yaml`, which differ
-only in `checkpoint_path`; the rung's run id is recorded in
+Every backbone x rung x eval-noise level in one go — skips rungs with no run id
+recorded, verifies the accession count after each index build, and prints each
+backbone's Table 3 at the end:
+```
+cd benchmark && ./eval_all_backbones.sh            # or: ./eval_all_backbones.sh dna2vec
+```
+
+Evaluate one ablation rung by hand, once per eval-noise level. Configs are
+`benchmark/configs/{nt50m,hyenadna,dna2vec}_{none,light,medium,heavy}.yaml`,
+which differ only in `checkpoint_path`; the rung's run id is recorded in
 `benchmark/runs_<backbone>.yaml`:
 ```
 cd benchmark
@@ -176,7 +206,7 @@ Smoke test before committing to a ladder — 200 steps, then an end-to-end eval 
 3 accessions. Always give the smoke eval a throwaway `index_dir`: a truncated
 index still gets a `.done` marker:
 ```
-uv run python train.py --config configs/smoke_nt50m.yaml
+uv run python train.py --config configs/smoke_nt50m.yaml   # or smoke_{hyenadna,dna2vec}
 uv run python run_benchmark.py --config configs/nexus_locale.yaml \
   --model.checkpoint_path <smoke_ckpt> --index_dir /fs/nexus-scratch/ryansynk/smoke_indexes \
   --max_accessions 3 --num_queries 20

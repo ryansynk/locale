@@ -1,0 +1,14 @@
+# Maps each augmentation rung to the wandb run id that trained it, for
+# make_table3.py. All rungs share step 11718 (6,000,000 samples / global batch
+# 512), so a single `step` covers the whole ladder.
+#
+# train_dna2vec_ladder.sh appends each rung here as it finishes and rewrites the
+# matching benchmark/configs/dna2vec_<rung>.yaml checkpoint_path, so keep
+# `runs:` as the last key in this file.
+backbone: dna2vec
+step: 11718
+runs:
+  none: 7tr6j50g
+  light: xw0nw0jc
+  medium: 3br63dmb
+  heavy: m54vohcl

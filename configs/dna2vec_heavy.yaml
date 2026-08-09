@@ -1,0 +1,84 @@
+# dna2vec / heavy augmentation — backbone-swap ablation (reproduces Table 3).
+#
+# Recipe held fixed across every rung and every backbone; the ONLY fields that
+# differ between the four rungs of a ladder are disable_mutations and the three
+# identity_* values below (enforced by tests/test_ladder_configs.py).
+#
+# Single-node 8-GPU run: effective batch = per_device_batch_size * 8 = 512, not
+# the paper's 1024. training.py sqrt-scales the LR off
+# reference_global_batch_size, giving a peak backbone LR of ~4.24e-5. The real
+# deviation is 512 in-batch negatives instead of 1024 — it applies identically
+# to all four rungs, so the within-backbone none->heavy trend is unaffected.
+# total_samples is fixed, so this is 6000000/512 = 11718 steps.
+backbone: dna2vec
+
+augment_config:
+  # Cropping: containment only, crop lengths uniform in [31, 256], smaller crop
+  # covers >= 40% of the longer.
+  min_seq_len: 31
+  max_seq_len: 256
+  min_overlap_percent: 0.4
+  containment_prob: 1.0
+  overlap_prob: 0.0
+
+  # Mutation injection — THE ABLATED AXIS.
+  disable_mutations: false
+  identity_mean: 80.0
+  identity_stdev: 6.0
+  identity_max: 88.0
+
+  # NOTE: AugmentConfig also carries substitution_rate / insertion_rate /
+  # deletion_rate / substitution_matrix / average_*_length. None are read in
+  # contig mode — Augmenter._uniform_random_mutation hardcodes the paper's
+  # sub/ins/del split of 0.4/0.3/0.3 with uniform substitution. Omitted here so
+  # the config shows only knobs that actually take effect.
+
+# Objective (paper §3.1): InfoNCE with in-batch negatives, tau = 0.05.
+# moco_queue_size 0 disables the MoCo path entirely.
+moco_queue_size: 0
+moco_softmax_temp: 0.05
+moco_momentum: 0.9995
+moco_filter_queue: true
+moco_filter_queue_identity_cutoff: 0.88
+
+# Head: mean-pool over non-padding positions, then L2-normalize. Identical for
+# every backbone — this is what makes the swap a controlled comparison.
+pooling: mean
+use_projection_head: false
+dim: 128
+
+# Optimizer / schedule (paper §3.4) — do NOT re-tune per backbone.
+backbone_lr: 6.0e-05
+lr: 0.001
+schedule: cosine
+warmup_fraction: 0.08
+warmup_samples: null
+per_device_batch_size: 64
+reference_global_batch_size: 1024
+total_samples: 6000000
+num_epochs: 1
+
+# Logan contigs, 50-accession training slice; verified disjoint from the
+# 47-accession eval benchmark and from the 50-accession val split.
+data_type: contig
+dataset_path: /fs/nexus-projects/sra_search/rawbert_datasets/train_contigs.parquet
+val_dataset_path: /fs/nexus-projects/sra_search/rawbert_datasets/val_contigs.parquet
+
+checkpoint_dir: /fs/nexus-scratch/ryansynk/rawbert/checkpoints/
+checkpoint_interval_samples: 1000000
+starting_checkpoint_path: null
+log_dir: logs
+
+# 32 CPUs / 8 ranks on the a4000 nodes, leaving one core per rank for the main
+# process.
+num_workers: 3
+val_batch_size: 512
+num_val_queries: 100
+num_val_keys: 10000
+
+containment_only: false
+use_hard_negatives: false
+hnm_num_negatives: 0
+smith_waterman_temperature: 0.1
+sanity_test: false
+kl: false

@@ -11,7 +11,8 @@ backbones.
 DNABERT-2 and Nucleotide Transformer already satisfy the interface natively and
 are returned unwrapped -- important for DNABERT-2, where wrapping would rename
 every state-dict key and break the existing paper checkpoint. HyenaDNA needs a
-thin adapter because it takes no ``attention_mask``.
+thin adapter because it takes no ``attention_mask``, and dna2vec needs one
+because it returns a bare tensor rather than a tuple.
 """
 
 import torch.nn as nn
@@ -31,6 +32,10 @@ BACKBONES: dict[str, str] = {
     "dnabert2": "zhihan1996/DNABERT-2-117M",
     "nt50m": "InstaDeepAI/nucleotide-transformer-v2-50m-multi-species",
     "hyenadna": "LongSafari/hyenadna-small-32k-seqlen-hf",
+    # Embed-Search-Align's encoder. Note the benchmark also runs this checkpoint
+    # untrained as a baseline (DenseConfig name "dna2vec"); this entry is the
+    # same weights used as a *trainable* backbone under the LOCALE recipe.
+    "dna2vec": "roychowdhuryresearch/dna2vec",
 }
 
 DEFAULT_BACKBONE = "dnabert2"
@@ -85,6 +90,29 @@ class HyenaDNABackbone(nn.Module):
         return self.model(input_ids=input_ids)
 
 
+class DNA2VecBackbone(nn.Module):
+    """Adapter for Embed-Search-Align's dna2vec encoder.
+
+    ``DNAEncoder.forward`` returns the hidden states as a bare tensor, not a
+    tuple or a ModelOutput. Handing that to the shared head is silently wrong
+    rather than loudly broken: ``_embed`` takes ``[0]``, which on a bare tensor
+    selects sequence 0 and yields (seq_len, hidden), and that still broadcasts
+    against the (batch, seq_len, 1) mask to a plausible (batch, seq_len,
+    hidden). Training would proceed on garbage. Wrapping the output in a tuple
+    is what makes ``[0]`` mean last_hidden_state, as every other backbone does.
+
+    The tokenizer also emits ``token_type_ids``, which the encoder has no use
+    for; ``**kwargs`` absorbs it.
+    """
+
+    def __init__(self, model: nn.Module):
+        super().__init__()
+        self.model = model
+
+    def forward(self, input_ids, attention_mask=None, **kwargs):
+        return (self.model(input_ids=input_ids, attention_mask=attention_mask),)
+
+
 def build_backbone(name: str = DEFAULT_BACKBONE) -> tuple[nn.Module, int]:
     """Return ``(encoder, hidden_size)`` for the named backbone."""
     if name not in BACKBONES:
@@ -126,6 +154,17 @@ def build_backbone(name: str = DEFAULT_BACKBONE) -> tuple[nn.Module, int]:
     if name == "hyenadna":
         model = AutoModel.from_pretrained(repo, trust_remote_code=True)
         return HyenaDNABackbone(model), model.config.d_model
+
+    if name == "dna2vec":
+        # Unlike NT-v2, the repo's auto_map does map AutoModel, so this pulls
+        # the repo's own DNAEncoder. Every parameter of it receives a gradient
+        # under the LOCALE loss, so there is nothing to freeze for DDP.
+        model = AutoModel.from_pretrained(repo, trust_remote_code=True)
+        # Positions are a fixed sinusoidal table of max_position_embeddings
+        # (1024) rows, sliced to the input length -- longer inputs are an index
+        # error, not a silent truncation. The recipe crops at 256 bp, which the
+        # k-mer vocab packs into ~130 tokens, so there is a wide margin.
+        return DNA2VecBackbone(model), model.config.embedding_dim
 
     raise _unknown(name)
 

@@ -18,7 +18,7 @@ BENCHMARK_DIR = Path(__file__).parent.parent / "benchmark"
 CONFIG_DIR = BENCHMARK_DIR / "configs"
 CHECKPOINT_DIR = Path(__file__).parent.parent / "checkpoints"
 
-BACKBONE_IDS = ["nt50m", "hyenadna"]
+BACKBONE_IDS = ["nt50m", "hyenadna", "dna2vec"]
 RUNGS = ["none", "light", "medium", "heavy"]
 
 # Everything the eval must hold fixed for the four columns to be comparable.
