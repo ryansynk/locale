@@ -616,24 +616,12 @@ class DenseIndex(BaseIndex):
         # score search_short would produce.  Long queries are chunked without
         # overlap and scored as sum of per-chunk maxima, identical to search_long.
         queries = queries.with_row_index()
-        query_chunks = []
-        query_indices = []
-        prev_idx = 0
-        for query in queries["query_sequence"].to_list():
-            chunked_query = [
-                query[i : (i + self.model_cfg.max_seq_len)]
-                for i in range(0, len(query), self.model_cfg.max_seq_len)
-            ]
-            num_chunks = len(chunked_query)
-            query_indices.append((prev_idx, prev_idx + num_chunks))
-            query_chunks.extend(chunked_query)
-            prev_idx = prev_idx + num_chunks
-
-        query_chunk_features = self.model.encode(query_chunks).to(self.model_cfg.device)
+        query_chunk_features, query_indices = self._embed_queries(queries)
+        query_chunk_features = query_chunk_features.to(self.model_cfg.device)
         if self.use_ann:
             n_queries = len(queries)
             n_acc = len(self.acc_names_flat)
-            n_chunks = len(query_chunks)
+            n_chunks = len(query_chunk_features)
             identifiers, distances = self.index.batch_search(
                 query_chunk_features.cpu().numpy(), 10, 128, num_threads=0
             )
@@ -653,7 +641,7 @@ class DenseIndex(BaseIndex):
             scores_cpu = -2 * np.ones((n_queries, n_acc), dtype=np.float32)
             np.maximum.at(scores_cpu, (query_idx_flat, acc_idx_flat), flat_dists)
         elif self.use_rabitq:
-            n_chunks = len(query_chunks)
+            n_chunks = len(query_chunk_features)
             n_queries = len(queries)
             n_acc = len(self.acc_names_flat)
             top_k = 10
@@ -678,7 +666,7 @@ class DenseIndex(BaseIndex):
             np.maximum.at(scores_cpu, (query_idx_flat, acc_idx_flat), flat_dists)
         elif self.exact_search:
             assert self.all_embeddings is not None
-            n_chunks = len(query_chunks)
+            n_chunks = len(query_chunk_features)
             n_queries = len(queries)
             n_acc = len(self.acc_names_flat)
             top_k = 10
@@ -737,7 +725,7 @@ class DenseIndex(BaseIndex):
             np.maximum.at(scores_cpu, (query_idx_flat, acc_idx_flat), flat_dists)
         else:
             assert self.all_embeddings is not None
-            n_chunks = len(query_chunks)
+            n_chunks = len(query_chunk_features)
             n_queries = len(queries)
             device = self.model_cfg.device
 
@@ -873,6 +861,31 @@ class DenseIndex(BaseIndex):
         if use_rabitq:
             print("Building RaBitQ quantized index from merged embeddings...")
             _build_rabitq_index(index_path / "embeddings.fbin", index_path / "rabitq")
+
+    def _embed_queries(self, queries) -> tuple[torch.Tensor, list[tuple[int, int]]]:
+        """Embed every query, chunking any that exceed max_seq_len.
+
+        Queries are split into non-overlapping max_seq_len windows, so a query
+        shorter than that yields exactly one chunk identical to itself. Returns
+        the (n_chunks, dim) features and, per query, the [start, end) range of
+        rows it owns -- callers that need per-query results reduce over that
+        range rather than assuming one row per query.
+        """
+        query_chunks: list[str] = []
+        query_indices: list[tuple[int, int]] = []
+        prev_idx = 0
+        for query in queries["query_sequence"].to_list():
+            chunked_query = [
+                query[i : (i + self.model_cfg.max_seq_len)]
+                for i in range(0, len(query), self.model_cfg.max_seq_len)
+            ]
+            num_chunks = len(chunked_query)
+            query_indices.append((prev_idx, prev_idx + num_chunks))
+            query_chunks.extend(chunked_query)
+            prev_idx = prev_idx + num_chunks
+
+        query_features = self.model.encode(query_chunks)
+        return query_features, query_indices
 
 
 def chunk_sequence(

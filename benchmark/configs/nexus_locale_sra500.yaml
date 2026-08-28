@@ -1,0 +1,23 @@
+model:
+  name: locale
+  checkpoint_path: /fs/nexus-scratch/ryansynk/rawbert/checkpoints/8vqiabk9/checkpoint5859.pth.tar
+  batch_size: 1000
+  device: cuda
+  pooling: mean
+  max_seq_len: 256
+  chunk_overlap: 150
+
+dataset_name: sra500
+# logan_accessions here is symlinked at test_data_500/logan_contig, which holds
+# all 500 contig sets (23 GB) already fetched from logan-pub. run_benchmark only
+# downloads when that tree is completely empty, so the symlink skips the refetch.
+# Sharing a tree this way is only safe because the manifest and the tree are the
+# same 500 accessions, verified exactly -- no partial overlap to hide a missing
+# target. Do not reuse the pattern for a dataset that merely overlaps this one.
+dataset_dir: /fs/nexus-projects/sra_search/hf/sra500
+index_dir: /fs/nexus-projects/sra_search/indexes_sra500
+results_dir: /fs/nexus-scratch/ryansynk/rawbert/benchmark/results_sra500
+mutation_rate: 0.0
+# The dataset ships exactly 500 queries; stated explicitly so a smaller run is a
+# deliberate choice rather than a silent subsample.
+num_queries: 500

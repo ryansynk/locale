@@ -68,7 +68,10 @@ def main(cfg: ExperimentConfig):
 
     # Download datasets and queries
     local_path = snapshot_download(
-        DATASETS[cfg.dataset_name], repo_type="dataset", local_dir=cfg.dataset_dir
+        DATASETS[cfg.dataset_name],
+        repo_type="dataset",
+        local_dir=cfg.dataset_dir,
+        allow_patterns=["accs.txt", "queries.parquet", "*.json"],
     )
     accession_ids_path: Path = Path(local_path).resolve() / "accs.txt"
     with open(accession_ids_path) as f:
