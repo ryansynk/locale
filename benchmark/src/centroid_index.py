@@ -33,71 +33,55 @@ from .base_index import BaseIndex
 from .config import CentroidConfig, ExperimentConfig
 from .encoders import DenseEncoder
 
-# Unused until the bodies land: _load_fbin_mmap opens the source base and the
-# centroids, _create_fbin_memmap writes centroids.fbin.
-from .fbin import _create_fbin_memmap, _load_fbin_mmap  # noqa: F401
-
-from cuvs.cluster.kmeans import KMeansParams, fit
-
-# Files written into the index directory by build().
-CENTROIDS_FILE = "centroids.fbin"
-COUNTS_FILE = "counts.npy"
-META_FILE = "meta.parquet"
+from .fbin import _create_fbin_memmap, _load_fbin_mmap
 
 
 class CentroidIndex(BaseIndex):
+    # Files save() writes into the index directory and load() reads back.
+    CENTROIDS_FILE = "centroids.fbin"
+    COUNTS_FILE = "counts.npy"
+    META_FILE = "meta.parquet"
+
     def __init__(self, cfg: ExperimentConfig):
         assert isinstance(cfg.model, CentroidConfig)
         self.cfg = cfg
         self.model_cfg: CentroidConfig = cfg.model
         self.no_search: bool = cfg.no_search
 
-        """
-        encoder: DenseConfig = field(default_factory=DenseConfig)
-        self.source_index_dir: Optional[str] = None
-        self.num_centroids: int = cfg.num_centroids
-        nprobe: int = 32
-        sample_size: int = 1_000_000
-        kmeans_iters: int = 25
-        # Rows per streaming tile in the assignment pass. 500k x 768 float32 ~ 1.5 GB,
-        # matching the tile size vecdb_dataset/ground_truth.py settled on for the same
-        # NFS-read-bound scan.
-        tile_rows: int = 500_000
-        probe_weight: Literal["sim", "softmax", "uniform"] = "sim"
-        softmax_temperature: float = 0.05
-        random_seed: int = 0
-        """
-
-        # Populated by load(): the searchable state.
+        # Populated by build() or load(): the searchable state, all on the host.
         self.centroids: torch.Tensor | None = None  # (K, d) unit-norm
-        self.log_counts: torch.Tensor | None = None  # (n_acc, K) float32
+        self.counts: np.ndarray | None = None  # (n_acc, K) int64 raw assignments
+        self.log_counts: torch.Tensor | None = None  # (n_acc, K) float32 log1p
         self.acc_names_flat: list[str] = []
 
         if not self.no_search:
             self.model = DenseEncoder(self.model_cfg.encoder)
 
     def load(self, index_path: Path):
-        self.centroids = torch.load(index_path / "centroids.pt")
-        self.log_counts = torch.load(index_path / "log_counts.pt")
-
-        meta = pl.read_parquet(index_path / "meta.parquet")
-        self.acc_names_flat = meta["srr_id"].to_list()
-        starts = meta["start_row"].to_list()
-        counts = meta["num_rows"].to_list()
-        self.acc_offsets = starts + [starts[-1] + counts[-1]] if starts else [0]
-        mmap = _load_fbin_mmap(index_path / "embeddings.fbin")
-        self._mmap = mmap  # keep reference to prevent GC closing the mapping
-        self.all_embeddings = torch.from_numpy(mmap)
+        # np.array(...) copies the memmap into RAM: at K=4096 the centroids are
+        # ~12 MB, and a torch tensor over a read-only memmap is not writable.
+        self.centroids = torch.from_numpy(
+            np.array(_load_fbin_mmap(index_path / self.CENTROIDS_FILE))
+        )
+        self.counts = np.load(index_path / self.COUNTS_FILE)
+        self.log_counts = torch.from_numpy(np.log1p(self.counts).astype(np.float32))
+        self.acc_names_flat = pl.read_parquet(index_path / self.META_FILE)[
+            "srr_id"
+        ].to_list()
+        assert self.log_counts.shape == (
+            len(self.acc_names_flat),
+            self.centroids.shape[0],
+        )
         print(
-            f"Loaded {len(starts)} accessions ({mmap.shape[0]} vectors) [memory-mapped]"
+            f"Loaded {len(self.acc_names_flat)} accessions x "
+            f"{self.centroids.shape[0]} centroids ({self.counts.sum()} vectors)"
         )
 
     def build(self, accessions: list[Path], index_path: Path):
         # if you pass in the embeddings already in construction, then dont rebuild them
         if self.model_cfg.source_index_dir:
-            embeddings = _load_fbin_mmap(
-                Path(self.model_cfg.source_index_dir) / "embeddings.fbin"
-            )
+            source_dir = Path(self.model_cfg.source_index_dir)
+            embeddings = _load_fbin_mmap(source_dir / "embeddings.fbin")
             n, d = embeddings.shape
         else:
             # Manually generate embeddings, write them, etc
@@ -118,7 +102,9 @@ class CentroidIndex(BaseIndex):
         row_ids = np.sort(rng.permutation(row_ids)[:k])
         sample = torch.from_numpy(embeddings[row_ids])
 
-        device = self.model_cfg.encoder.device
+        from cuvs.cluster.kmeans import KMeansParams, fit
+
+        device = self.model_cfg.device
         params = KMeansParams(
             n_clusters=self.model_cfg.num_centroids,
             max_iter=self.model_cfg.kmeans_iters,
@@ -134,56 +120,66 @@ class CentroidIndex(BaseIndex):
             torch.as_tensor(centroids, device=device), dim=1
         )  # (num_centroids, D)
 
-        meta = pl.read_parquet(index_path / "meta.parquet")
-        acc_names_flat = meta["srr_id"].to_list()
-        starts = meta["start_row"].to_list()
-        counts = meta["num_rows"].to_list()
-        acc_offsets = starts + [starts[-1] + counts[-1]] if starts else [0]
+        # The accession layout is the source index's: index_path does not exist
+        # yet, and this index has no rows of its own. The meta is carried over in
+        # save() so the built index describes its accessions on its own.
+        self._source_meta = pl.read_parquet(source_dir / self.META_FILE)
+        starts = self._source_meta["start_row"].to_list()
+        num_rows = self._source_meta["num_rows"].to_list()
+        acc_offsets = starts + [starts[-1] + num_rows[-1]] if starts else [0]
+        assert acc_offsets[-1] == n, f"meta covers {acc_offsets[-1]} of {n} rows"
 
         counts = self._accumulate_counts(embeddings, centroids, acc_offsets)
         assert counts.sum() == n, f"assigned {counts.sum()} of {n} vectors"
-        # Populated by load(): the searchable state.
-        self.centroids = centroids
-        self.log_counts = np.log1p(counts).astype(np.float32)
-        self.acc_names_flat = acc_names_flat
+        self.centroids = centroids.cpu()
+        self.counts = counts
+        self.log_counts = torch.from_numpy(np.log1p(counts).astype(np.float32))
+        self.acc_names_flat = self._source_meta["srr_id"].to_list()
 
     def search(self, queries: pl.DataFrame) -> pl.DataFrame:
-        assert (
-            queries.filter(
-                pl.col("query_sequence").str.len_chars() > self.model_cfg.max_len
-            ).height
-            == 0
-        ), "CURRENT IMPLEMENTATION DOES NOT SUPPORT QUERIES LONGER THAN max_len"
         assert self.centroids is not None
         assert self.log_counts is not None
 
         queries = queries.with_row_index()
-        query_features, query_indices = self._embed_queries(queries)
-        query_features = query_features.to(self.model_cfg.device)
-        centroids = self.centroids.to(query_features.device)
+        query_chunk_features, query_indices = self._embed_queries(queries)
+        device = self.model_cfg.device
+        query_chunk_features = query_chunk_features.to(device)
+        centroids = self.centroids.to(device)
+        log_counts = self.log_counts.to(device)  # (n_acc, K)
+        n_chunks = query_chunk_features.shape[0]
+        n_queries = len(queries)
 
-        vals, indexes = torch.topk(
-            query_features @ centroids.T, k=self.model_cfg.nprobe
-        )  # (num_queries, nprobe)
+        sims, probe_idx = torch.topk(
+            query_chunk_features @ centroids.T, k=self.model_cfg.nprobe
+        )  # both (n_chunks, nprobe)
+        weights = self._probe_weights(sims)
 
-        # This loop definitely doesn't need to exist
-        query_acc_scores = []
-        for q_idx in range(vals.shape[0]):
-            v = vals[q_idx, :]
-            i = indexes[q_idx, :]
-            query_acc_scores.append(
-                torch.dot(v, self.log_counts[:, i])
-            )  # score for one query over all accessions
-        query_acc_scores = torch.cat(query_acc_scores, dim=1)  # (num_queries, num_accs)
+        # log_counts.T[probe_idx] gathers, per chunk, the (nprobe, n_acc) block of
+        # log counts under its probed centroids; the einsum is the weighted sum
+        # over probes. At 500 queries x 32 probes x 500 accessions this is 8M
+        # floats -- tiny beside the dense index's per-accession matmuls.
+        probed = log_counts.T[probe_idx]  # (n_chunks, nprobe, n_acc)
+        chunk_scores = torch.einsum("cp,cpa->ca", weights, probed)  # (n_chunks, n_acc)
+
+        # A query longer than max_seq_len owns several chunks; sum them, matching
+        # DenseIndex.search's sum-of-chunk-scores reduction.
+        chunk_to_query = torch.zeros(n_chunks, dtype=torch.long, device=device)
+        for qi, (s, e) in enumerate(query_indices):
+            chunk_to_query[s:e] = qi
+        scores = torch.zeros(
+            n_queries, chunk_scores.shape[1], device=device, dtype=chunk_scores.dtype
+        )
+        scores.index_add_(0, chunk_to_query, chunk_scores)  # (n_queries, n_acc)
+        scores_cpu = scores.float().cpu().numpy()
 
         scores_df = []
-        for i in range(query_acc_scores.shape[0]):
-            for j in range(query_acc_scores.shape[1]):
+        for i in range(scores_cpu.shape[0]):
+            for j in range(scores_cpu.shape[1]):
                 scores_df.append(
                     {
                         "query_idx": i,
                         "accession": self.acc_names_flat[j],
-                        "score": float(query_acc_scores[i, j]),
+                        "score": float(scores_cpu[i, j]),
                     }
                 )
 
@@ -204,12 +200,35 @@ class CentroidIndex(BaseIndex):
         return self.acc_names_flat
 
     def save(self, output_path: Path):
-        self.acc_names_flat
-        self.centroids
-        self.log_counts
+        assert self.centroids is not None and self.counts is not None
+        output_path.mkdir(parents=True, exist_ok=True)
+        centroids = self.centroids.cpu().numpy().astype(np.float32)
+        out = _create_fbin_memmap(output_path / self.CENTROIDS_FILE, *centroids.shape)
+        out[:] = centroids
+        out.flush()
+        # Raw counts, not log1p: they are exact integers and load() derives the
+        # rest, so a different scoring transform later needs no rebuild.
+        np.save(output_path / self.COUNTS_FILE, self.counts)
+        self._source_meta.write_parquet(output_path / self.META_FILE)
 
     def index_size_gb(self, index_path: Path):
-        pass
+        return sum(
+            (index_path / f).stat().st_size
+            for f in (self.CENTROIDS_FILE, self.COUNTS_FILE, self.META_FILE)
+        ) / (1024**3)
+
+    def _probe_weights(self, sims: torch.Tensor) -> torch.Tensor:
+        """Weight each probed centroid by ``probe_weight``: (n_chunks, nprobe)."""
+        mode = self.model_cfg.probe_weight
+        if mode == "sim":
+            return sims
+        if mode == "softmax":
+            return torch.softmax(sims / self.model_cfg.softmax_temperature, dim=1)
+        if mode == "uniform":
+            return torch.ones_like(sims)
+        raise ValueError(
+            f"probe_weight expected sim, softmax, or uniform. Got = {mode}"
+        )
 
     def _accumulate_counts(self, base, centroids, acc_offsets):
         """Assign every base vector to a centroid -> raw counts ``(n_acc, K)``.
@@ -217,7 +236,7 @@ class CentroidIndex(BaseIndex):
         Streams the base in ``tile_rows`` tiles, read-bound rather than
         compute-bound: the matmul is ~1 PFLOP against ~500 GB of NFS reads.
         """
-        device = self.model_cfg.encoder.device
+        device = self.model_cfg.device
         n, d = base.shape
         K = centroids.shape[0]
         n_acc = len(acc_offsets) - 1
@@ -235,7 +254,13 @@ class CentroidIndex(BaseIndex):
 
         # Basic slicing of a memmap is a view, so copyto faults the pages straight
         # into pinned memory with no intermediate array.
-        staging = torch.empty((tile_rows, d), dtype=torch.float32, pin_memory=True)
+        # Pinning needs a CUDA allocator; on a CPU device it is neither possible
+        # nor useful.
+        staging = torch.empty(
+            (tile_rows, d),
+            dtype=torch.float32,
+            pin_memory=torch.device(device).type == "cuda",
+        )
         staging_np = staging.numpy()
 
         for start in tqdm(range(0, n, tile_rows), desc="Assigning centroids"):
@@ -268,9 +293,9 @@ class CentroidIndex(BaseIndex):
         query_indices: list[tuple[int, int]] = []
         prev_idx = 0
         for query in queries["query_sequence"].to_list():
+            max_seq_len = self.model_cfg.encoder.max_seq_len
             chunked_query = [
-                query[i : (i + self.model_cfg.max_seq_len)]
-                for i in range(0, len(query), self.model_cfg.max_seq_len)
+                query[i : (i + max_seq_len)] for i in range(0, len(query), max_seq_len)
             ]
             num_chunks = len(chunked_query)
             query_indices.append((prev_idx, prev_idx + num_chunks))

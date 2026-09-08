@@ -1,0 +1,45 @@
+# CentroidIndex over the LOCALE sra500 embeddings -- Perlmutter counterpart of
+# nexus_centroid_locale_sra500.yaml. Same encoder, same index parameters; only
+# the paths differ. Read that file for why the encoder block must match the
+# source index exactly.
+#
+# PATHS ARE UNVERIFIED. They follow the layout the last Perlmutter configs in
+# git history used (/pscratch/sd/r/rsynk/locale/experiments/sra_recall/
+# {indexes_500,results_500}). Before running, check that source_index_dir holds
+# embeddings.fbin + meta.parquet for all 500 accessions; if the dense locale
+# index lives elsewhere on Perlmutter, fix source_index_dir and index_dir
+# together so the centroid index lands beside it.
+#
+# checkpoint_path: null downloads the published checkpoint (PAPER_CHECKPOINT in
+# src/config.py) and pins ckpt_id/step to 8vqiabk9/5859, so index_suffix and
+# experiment_id match the nexus run and results are directly comparable. Set a
+# local path only if you have the same checkpoint on pscratch.
+model:
+  name: centroid
+  encoder:
+    name: locale
+    checkpoint_path: null
+    batch_size: 1000
+    device: cuda
+    pooling: mean
+    max_seq_len: 256
+    chunk_overlap: 150
+  source_index_dir: /pscratch/sd/r/rsynk/locale/experiments/sra_recall/indexes_500/locale/8vqiabk9/5859/maxlen256_poolmean_chunkstride
+  num_centroids: 4096
+  nprobe: 32
+  sample_size: 1000000
+  kmeans_iters: 25
+  device: cuda
+  tile_rows: 500000
+  probe_weight: sim
+  softmax_temperature: 0.05
+  random_seed: 0
+
+dataset_name: sra500
+# Materialise the HF dataset on pscratch, not the $HOME cache: the 500 contig
+# sets are 23 GB, well past the home quota.
+dataset_dir: /pscratch/sd/r/rsynk/locale/experiments/sra_recall/hf/sra500
+index_dir: /pscratch/sd/r/rsynk/locale/experiments/sra_recall/indexes_500
+results_dir: /pscratch/sd/r/rsynk/locale/experiments/sra_recall/results_500
+mutation_rate: 0.0
+num_queries: 500
