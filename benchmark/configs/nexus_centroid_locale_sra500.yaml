@@ -1,0 +1,43 @@
+# CentroidIndex (bag-of-centroids) over the LOCALE sra500 embeddings.
+#
+# The encoder block must match the dense index named in source_index_dir
+# exactly -- same checkpoint, pooling, max_seq_len, chunk_overlap -- because the
+# build clusters that index's embeddings.fbin instead of re-embedding, and
+# search embeds queries with this encoder and probes those centroids. A mismatch
+# gives unit-norm vectors in two unrelated spaces and recall near chance, with
+# no error. The values below are copied from nexus_locale_sra500.yaml.
+#
+# index_dir is shared with the dense runs on purpose: CentroidConfig.index_suffix
+# is centroid/<encoder suffix>/K<num_centroids>, so this lands beside the source
+# index at indexes_sra500/centroid/locale/8vqiabk9/5859/maxlen256_poolmean_chunkstride/K4096
+# and cannot collide with it. nprobe and probe_weight are query-time only and
+# reuse one built index; change them freely from the command line.
+model:
+  name: centroid
+  encoder:
+    name: locale
+    checkpoint_path: /fs/nexus-scratch/ryansynk/rawbert/checkpoints/8vqiabk9/checkpoint5859.pth.tar
+    batch_size: 1000
+    device: cuda
+    pooling: mean
+    max_seq_len: 256
+    chunk_overlap: 150
+  source_index_dir: /fs/nexus-projects/sra_search/indexes_sra500/locale/8vqiabk9/5859/maxlen256_poolmean_chunkstride
+  num_centroids: 4096
+  nprobe: 32
+  sample_size: 1000000
+  kmeans_iters: 25
+  device: cuda
+  tile_rows: 500000
+  probe_weight: sim
+  softmax_temperature: 0.05
+  random_seed: 0
+
+dataset_name: sra500
+# Same shared logan_contig tree as the other sra500 configs; see
+# nexus_locale_sra500.yaml for why the symlink is safe here and nowhere else.
+dataset_dir: /fs/nexus-projects/sra_search/hf/sra500
+index_dir: /fs/nexus-projects/sra_search/indexes_sra500
+results_dir: /fs/nexus-scratch/ryansynk/rawbert/benchmark/results_sra500
+mutation_rate: 0.0
+num_queries: 500

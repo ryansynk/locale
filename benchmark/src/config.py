@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Optional, Union
 
@@ -144,8 +144,57 @@ class MMseqs2Config(AlgorithmConfig):
 
 
 @dataclass
+class CentroidConfig(AlgorithmConfig):
+    """Bag-of-centroids index over embeddings produced by ``encoder``.
+
+    This *composes* a DenseConfig rather than restating its fields, so any of the
+    encoders works with this index and the two axes stay independent.
+
+    ``source_index_dir`` points at a prebuilt dense index directory
+    (``embeddings.fbin`` + ``meta.parquet``); the build clusters those vectors
+    instead of re-embedding the FASTA.
+    """
+
+    encoder: DenseConfig = field(default_factory=DenseConfig)
+    name: str = "centroid"
+    source_index_dir: Optional[str] = None
+    num_centroids: int = 4096
+    nprobe: int = 32
+    sample_size: int = 1_000_000
+    kmeans_iters: int = 25
+    device: str = "cuda"
+    # Rows per streaming tile in the assignment pass. 500k x 768 float32 ~ 1.5 GB,
+    # matching the tile size vecdb_dataset/ground_truth.py settled on for the same
+    # NFS-read-bound scan.
+    tile_rows: int = 500_000
+    probe_weight: Literal["sim", "softmax", "uniform"] = "sim"
+    softmax_temperature: float = 0.05
+    random_seed: int = 0
+
+    def __post_init__(self):
+        # num_centroids changes the index on disk; nprobe and probe_weight are
+        # query-time only, so one built index serves every setting of them. They
+        # belong in experiment_id (results differ) but not in index_suffix.
+        config_tag = f"K{self.num_centroids}"
+        self.index_suffix: Path = (
+            Path("centroid") / self.encoder.index_suffix / config_tag
+        )
+        self.experiment_id: str = (
+            f"centroid_{self.encoder.experiment_id}_{config_tag}"
+            f"_p{self.nprobe}_w{self.probe_weight}"
+        )
+        self.checkpoint: str | None = self.encoder.checkpoint
+        self.max_len: int | None = self.encoder.max_len
+        self.chunk_type: int | None = None
+        self.checkpoint_step_num: int | None = self.encoder.checkpoint_step_num
+
+    def __str__(self):
+        return self.experiment_id
+
+
+@dataclass
 class ExperimentConfig:
-    model: Union[DenseConfig, MetagraphConfig, MMseqs2Config]
+    model: Union[DenseConfig, MetagraphConfig, MMseqs2Config, CentroidConfig]
     dataset_name: str
     dataset_dir: str | None
     index_dir: Path

@@ -33,7 +33,19 @@ dependencies = [
     "zstandard",
     "metagraph-api",
     "setuptools>=82.0.1",
-    "diskannpy>=0.7.0",
+    # GPU ANN (CAGRA) for DenseIndex.use_ann, replacing diskannpy. The CUDA major
+    # version is baked into the package name; -cu12 matches the cu124 torch index
+    # below. Wheels are manylinux x86_64/aarch64 only.
+    #
+    # Capped below 26.4: from 26.4 on, libcuvs-cu12 requires nvidia-nvjitlink-cu12
+    # >=12.9, while torch 2.6.0+cu124 pins it to ==12.4.127 -- unresolvable together.
+    # Moving to a newer cuvs means moving torch to a cu129 build first, which also
+    # means a new flash-attn wheel.
+    "cuvs-cu12>=26.2,<26.4",
+    # Transitive (cuvs -> libcuvs), listed only so the nvidia index below applies to
+    # it: uv sources bind to direct dependencies, and this is the other half of the
+    # pair RAPIDS has not published as a PyPI wheel at 26.2.
+    "libcuvs-cu12>=26.2,<26.4",
     "scikit-learn>=1.8.0",
     "boto3>=1.43.9",
 ]
@@ -65,9 +77,18 @@ name = "pytorch"
 url = "https://download.pytorch.org/whl/cu124"
 explicit = true
 
+# RAPIDS ships only sdists to PyPI for every cuvs release that predates 26.6, and
+# building cuvs from source needs the full CUDA toolchain. The wheels live here.
+[[tool.uv.index]]
+name = "nvidia"
+url = "https://pypi.nvidia.com"
+explicit = true
+
 [tool.uv.sources]
 metagraph-api = { git = "https://github.com/ratschlab/metagraph.git", subdirectory = "metagraph/api/python" }
 torch = { index = "pytorch"}
+cuvs-cu12 = { index = "nvidia" }
+libcuvs-cu12 = { index = "nvidia" }
 flash-attn = { url = "https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp311-cp311-linux_x86_64.whl" }
 [tool.setuptools.packages.find]
 include = ["lae*"]
