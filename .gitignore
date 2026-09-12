@@ -223,3 +223,6 @@ checkpoints_smoke
 # Local agent working notes, not part of the published repo
 CLAUDE.md
 .claude/
+benchmark/indexes_100studies
+benchmark/indexes_500_sweep
+benchmark/slurm_logs

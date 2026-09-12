@@ -1,0 +1,35 @@
+# LOCALE dense index on the 100-studies dataset (5092 accessions, 10000
+# queries) built 2026-09-11 by locale-data/benchmark/finalize_query_dataset.py.
+#
+# "sra100studies" is not an HF dataset: any dataset_name outside
+# run_benchmark.DATASETS is treated as local, and dataset_dir must already hold
+# accs.txt + queries.parquet (the finalize bundle layout). logan_accessions/
+# in the bundle is a tree of per-accession symlinks into
+# locale-data/100studies_work/logan_contigs, built for exactly the 5092
+# manifest accessions -- the contig tree itself holds 3 extra zero-hit
+# accessions (ERR208895, SRR6667443, SRR6667444) that must stay out of the
+# index, so do not symlink the whole tree.
+#
+# checkpoint_path is the local copy of the published paper checkpoint;
+# ckpt_id/step parse off the path to 8vqiabk9/5859, matching the sra50/sra500
+# runs. Encoder settings mirror perlmutter_centroid_locale_sra500.yaml.
+model:
+  name: locale
+  checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/8vqiabk9/checkpoint5859.pth.tar
+  batch_size: 1000
+  device: cuda
+  pooling: mean
+  max_seq_len: 256
+  chunk_overlap: 150
+
+dataset_name: sra100studies
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/100studies_work/bundle
+# index_suffix encodes only the model (locale/8vqiabk9/5859/...), not the
+# dataset, so this dataset needs its own index root -- pointing at indexes_500
+# or indexes would silently reuse the wrong index.
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes_100studies
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results_100studies
+mutation_rate: 0.0
+# The bundle ships exactly 10000 queries; stated explicitly so a smaller run
+# is a deliberate choice rather than a silent subsample.
+num_queries: 1000
