@@ -6,6 +6,7 @@ import multiprocessing as mp
 import os
 import random
 import sys
+import threading
 import traceback
 from collections import defaultdict
 from concurrent.futures import (
@@ -356,6 +357,67 @@ class RaBitQIndex:
         return final_scores, final_indices
 
 
+def _chunks_for_length(seq_len: int, chunk_size: int, step_size: int) -> int:
+    """Chunk count _iter_chunks yields for one sequence, from its length alone.
+
+    Mirrors the two branches exactly: sequences of at most chunk_size (including
+    empty ones) pass through _iter_chunks whole as a single chunk; longer ones go
+    through chunk_sequence's stride mode, which yields
+    range(0, seq_len - chunk_size + 1, step_size) chunks.
+    """
+    if seq_len <= chunk_size:
+        return 1
+    return (seq_len - chunk_size) // step_size + 1
+
+
+def _count_file_chunks(fasta_path: str, chunk_size: int, step_size: int) -> int:
+    """Count the chunks one FASTA contributes without materializing any of them.
+
+    Plain text scan instead of SeqIO: only per-record sequence lengths are
+    needed, and Logan assemblies can have >10M records per file, where
+    SeqRecord construction alone dominates the runtime.
+    """
+    total = 0
+    seq_len = 0
+    in_record = False
+    with open(fasta_path) as f:
+        for line in f:
+            if line.startswith(">"):
+                if in_record:
+                    total += _chunks_for_length(seq_len, chunk_size, step_size)
+                in_record = True
+                seq_len = 0
+            else:
+                seq_len += len(line.strip())
+        if in_record:
+            total += _chunks_for_length(seq_len, chunk_size, step_size)
+    return total
+
+
+def count_total_chunks(
+    accessions: list[Path], chunk_size: int, chunk_overlap: int
+) -> int:
+    """Parallel arithmetic replacement for `sum(1 for _ in _iter_chunks(...))`."""
+    step_size = chunk_size - chunk_overlap
+    if step_size <= 0:
+        raise ValueError("The overlap must be strictly less than the chunk size.")
+    # Fork, not spawn: workers only read files (no torch/CUDA use), and fork
+    # skips re-importing this module's heavy dependencies in every worker.
+    num_workers = min(len(accessions), len(os.sched_getaffinity(0)))
+    ctx = mp.get_context("fork")
+    total = 0
+    with ProcessPoolExecutor(max_workers=num_workers, mp_context=ctx) as executor:
+        futures = [
+            executor.submit(_count_file_chunks, str(acc), chunk_size, step_size)
+            for acc in accessions
+        ]
+        for f in tqdm(
+            as_completed(futures), total=len(futures), desc="Counting chunks"
+        ):
+            total += f.result()
+    return total
+
+
 # Global variable to hold the model instance per worker process
 _worker_encoder = None
 
@@ -408,14 +470,16 @@ class DenseIndex(BaseIndex):
         self.use_rabitq: bool = cfg.model.use_rabitq
         self.model_cfg = cfg.model
 
-        if not self.no_search:
-            self.model = DenseEncoder(cfg.model)
-            # chunk_type was dropped from DenseConfig during the v1 cleanup;
-            # stride is the only supported mode (see the hardcoded "chunkstride"
-            # index tag in config.py and the legacy column in run_benchmark.py).
-            self.chunk_type: Literal["stride", "exact_chunk"] = "stride"
-            self.chunk_overlap: int = cfg.model.chunk_overlap
-            self.contig_align_intervals: dict[str, list[tuple[int, int]]] | None = None
+        # Unconditional: build() needs the encoder for embed_dim and the chunking
+        # attributes for _iter_chunks, so a no_search (build-only) run crashed
+        # when these lived behind `if not self.no_search`.
+        self.model = DenseEncoder(cfg.model)
+        # chunk_type was dropped from DenseConfig during the v1 cleanup;
+        # stride is the only supported mode (see the hardcoded "chunkstride"
+        # index tag in config.py and the legacy column in run_benchmark.py).
+        self.chunk_type: Literal["stride", "exact_chunk"] = "stride"
+        self.chunk_overlap: int = cfg.model.chunk_overlap
+        self.contig_align_intervals: dict[str, list[tuple[int, int]]] | None = None
 
     def load(self, index_path: Path):
         meta = pl.read_parquet(index_path / "meta.parquet")
@@ -475,8 +539,10 @@ class DenseIndex(BaseIndex):
         if num_gpus == 0:
             raise RuntimeError("No GPUs available for building the index.")
 
-        print("Pre-counting chunks (one-pass FASTA scan)...")
-        total_chunks = sum(1 for _ in self._iter_chunks(accessions))
+        print("Pre-counting chunks (parallel length scan)...")
+        total_chunks = count_total_chunks(
+            accessions, self.model_cfg.max_seq_len, self.chunk_overlap
+        )
         print(f"Total chunks: {total_chunks:,}")
 
         embed_dim = self.model.encode(["ACGT"]).shape[1]
@@ -721,28 +787,58 @@ class DenseIndex(BaseIndex):
             assert self.all_embeddings is not None
             n_chunks = len(query_chunk_features)
             n_queries = len(queries)
-            device = self.model_cfg.device
+            n_acc = len(self.acc_names_flat)
 
-            # Pre-compute once: which query each chunk belongs to
-            chunk_to_query = torch.zeros(n_chunks, dtype=torch.long, device=device)
+            # Per-accession scoring (2 GPU ops per accession instead of
+            # n_queries), parallelized across all GPUs: accessions are dealt
+            # round-robin to one thread per device. GPU ops and memmap page
+            # faults release the GIL, so the threads also overlap the multi-TB
+            # index read. Each accession streams through its GPU in blocks:
+            # the largest ones (~30M+ vectors, 90+ GB fp32) do not fit on a
+            # 40 GB A100 as a single slice, and maximum() over block maxima
+            # equals the full max.
+            block_rows = 2_000_000
+            if torch.cuda.is_available():
+                devices = [f"cuda:{i}" for i in range(torch.cuda.device_count())]
+            else:
+                devices = [self.model_cfg.device]
+            qcf_cpu = query_chunk_features.cpu()
+            chunk_to_query_cpu = torch.zeros(n_chunks, dtype=torch.long)
             for qi, (s, e) in enumerate(query_indices):
-                chunk_to_query[s:e] = qi
-            # Per-accession loop — 2 GPU ops per accession instead of n_queries
-            all_scores = []
-            for i in range(len(self.acc_names_flat)):
-                s, e = self.acc_offsets[i], self.acc_offsets[i + 1]
-                logits = (
-                    query_chunk_features @ self.all_embeddings[s:e].to(device).T
-                )  # (n_chunks, acc_size)
-                chunk_maxes = logits.max(dim=-1).values  # (n_chunks,)
-                acc_scores = torch.zeros(
-                    n_queries, device=device, dtype=chunk_maxes.dtype
-                )
-                acc_scores.scatter_add_(0, chunk_to_query, chunk_maxes)  # (n_queries,)
-                all_scores.append(acc_scores)
+                chunk_to_query_cpu[s:e] = qi
 
-            scores = torch.stack(all_scores, dim=1)  # (n_queries, n_acc)
-            scores_cpu = scores.float().cpu().numpy()
+            all_embeddings = self.all_embeddings
+            acc_offsets = self.acc_offsets
+            # Threads write disjoint columns, so unsynchronized writes are safe
+            scores_cpu = np.zeros((n_queries, n_acc), dtype=np.float32)
+
+            def _score_accessions(dev_idx: int):
+                dev = devices[dev_idx]
+                q = qcf_cpu.to(dev)
+                c2q = chunk_to_query_cpu.to(dev)
+                acc_ids = range(dev_idx, n_acc, len(devices))
+                if dev_idx == 0:
+                    acc_ids = tqdm(acc_ids, desc=f"Scoring accessions ({len(devices)} GPUs)")
+                for i in acc_ids:
+                    s, e = acc_offsets[i], acc_offsets[i + 1]
+                    if e <= s:
+                        continue
+                    chunk_maxes = torch.full(
+                        (n_chunks,), float("-inf"), device=dev, dtype=q.dtype
+                    )
+                    for bs in range(s, e, block_rows):
+                        be = min(bs + block_rows, e)
+                        logits = q @ all_embeddings[bs:be].to(dev).T
+                        chunk_maxes = torch.maximum(
+                            chunk_maxes, logits.max(dim=-1).values
+                        )
+                    acc_scores = torch.zeros(n_queries, device=dev, dtype=q.dtype)
+                    acc_scores.scatter_add_(0, c2q, chunk_maxes)  # (n_queries,)
+                    scores_cpu[:, i] = acc_scores.cpu().numpy()
+
+            with ThreadPoolExecutor(max_workers=len(devices)) as pool:
+                # list() propagates any worker exception
+                list(pool.map(_score_accessions, range(len(devices))))
 
         accession_names = self.acc_names_flat
         # scores_col = []
@@ -814,45 +910,112 @@ class DenseIndex(BaseIndex):
         cagra.save(str(index_path / CAGRA_INDEX_FILE), index, include_dataset=True)
 
     @staticmethod
-    def merge_shards(index_path: Path, num_nodes: int, use_rabitq: bool = False):
-        """Stream per-node shard embeddings into a single memmap file — no full load into RAM."""
+    def merge_shards(
+        index_path: Path,
+        num_nodes: int,
+        use_rabitq: bool = False,
+        copy_workers: int = 8,
+        buf_bytes: int = 64 << 20,
+    ):
+        """Concatenate per-node shard fbins into one file, without loading into RAM.
+
+        Each shard owns a disjoint byte range of the merged file, so shards are
+        copied concurrently as raw byte streams (fbin is header + contiguous
+        float32 rows). A progress file records fully-copied shards, making an
+        interrupted merge resumable; completed ranks are recorded only after an
+        fsync, so a crash can never mark a partially-written shard done.
+        """
+        header_bytes = 8
         all_meta = []
+        shard_sizes: list[int] = []
         total_vectors = 0
         embed_dim = None
 
         for rank in range(num_nodes):
             shard_path = index_path / f"shard_{rank}"
-            arr = _load_fbin_mmap(shard_path / "embeddings.fbin")
-            if embed_dim is None and arr.ndim == 2:
-                embed_dim = arr.shape[1]
+            fbin_path = shard_path / "embeddings.fbin"
+            with open(fbin_path, "rb") as f:
+                n, d = (int(x) for x in np.frombuffer(f.read(8), dtype=np.uint32))
+            expected = header_bytes + n * d * 4
+            actual = fbin_path.stat().st_size
+            if actual != expected:
+                raise ValueError(
+                    f"{fbin_path}: size {actual} != {expected} for header ({n}, {d})"
+                )
+            if embed_dim is None:
+                embed_dim = d
+            elif d != embed_dim:
+                raise ValueError(f"{fbin_path}: dim {d} != {embed_dim}")
             meta = pl.read_parquet(shard_path / "meta.parquet")
             meta = meta.with_columns(
                 (pl.col("start_row") + total_vectors).alias("start_row")
             )
             all_meta.append(meta)
-            total_vectors += len(arr)
-            del arr
+            shard_sizes.append(n)
+            total_vectors += n
             print(f"  Shard {rank}: {len(meta)} accessions")
 
         if embed_dim is None:
             raise ValueError("No valid shards found")
 
-        merged = _create_fbin_memmap(
-            index_path / "embeddings.fbin", total_vectors, embed_dim
-        )
-        offset = 0
-        for rank in range(num_nodes):
-            arr = _load_fbin_mmap(index_path / f"shard_{rank}" / "embeddings.fbin")
-            n = len(arr)
-            merged[offset : offset + n] = arr
-            offset += n
-            del arr
-            print(f"  Streamed shard {rank} ({n} vectors)")
+        row_bytes = embed_dim * 4
+        merged_path = index_path / "embeddings.fbin"
+        progress_path = index_path / ".merge_progress"
+        expected_size = header_bytes + total_vectors * row_bytes
 
-        merged.flush()
-        del merged
+        done_ranks: set[int] = set()
+        if (
+            progress_path.exists()
+            and merged_path.exists()
+            and merged_path.stat().st_size == expected_size
+        ):
+            done_ranks = {int(x) for x in progress_path.read_text().split()}
+            print(f"Resuming merge: {len(done_ranks)} shards already streamed")
+        else:
+            # Sparse pre-allocation: header, then seek-and-touch the last byte
+            with open(merged_path, "wb") as f:
+                np.array([total_vectors, embed_dim], dtype=np.uint32).tofile(f)
+                f.seek(total_vectors * row_bytes - 1, 1)
+                f.write(b"\x00")
+            progress_path.write_text("")
+
+        shard_offsets = [
+            header_bytes + sum(shard_sizes[:r]) * row_bytes for r in range(num_nodes)
+        ]
+        progress_lock = threading.Lock()
+
+        def _copy_shard(rank: int) -> int:
+            src_path = index_path / f"shard_{rank}" / "embeddings.fbin"
+            target = shard_sizes[rank] * row_bytes
+            with open(src_path, "rb") as src, open(merged_path, "r+b") as out:
+                src.seek(header_bytes)
+                out.seek(shard_offsets[rank])
+                copied = 0
+                while copied < target:
+                    chunk = src.read(min(buf_bytes, target - copied))
+                    if not chunk:
+                        raise IOError(f"{src_path} truncated at byte {copied}")
+                    out.write(chunk)
+                    copied += len(chunk)
+                out.flush()
+                os.fsync(out.fileno())
+            with progress_lock:
+                with open(progress_path, "a") as pf:
+                    pf.write(f"{rank}\n")
+            return rank
+
+        todo = [r for r in range(num_nodes) if r not in done_ranks]
+        if todo:
+            with ThreadPoolExecutor(max_workers=min(copy_workers, len(todo))) as pool:
+                futures = [pool.submit(_copy_shard, r) for r in todo]
+                for f in tqdm(
+                    as_completed(futures), total=len(futures), desc="Merging shards"
+                ):
+                    rank = f.result()
+                    print(f"  Streamed shard {rank} ({shard_sizes[rank]} vectors)")
 
         pl.concat(all_meta).write_parquet(index_path / "meta.parquet")
+        progress_path.unlink(missing_ok=True)
         print(f"Merged {num_nodes} shards -> {total_vectors} vectors")
 
         if use_rabitq:

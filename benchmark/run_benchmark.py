@@ -68,13 +68,24 @@ def _wait_for_shards(
 def main(cfg: ExperimentConfig):
     index_path: Path = cfg.index_dir / cfg.model.index_suffix
 
-    # Download datasets and queries
-    local_path = snapshot_download(
-        DATASETS[cfg.dataset_name],
-        repo_type="dataset",
-        local_dir=cfg.dataset_dir,
-        allow_patterns=["accs.txt", "queries.parquet", "*.json"],
-    )
+    # Download datasets and queries. A dataset_name not in DATASETS is a local
+    # dataset: dataset_dir must already hold accs.txt and queries.parquet (the
+    # bundle layout finalize_query_dataset.py writes).
+    if cfg.dataset_name in DATASETS:
+        local_path = snapshot_download(
+            DATASETS[cfg.dataset_name],
+            repo_type="dataset",
+            local_dir=cfg.dataset_dir,
+            allow_patterns=["accs.txt", "queries.parquet", "*.json"],
+        )
+    else:
+        local_path = cfg.dataset_dir
+        for required in ("accs.txt", "queries.parquet"):
+            if not (Path(local_path) / required).exists():
+                raise FileNotFoundError(
+                    f"Local dataset '{cfg.dataset_name}': {required} not found in "
+                    f"{local_path} (local datasets are not downloaded)"
+                )
     accession_ids_path: Path = Path(local_path).resolve() / "accs.txt"
     with open(accession_ids_path) as f:
         accession_ids = f.read().splitlines()
@@ -115,12 +126,17 @@ def main(cfg: ExperimentConfig):
         if num_nodes > 1:
             node_accessions = accession_paths[node_rank::num_nodes]
             shard_path = index_path / f"shard_{node_rank}"
-            print(
-                f"[Node {node_rank}/{num_nodes}] Building shard from {len(node_accessions)} accessions..."
-            )
-            index.build(node_accessions, shard_path)
-            index.save(shard_path)
-            (shard_path / ".done").touch()
+            # A shard marked .done was fully built by a previous run at the
+            # same node count; skipping it makes timed-out runs resumable.
+            if (shard_path / ".done").exists():
+                print(f"[Node {node_rank}/{num_nodes}] Shard already built, skipping.")
+            else:
+                print(
+                    f"[Node {node_rank}/{num_nodes}] Building shard from {len(node_accessions)} accessions..."
+                )
+                index.build(node_accessions, shard_path)
+                index.save(shard_path)
+                (shard_path / ".done").touch()
 
             if node_rank != 0:
                 print(f"[Node {node_rank}] Shard saved. Exiting.")

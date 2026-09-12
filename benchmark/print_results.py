@@ -26,6 +26,9 @@ plt.rcParams["text.usetex"] = False
 
 # Kept in sync with plot_results.main() by hand; polars validates it on read, so
 # a drift shows up as a loud schema error rather than silently wrong numbers.
+# The one sanctioned gap: results written before run_benchmark recorded
+# index_size_gb (pre-2026-05) lack that column, so reads insert missing columns
+# as null and the systems table shows a blank size for those runs.
 SCHEMA = pl.Schema(
     {
         "query_id": pl.String,
@@ -57,7 +60,9 @@ def main(
     files = sorted(results_dir.rglob("*.parquet"))
     if not files:
         raise SystemExit(f"No .parquet files under {results_dir}")
-    data = pl.concat([pl.read_parquet(f, schema=SCHEMA) for f in files])
+    data = pl.concat(
+        [pl.read_parquet(f, schema=SCHEMA, missing_columns="insert") for f in files]
+    )
 
     oracle = pr.raw_read_oracle_results(pl.read_parquet(Path(raw_read_queries_path)))
     oracle = oracle.join(data.select("mutation_rate").unique(), how="cross")

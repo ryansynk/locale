@@ -215,6 +215,9 @@ def plot_r_precision_vs_noise_line(
             "LLM-ED",
             "ESA",
         ]
+        # Names outside the paper set (e.g. the pre-rename "rawbert" results or
+        # a centroid run) sort after it instead of failing the Enum cast.
+        order += sorted(set(r_precision_df["model"].to_list()) - set(order))
         print(
             r_precision_df.with_columns(pl.col("model").cast(pl.Enum(order)))
             .sort("mutation_rate", "model")
@@ -379,6 +382,9 @@ def plot_recall_at_k_vs_noise_line(
             "LLM-ED",
             "ESA",
         ]
+        # Names outside the paper set (e.g. the pre-rename "rawbert" results or
+        # a centroid run) sort after it instead of failing the Enum cast.
+        order += sorted(set(recall_at_k_df["model"].to_list()) - set(order))
         print(
             recall_at_k_df.with_columns(pl.col("model").cast(pl.Enum(order)))
             .sort("mutation_rate", "model")
