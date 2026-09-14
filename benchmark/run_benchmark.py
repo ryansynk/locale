@@ -1,9 +1,11 @@
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
 
 import polars as pl
+import torch
 from huggingface_hub import snapshot_download
 from jsonargparse import CLI
 from src.config import (
@@ -63,6 +65,80 @@ def _wait_for_shards(
         time.sleep(poll_interval)
         elapsed += poll_interval
     raise TimeoutError(f"Timed out after {timeout}s waiting for all {num_nodes} shards")
+
+
+def _wait_for_files(paths: list[Path], timeout: int = 7200, poll_interval: int = 15):
+    elapsed = 0
+    while elapsed < timeout:
+        if all(p.exists() for p in paths):
+            return
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+    missing = [str(p) for p in paths if not p.exists()]
+    raise TimeoutError(f"Timed out after {timeout}s waiting for: {missing}")
+
+
+def _multi_node_search(
+    cfg: ExperimentConfig,
+    index: DenseIndex,
+    queries: pl.DataFrame,
+    index_path: Path,
+    node_rank: int,
+    num_nodes: int,
+) -> pl.DataFrame | None:
+    """Shard the streaming dense search across nodes; node 0 merges partials.
+
+    Every node scores a stride of the accessions and atomically writes a
+    partial result; node 0 waits for all partials and reassembles each query's
+    results in index order, identical to a single-node search. Returns the
+    merged results on node 0, None on every other rank. Partials are keyed by
+    the search parameters and reused when present, so an interrupted run
+    resumes instead of rescoring.
+    """
+    acc_names = index.indexed_accessions()
+    acc_indices = list(range(node_rank, len(acc_names), num_nodes))
+    partials_dir = index_path / (
+        f"search_partials_mut{cfg.mutation_rate}"
+        f"_n{len(queries)}_seed{cfg.random_seed}"
+    )
+    partials_dir.mkdir(parents=True, exist_ok=True)
+    partial_path = partials_dir / f"rank_{node_rank}_of_{num_nodes}.parquet"
+
+    if partial_path.exists():
+        print(f"[Node {node_rank}] Partial search result exists, reusing.")
+    else:
+        partial = index.search(queries, acc_indices=acc_indices)
+        tmp_path = partial_path.with_suffix(".parquet.tmp")
+        partial.write_parquet(tmp_path)
+        tmp_path.rename(partial_path)
+
+    if node_rank != 0:
+        print(f"[Node {node_rank}] Partial search saved. Exiting.")
+        return None
+
+    partial_paths = [
+        partials_dir / f"rank_{r}_of_{num_nodes}.parquet" for r in range(num_nodes)
+    ]
+    print(f"[Node 0] Waiting for {num_nodes - 1} other partial result(s)...")
+    _wait_for_files(partial_paths)
+
+    # Reassemble each query's results in index order, matching what a
+    # single-node search returns
+    acc_order = pl.DataFrame({"accession": acc_names}).with_row_index("acc_pos")
+    merged = (
+        pl.concat([pl.read_parquet(p) for p in partial_paths])
+        .explode("results")
+        .unnest("results")
+        .join(acc_order, on="accession")
+        .sort("acc_pos")
+        .group_by("query_id")
+        .agg(pl.struct("accession", "score").alias("results"))
+    )
+    results = queries.select("query_id").join(merged, on="query_id", how="left")
+    assert len(results) == len(queries)
+    assert results["results"].null_count() == 0
+    shutil.rmtree(partials_dir)
+    return results
 
 
 def main(cfg: ExperimentConfig):
@@ -155,7 +231,14 @@ def main(cfg: ExperimentConfig):
         print("[no_search]: Index built. Exiting.")
         sys.exit(0)
 
-    if num_nodes > 1 and node_rank != 0:
+    # The streaming dense search shards accessions across nodes; every other
+    # engine (ANN/RaBitQ/exact-search dense variants, metagraph, mmseqs,
+    # centroid) still searches on node 0 alone.
+    dense_streaming = isinstance(cfg.model, DenseConfig) and not (
+        cfg.model.use_ann or cfg.model.use_rabitq or cfg.model.exact_search
+    )
+    multi_node_search = num_nodes > 1 and dense_streaming
+    if num_nodes > 1 and not multi_node_search and node_rank != 0:
         print(
             f"[Node {node_rank}] Index built. Skipping search (only node 0 searches)."
         )
@@ -163,9 +246,22 @@ def main(cfg: ExperimentConfig):
 
     index.load(index_path)
     if cfg.mutation_rate > 0.0:
+        # Mutations draw from torch's RNG; seeding makes every node mutate the
+        # queries identically, which multi-node search requires for a query's
+        # scores to be comparable across accession shards.
+        torch.manual_seed(cfg.random_seed)
         queries = apply_mutations(queries, cfg.mutation_rate)
 
-    if cfg.do_timing:
+    if multi_node_search:
+        if cfg.do_timing:
+            raise ValueError("do_timing is not supported with multi-node search")
+        results = _multi_node_search(
+            cfg, index, queries, index_path, node_rank, num_nodes
+        )
+        if results is None:
+            sys.exit(0)
+        avg_time = -1.0
+    elif cfg.do_timing:
         times = []
         for i in range(cfg.timing_runs):
             start = time.time()

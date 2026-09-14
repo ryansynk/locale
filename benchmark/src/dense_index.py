@@ -648,12 +648,26 @@ class DenseIndex(BaseIndex):
             _build_rabitq_index(index_path / "embeddings.fbin", index_path / "rabitq")
 
     @torch.no_grad()
-    def search(self, queries: pl.DataFrame) -> pl.DataFrame:
+    def search(
+        self, queries: pl.DataFrame, acc_indices: list[int] | None = None
+    ) -> pl.DataFrame:
         # Unified replacement for search/search_short/search_long.
         # Short queries (< max_seq_len) produce a single chunk identical to the
         # full query, so sum-of-chunk-maxima reduces to a plain max — the same
         # score search_short would produce.  Long queries are chunked without
         # overlap and scored as sum of per-chunk maxima, identical to search_long.
+        #
+        # acc_indices restricts scoring to that subset of accessions — used by
+        # multi-node search, where each node scores a stride of the index. The
+        # returned results then cover only those accessions.
+        if acc_indices is not None and (
+            self.use_ann or self.use_rabitq or self.exact_search
+        ):
+            raise NotImplementedError(
+                "acc_indices is only supported by the streaming search path"
+            )
+        if acc_indices is None:
+            acc_indices = list(range(len(self.acc_names_flat)))
         queries = queries.with_row_index()
         query_chunk_features, query_indices = self._embed_queries(queries)
         query_chunk_features = query_chunk_features.to(self.model_cfg.device)
@@ -787,7 +801,7 @@ class DenseIndex(BaseIndex):
             assert self.all_embeddings is not None
             n_chunks = len(query_chunk_features)
             n_queries = len(queries)
-            n_acc = len(self.acc_names_flat)
+            n_acc = len(acc_indices)
 
             # Per-accession scoring (2 GPU ops per accession instead of
             # n_queries), parallelized across all GPUs: accessions are dealt
@@ -816,10 +830,13 @@ class DenseIndex(BaseIndex):
                 dev = devices[dev_idx]
                 q = qcf_cpu.to(dev)
                 c2q = chunk_to_query_cpu.to(dev)
-                acc_ids = range(dev_idx, n_acc, len(devices))
+                positions = range(dev_idx, n_acc, len(devices))
                 if dev_idx == 0:
-                    acc_ids = tqdm(acc_ids, desc=f"Scoring accessions ({len(devices)} GPUs)")
-                for i in acc_ids:
+                    positions = tqdm(
+                        positions, desc=f"Scoring accessions ({len(devices)} GPUs)"
+                    )
+                for pos in positions:
+                    i = acc_indices[pos]
                     s, e = acc_offsets[i], acc_offsets[i + 1]
                     if e <= s:
                         continue
@@ -834,13 +851,13 @@ class DenseIndex(BaseIndex):
                         )
                     acc_scores = torch.zeros(n_queries, device=dev, dtype=q.dtype)
                     acc_scores.scatter_add_(0, c2q, chunk_maxes)  # (n_queries,)
-                    scores_cpu[:, i] = acc_scores.cpu().numpy()
+                    scores_cpu[:, pos] = acc_scores.cpu().numpy()
 
             with ThreadPoolExecutor(max_workers=len(devices)) as pool:
                 # list() propagates any worker exception
                 list(pool.map(_score_accessions, range(len(devices))))
 
-        accession_names = self.acc_names_flat
+        accession_names = [self.acc_names_flat[i] for i in acc_indices]
         # scores_col = []
         scores_df = []
         for i in range(scores_cpu.shape[0]):
