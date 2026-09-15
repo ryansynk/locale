@@ -73,6 +73,40 @@ srun uv run python run_benchmark.py --config configs/nexus_locale.yaml ...
 
 An index is rebuilt only when `<index_dir>/<index_suffix>/.done` is absent, so reruns reuse existing indexes.
 
+### Multi-node search (dense methods only)
+
+With the index built, a multi-node `srun` also shards the search. The default
+(full-dense) path deals accessions out across nodes and node 0 reassembles the
+per-accession scores. With `model.exact_search: true` the search instead ranks
+each query's exact global top-`model.top_k` nearest index *vectors* (the
+ranking an ANN index approximates) and regroups them to accessions by max
+score; each node scans an equal range of vector rows and node 0 merges the
+per-query top-k lists. `exact_search` appends `_exacttop<k>` to the
+`experiment_id`, so its results sit beside the full-dense ones, and the raw
+per-query hits are also written to
+`<topk_hits_dir>/<experiment_id>/raw_read_mut_<rate>_topk<k>.parquet`
+(`topk_hits_dir` defaults to `<results_dir>_topk_hits`, deliberately outside
+`results_dir`, whose parquets `print_results.py` reads with a strict schema).
+
+### Re-scoring saved top-k hits at smaller k
+
+Because the top-k-then-regroup ranking at any `k' <= k` depends only on the
+first `k'` saved hits, every smaller `k'` is derived without another scan:
+
+```bash
+uv run python rescore_topk.py \
+  <topk_hits_dir>/<experiment_id> \
+  results_regroup/ \
+  <dataset_dir>/accs.txt \
+  --ks "[10,20,50,100,200,1000]"
+```
+
+This writes one standard results parquet per `k'` under
+`results_regroup/<experiment_id>_k<k'>/`, scorable with `print_results.py`.
+When several models share a first-token display name (`locale_...`),
+`print_results.py` keeps the full ids apart in its tables instead of pooling
+them (`--full_model_names` overrides the auto-detection).
+
 ---
 
 ## Plotting Results

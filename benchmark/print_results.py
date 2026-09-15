@@ -52,7 +52,18 @@ def main(
     accessions: Path_fr,
     k: int = 7,
     bootstrap_samples: int = 10000,
+    full_model_names: bool | None = None,
 ):
+    """
+    Args:
+        full_model_names: keep full model ids in the R-precision and recall
+            tables instead of the paper's first-token display names ("LOCALE").
+            The default (None) decides from the data: full ids whenever the
+            short names would pool distinct models -- e.g. the full-dense
+            baseline, an exact top-k run and its rescore_topk.py derivatives all
+            start with "locale" and would otherwise be averaged into one row.
+            The AUPRC table always uses full ids.
+    """
     results_dir = Path(results_dir)
     with open(accessions) as f:
         accs = f.read().splitlines()
@@ -68,17 +79,39 @@ def main(
     oracle = oracle.join(data.select("mutation_rate").unique(), how="cross")
 
     rates = sorted(data["mutation_rate"].unique().to_list())
+    models = sorted(data["model"].unique().to_list())
     print(f"Loaded {len(files)} parquet(s), {len(data)} rows")
-    print(f"models        : {sorted(data['model'].unique().to_list())}")
+    print(f"models        : {models}")
     print(f"mutation rates: {rates}")
+
+    if full_model_names is None:
+        full_model_names = len({m.split("_")[0] for m in models}) < len(models)
+        if full_model_names:
+            print(
+                "Several models share a first-token display name; keeping full "
+                "model ids in the R-precision/recall tables so they are not pooled."
+            )
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         pr.plot_r_precision_vs_noise_line(
-            data, oracle, accs, tmp, bootstrap_samples, print_data=True
+            data,
+            oracle,
+            accs,
+            tmp,
+            bootstrap_samples,
+            print_data=True,
+            short_model_names=not full_model_names,
         )
         pr.plot_recall_at_k_vs_noise_line(
-            data, oracle, accs, k, tmp, bootstrap_samples, print_data=True
+            data,
+            oracle,
+            accs,
+            k,
+            tmp,
+            bootstrap_samples,
+            print_data=True,
+            short_model_names=not full_model_names,
         )
     pr.print_auprc(data, oracle, accs, bootstrap_samples)
     print("=========== SYSTEMS DATA =============")

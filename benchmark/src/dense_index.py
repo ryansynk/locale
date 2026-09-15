@@ -32,6 +32,7 @@ from .config import DenseConfig, ExperimentConfig
 # them from here.
 from .encoders import DenseEncoder, _strings_to_one_hot, batched  # noqa: F401
 from .fbin import _create_fbin_memmap, _load_fbin_mmap  # noqa: F401
+from .topk_regroup import build_hits_frame, regroup_topk_hits
 
 # cuVS CAGRA serializes to a single file rather than DiskANN's directory of them.
 CAGRA_INDEX_FILE = "cagra_index.bin"
@@ -468,6 +469,7 @@ class DenseIndex(BaseIndex):
         self.use_ann: bool = cfg.model.use_ann
         self.exact_search: bool = cfg.model.exact_search
         self.use_rabitq: bool = cfg.model.use_rabitq
+        self.top_k: int = cfg.model.top_k
         self.model_cfg = cfg.model
 
         # Unconditional: build() needs the encoder for embed_dim and the chunking
@@ -666,6 +668,15 @@ class DenseIndex(BaseIndex):
             raise NotImplementedError(
                 "acc_indices is only supported by the streaming search path"
             )
+        if self.exact_search:
+            # Exact global top-k over every index vector, regrouped to
+            # accessions. The scan lives in exact_topk_hits so run_benchmark can
+            # persist the vector-level hits and shard the scan across nodes;
+            # this is the single-node convenience wrapper.
+            hits = self.exact_topk_hits(queries)
+            df = regroup_topk_hits(hits, self.acc_names_flat)
+            assert len(df) == len(queries)
+            return df
         if acc_indices is None:
             acc_indices = list(range(len(self.acc_names_flat)))
         queries = queries.with_row_index()
@@ -677,7 +688,7 @@ class DenseIndex(BaseIndex):
             n_queries = len(queries)
             n_acc = len(self.acc_names_flat)
             n_chunks = len(query_chunk_features)
-            top_k = 10
+            top_k = self.top_k
 
             # cuVS reads and writes through the CUDA array interface, which torch
             # tensors implement -- passing the output buffers in keeps the results in
@@ -718,7 +729,7 @@ class DenseIndex(BaseIndex):
             n_chunks = len(query_chunk_features)
             n_queries = len(queries)
             n_acc = len(self.acc_names_flat)
-            top_k = 10
+            top_k = self.top_k
 
             chunk_to_query_np = np.zeros(n_chunks, dtype=np.int64)
             for qi, (s, e) in enumerate(query_indices):
@@ -730,65 +741,6 @@ class DenseIndex(BaseIndex):
 
             flat_ids = ids_tensor.numpy().ravel()
             flat_dists = scores_tensor.numpy().ravel()
-            chunk_idx_flat = np.repeat(np.arange(n_chunks), top_k)
-
-            acc_offsets_arr = np.array(self.acc_offsets)
-            acc_idx_flat = np.searchsorted(acc_offsets_arr, flat_ids, side="right") - 1
-            query_idx_flat = chunk_to_query_np[chunk_idx_flat]
-
-            scores_cpu = -2 * np.ones((n_queries, n_acc), dtype=np.float32)
-            np.maximum.at(scores_cpu, (query_idx_flat, acc_idx_flat), flat_dists)
-        elif self.exact_search:
-            assert self.all_embeddings is not None
-            n_chunks = len(query_chunk_features)
-            n_queries = len(queries)
-            n_acc = len(self.acc_names_flat)
-            top_k = 10
-
-            # Pre-compute once: which query each chunk belongs to
-            chunk_to_query_np = np.zeros(n_chunks, dtype=np.int64)
-            for qi, (s, e) in enumerate(query_indices):
-                chunk_to_query_np[s:e] = qi
-
-            # Shard all_embeddings across available GPUs and compute matmul in parallel.
-            # GPU ops release the GIL so threads give true parallelism.
-            all_embeddings = self.all_embeddings
-            n_vecs = all_embeddings.shape[0]
-            n_gpus = torch.cuda.device_count()
-            shard_size = (n_vecs + n_gpus - 1) // n_gpus
-            qcf_cpu = query_chunk_features.cpu()
-
-            def _matmul_shard(gpu_id: int):
-                dev = torch.device(f"cuda:{gpu_id}")
-                s = gpu_id * shard_size
-                e = min(s + shard_size, n_vecs)
-                emb = all_embeddings[s:e].to(dev)
-                q = qcf_cpu.to(dev)
-                logits = q @ emb.T  # (n_chunks, shard_size)
-                k = min(top_k, logits.shape[1])
-                vals, idx = torch.topk(logits, k, dim=-1)
-                if k < top_k:
-                    pad = top_k - k
-                    vals = torch.nn.functional.pad(vals, (0, pad), value=float("-inf"))
-                    idx = torch.nn.functional.pad(idx, (0, pad), value=0)
-                return vals.cpu(), idx.cpu() + s
-
-            import concurrent.futures as _cf
-
-            with _cf.ThreadPoolExecutor(max_workers=n_gpus) as pool:
-                shard_results = list(pool.map(_matmul_shard, range(n_gpus)))
-
-            # Merge per-shard top-k into global top-k
-            all_vals = torch.cat(
-                [r[0] for r in shard_results], dim=1
-            )  # (n_chunks, n_gpus*top_k)
-            all_idx = torch.cat([r[1] for r in shard_results], dim=1)
-            top_vals, top_pos = torch.topk(all_vals, top_k, dim=-1)
-            identifiers = torch.gather(all_idx, 1, top_pos)
-            distances = top_vals
-
-            flat_ids = identifiers.numpy().ravel()
-            flat_dists = distances.numpy().ravel()
             chunk_idx_flat = np.repeat(np.arange(n_chunks), top_k)
 
             acc_offsets_arr = np.array(self.acc_offsets)
@@ -882,6 +834,107 @@ class DenseIndex(BaseIndex):
 
         assert len(df) == len(queries)
         return df
+
+    @torch.no_grad()
+    def exact_topk_hits(
+        self,
+        queries: pl.DataFrame,
+        vec_range: tuple[int, int] | None = None,
+        block_rows: int = 2_000_000,
+    ) -> pl.DataFrame:
+        """Exact top-k nearest index vectors per query, streamed off the memmap.
+
+        Scans index rows [vec_range) -- the whole index when None -- and returns
+        one row per query: ``query_id`` and ``hits``, a score-descending list of
+        at most ``self.top_k`` ``{accession, score, vector_id}`` structs. This is
+        the artifact the top-k-then-regroup experiment saves: smaller k are its
+        prefixes, and regroup_topk_hits turns any prefix into the standard
+        per-accession results.
+
+        The range is split evenly across the node's GPUs; each streams its
+        sub-range in ``block_rows`` blocks (2M x 768 fp32 = 6 GB, the same tile
+        the streaming dense path uses) and folds every block's top-k into a
+        running (n_chunks, top_k) buffer, so the full 7 TB index never has to
+        fit anywhere. A long query's chunks each keep their own top-k; the
+        query's list is their union, deduplicated by vector (max score) and cut
+        back to top_k. vec_range makes the scan shardable: each node's hits are
+        exact over its own range, so node 0 merges them with merge_topk_hits.
+        """
+        assert self.all_embeddings is not None
+        all_embeddings = self.all_embeddings
+        n_vecs = all_embeddings.shape[0]
+        start, end = (0, n_vecs) if vec_range is None else vec_range
+        if not (0 <= start <= end <= n_vecs):
+            raise ValueError(f"vec_range {vec_range} outside [0, {n_vecs}]")
+        top_k = self.top_k
+
+        query_chunk_features, query_indices = self._embed_queries(queries)
+        qcf_cpu = query_chunk_features.cpu().float()
+        n_chunks = len(qcf_cpu)
+
+        if torch.cuda.is_available():
+            devices = [f"cuda:{i}" for i in range(torch.cuda.device_count())]
+        else:
+            devices = [self.model_cfg.device]
+        n_dev = len(devices)
+        per_dev = -(-(end - start) // n_dev) if end > start else 0
+
+        def _scan(dev_idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+            dev = torch.device(devices[dev_idx])
+            s = start + dev_idx * per_dev
+            e = min(s + per_dev, end)
+            q = qcf_cpu.to(dev)
+            best_vals = torch.full(
+                (n_chunks, top_k), float("-inf"), device=dev, dtype=q.dtype
+            )
+            best_ids = torch.full((n_chunks, top_k), -1, device=dev, dtype=torch.int64)
+            blocks = range(s, e, block_rows)
+            if dev_idx == 0:
+                blocks = tqdm(
+                    blocks,
+                    desc=f"Exact top-{top_k} scan ({n_dev} device(s), "
+                    f"{end - start:,} vectors)",
+                )
+            for bs in blocks:
+                be = min(bs + block_rows, e)
+                logits = q @ all_embeddings[bs:be].to(dev).T  # (n_chunks, be-bs)
+                k = min(top_k, be - bs)
+                vals, idx = torch.topk(logits, k, dim=-1)
+                cand_vals = torch.cat([best_vals, vals], dim=1)
+                cand_ids = torch.cat([best_ids, idx + bs], dim=1)
+                best_vals, pos = torch.topk(cand_vals, top_k, dim=-1)
+                best_ids = torch.gather(cand_ids, 1, pos)
+            return best_vals.cpu(), best_ids.cpu()
+
+        with ThreadPoolExecutor(max_workers=n_dev) as pool:
+            shard_results = list(pool.map(_scan, range(n_dev)))
+
+        # Per-device buffers are exact over disjoint sub-ranges; fold them into
+        # per-chunk global top-k, then let build_hits_frame union a query's
+        # chunks. Padding slots (id -1, -inf) fall out in that union.
+        all_vals = torch.cat([r[0] for r in shard_results], dim=1)
+        all_ids = torch.cat([r[1] for r in shard_results], dim=1)
+        k = min(top_k, all_vals.shape[1])
+        top_vals, top_pos = torch.topk(all_vals, k, dim=-1)
+        top_ids = torch.gather(all_ids, 1, top_pos)
+
+        chunk_to_query = np.zeros(n_chunks, dtype=np.int64)
+        for qi, (cs, ce) in enumerate(query_indices):
+            chunk_to_query[cs:ce] = qi
+        flat_query_pos = np.repeat(chunk_to_query, k)
+        return build_hits_frame(
+            query_ids=queries["query_id"].to_list(),
+            flat_query_pos=flat_query_pos,
+            flat_vector_ids=top_ids.numpy().ravel(),
+            flat_scores=top_vals.numpy().ravel().astype(np.float64),
+            acc_offsets=np.asarray(self.acc_offsets, dtype=np.int64),
+            acc_names=self.acc_names_flat,
+            top_k=top_k,
+        )
+
+    def num_vectors(self) -> int:
+        assert self.all_embeddings is not None
+        return int(self.all_embeddings.shape[0])
 
     def indexed_accessions(self) -> list[str]:
         return self.acc_names_flat

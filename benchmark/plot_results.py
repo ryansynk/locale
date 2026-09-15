@@ -116,9 +116,16 @@ def plot_r_precision_vs_noise_line(
     plots_dir: Path,
     bootstrap_samples: int,
     print_data: bool = True,
+    short_model_names: bool = True,
 ):
     data = data.filter(~pl.col("model").is_in(["random", "oracle"]))
-    data = data.with_columns(pl.col("model").str.split("_").list.get(0))
+    # Paper-style display: "locale_<ckpt>_<step>_..." -> "LOCALE". That pools
+    # every run whose id starts with the same token into ONE group (their
+    # per-query metrics are averaged together), which is what the paper tables
+    # want and exactly wrong for comparing variants of one model -- pass
+    # short_model_names=False to keep the full ids apart.
+    if short_model_names:
+        data = data.with_columns(pl.col("model").str.split("_").list.get(0))
     title_names = {
         "mmseqs": "MMseqs2",
         "llmed": "LLM-ED",
@@ -285,9 +292,12 @@ def plot_recall_at_k_vs_noise_line(
     plots_dir: Path,
     bootstrap_samples: int,
     print_data: bool = True,
+    short_model_names: bool = True,
 ):
     data = data.filter(~pl.col("model").is_in(["random", "oracle"]))
-    data = data.with_columns(pl.col("model").str.split("_").list.get(0))
+    # See plot_r_precision_vs_noise_line.
+    if short_model_names:
+        data = data.with_columns(pl.col("model").str.split("_").list.get(0))
     title_names = {
         "mmseqs": "MMseqs2",
         "llmed": "LLM-ED",

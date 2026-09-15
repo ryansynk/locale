@@ -20,6 +20,7 @@ from src.centroid_index import CentroidIndex
 from src.download_accessions import download_accessions
 from src.metagraph_index import MetagraphIndex
 from src.mmseqs2_index import MMseqs2Index
+from src.topk_regroup import merge_topk_hits, regroup_topk_hits
 
 from lae.training.batcher import Augmenter
 
@@ -141,6 +142,81 @@ def _multi_node_search(
     return results
 
 
+def _multi_node_exact_topk(
+    cfg: ExperimentConfig,
+    index: DenseIndex,
+    queries: pl.DataFrame,
+    index_path: Path,
+    node_rank: int,
+    num_nodes: int,
+) -> pl.DataFrame | None:
+    """Shard the exact top-k vector scan across nodes; node 0 merges the hits.
+
+    Unlike the streaming search, which deals out accessions, this splits the
+    index's *vector rows* into num_nodes contiguous, equal ranges (the scan is
+    a flat matmul over rows, so this balances the 7 TB read exactly). Every
+    node writes its per-query top-k hits over its range; node 0 unions the
+    partials and re-takes each query's global top-k, which is exact because
+    each partial is exact over a disjoint range. Returns the merged hits frame
+    on node 0, None elsewhere. Partials are keyed by the search parameters and
+    top_k and reused when present, so a timed-out run resumes.
+    """
+    n_vecs = index.num_vectors()
+    bounds = [n_vecs * r // num_nodes for r in range(num_nodes + 1)]
+    vec_range = (bounds[node_rank], bounds[node_rank + 1])
+    partials_dir = index_path / (
+        f"exact_top{index.top_k}_partials_mut{cfg.mutation_rate}"
+        f"_n{len(queries)}_seed{cfg.random_seed}"
+    )
+    partials_dir.mkdir(parents=True, exist_ok=True)
+    partial_path = partials_dir / f"rank_{node_rank}_of_{num_nodes}.parquet"
+
+    if partial_path.exists():
+        print(f"[Node {node_rank}] Partial top-k hits exist, reusing.")
+    else:
+        print(f"[Node {node_rank}] Scanning vectors {vec_range[0]:,}-{vec_range[1]:,}")
+        partial = index.exact_topk_hits(queries, vec_range=vec_range)
+        tmp_path = partial_path.with_suffix(".parquet.tmp")
+        partial.write_parquet(tmp_path)
+        tmp_path.rename(partial_path)
+
+    if node_rank != 0:
+        print(f"[Node {node_rank}] Partial top-k hits saved. Exiting.")
+        return None
+
+    partial_paths = [
+        partials_dir / f"rank_{r}_of_{num_nodes}.parquet" for r in range(num_nodes)
+    ]
+    print(f"[Node 0] Waiting for {num_nodes - 1} other partial result(s)...")
+    _wait_for_files(partial_paths)
+    hits = merge_topk_hits([pl.read_parquet(p) for p in partial_paths], index.top_k)
+    assert len(hits) == len(queries)
+    shutil.rmtree(partials_dir)
+    return hits
+
+
+def _annotate_results(
+    df: pl.DataFrame, cfg: ExperimentConfig, index, index_path: Path, avg_time: float
+) -> pl.DataFrame:
+    """Attach the run metadata columns print_results.py's schema expects."""
+    df = df.with_columns(pl.lit(index.index_size_gb(index_path)).alias("index_size_gb"))
+    df = df.with_columns(pl.lit(avg_time).alias("avg_time"))
+    df = df.with_columns(pl.lit(str(cfg.model)).alias("model"))
+    df = df.with_columns(pl.lit(cfg.mutation_rate).alias("mutation_rate"))
+    df = df.with_columns(pl.lit("raw_read").alias("query_type"))  # legacy
+    df = df.with_columns(
+        pl.lit(cfg.model.checkpoint, dtype=pl.String).alias("checkpoint")
+    )
+    df = df.with_columns(pl.lit(cfg.model.max_len, dtype=pl.Int64).alias("max_len"))
+    df = df.with_columns(
+        pl.lit(cfg.model.checkpoint_step_num, dtype=pl.Int64).alias(
+            "checkpoint_step_num"
+        )
+    )
+    df = df.with_columns(pl.lit("stride").alias("chunk_type"))  # legacy
+    return df
+
+
 def main(cfg: ExperimentConfig):
     index_path: Path = cfg.index_dir / cfg.model.index_suffix
 
@@ -231,13 +307,14 @@ def main(cfg: ExperimentConfig):
         print("[no_search]: Index built. Exiting.")
         sys.exit(0)
 
-    # The streaming dense search shards accessions across nodes; every other
-    # engine (ANN/RaBitQ/exact-search dense variants, metagraph, mmseqs,
-    # centroid) still searches on node 0 alone.
+    # The streaming dense search shards accessions across nodes and the exact
+    # top-k scan shards vector rows; every other engine (ANN/RaBitQ dense
+    # variants, metagraph, mmseqs, centroid) still searches on node 0 alone.
     dense_streaming = isinstance(cfg.model, DenseConfig) and not (
         cfg.model.use_ann or cfg.model.use_rabitq or cfg.model.exact_search
     )
-    multi_node_search = num_nodes > 1 and dense_streaming
+    exact_topk = isinstance(cfg.model, DenseConfig) and cfg.model.exact_search
+    multi_node_search = num_nodes > 1 and (dense_streaming or exact_topk)
     if num_nodes > 1 and not multi_node_search and node_rank != 0:
         print(
             f"[Node {node_rank}] Index built. Skipping search (only node 0 searches)."
@@ -252,7 +329,22 @@ def main(cfg: ExperimentConfig):
         torch.manual_seed(cfg.random_seed)
         queries = apply_mutations(queries, cfg.mutation_rate)
 
-    if multi_node_search:
+    hits: pl.DataFrame | None = None
+    if exact_topk and not cfg.do_timing:
+        # Compute-once, re-score-many: the scan yields each query's raw top-k
+        # vector hits, which are persisted (rescore_topk.py derives every
+        # smaller k from them) and regrouped into the standard results here.
+        if multi_node_search:
+            hits = _multi_node_exact_topk(
+                cfg, index, queries, index_path, node_rank, num_nodes
+            )
+            if hits is None:
+                sys.exit(0)
+        else:
+            hits = index.exact_topk_hits(queries)
+        results = regroup_topk_hits(hits, index.indexed_accessions())
+        avg_time = -1.0
+    elif multi_node_search:
         if cfg.do_timing:
             raise ValueError("do_timing is not supported with multi-node search")
         results = _multi_node_search(
@@ -273,25 +365,7 @@ def main(cfg: ExperimentConfig):
         results: pl.DataFrame = index.search(queries)
         avg_time = -1.0
 
-    results = results.with_columns(
-        pl.lit(index.index_size_gb(index_path)).alias("index_size_gb")
-    )
-    results = results.with_columns(pl.lit(avg_time).alias("avg_time"))
-    results = results.with_columns(pl.lit(str(cfg.model)).alias("model"))
-    results = results.with_columns(pl.lit(cfg.mutation_rate).alias("mutation_rate"))
-    results = results.with_columns(pl.lit("raw_read").alias("query_type"))  # legacy
-    results = results.with_columns(
-        pl.lit(cfg.model.checkpoint, dtype=pl.String).alias("checkpoint")
-    )
-    results = results.with_columns(
-        pl.lit(cfg.model.max_len, dtype=pl.Int64).alias("max_len")
-    )
-    results = results.with_columns(
-        pl.lit(cfg.model.checkpoint_step_num, dtype=pl.Int64).alias(
-            "checkpoint_step_num"
-        )
-    )
-    results = results.with_columns(pl.lit("stride").alias("chunk_type"))  # legacy
+    results = _annotate_results(results, cfg, index, index_path, avg_time)
     output_path: Path = (
         cfg.results_dir
         / cfg.model.experiment_id
@@ -299,6 +373,21 @@ def main(cfg: ExperimentConfig):
     )
     output_path.parent.mkdir(exist_ok=True, parents=True)
     results.write_parquet(output_path)
+
+    if hits is not None:
+        # Same metadata columns as the results, so rescore_topk.py can copy
+        # them through; lives outside results_dir (see topk_hits_dir).
+        assert cfg.topk_hits_dir is not None
+        hits_path: Path = (
+            cfg.topk_hits_dir
+            / cfg.model.experiment_id
+            / f"raw_read_mut_{cfg.mutation_rate}_topk{cfg.model.top_k}.parquet"
+        )
+        hits_path.parent.mkdir(exist_ok=True, parents=True)
+        _annotate_results(hits, cfg, index, index_path, avg_time).write_parquet(
+            hits_path
+        )
+        print(f"Wrote top-{cfg.model.top_k} vector hits -> {hits_path}")
 
 
 if __name__ == "__main__":

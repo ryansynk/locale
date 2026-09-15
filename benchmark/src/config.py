@@ -49,6 +49,11 @@ class DenseConfig(AlgorithmConfig):
     use_ann: bool = False
     exact_search: bool = False
     use_rabitq: bool = False
+    # Vector-level candidate count for the top-k engines (ANN, RaBitQ, exact
+    # search): each query chunk keeps its top_k nearest index vectors, which are
+    # then regrouped to accessions by max score. The streaming dense path scores
+    # every accession and ignores this.
+    top_k: int = 10
 
     def __post_init__(self):
         config_tag = f"maxlen{self.max_seq_len}_pool{self.pooling}_chunkstride"
@@ -102,6 +107,13 @@ class DenseConfig(AlgorithmConfig):
             raise ValueError(
                 f"name expected: locale, dnabert, generator, neuroseed, dna2vec, or llmed. Got = {self.name}"
             )
+        # Exact top-k search reads the same built index as the streaming path
+        # (index_suffix is unchanged) but ranks differently, so it must not
+        # overwrite the full-dense results under the same experiment_id -- the
+        # 100-studies full-dense baseline is exactly what these runs are
+        # compared against.
+        if self.exact_search:
+            self.experiment_id = f"{self.experiment_id}_exacttop{self.top_k}"
 
     def __str__(self):
         return self.experiment_id
@@ -209,6 +221,17 @@ class ExperimentConfig:
     # run finishes in minutes. Leave unset for real runs — a truncated index is
     # still marked .done, so always pair this with a throwaway index_dir.
     max_accessions: int | None = None
+    # Where an exact_search run persists each query's raw top-k vector hits
+    # (rescore_topk.py re-derives smaller-k results from them without another
+    # scan). Kept OUT of results_dir: print_results.py rglobs every parquet
+    # under results_dir against a strict schema, and the hits artifact does not
+    # match it. Unset means a sibling of results_dir named
+    # "<results_dir>_topk_hits".
+    topk_hits_dir: Path | None = None
 
     def __post_init__(self):
         self.results_dir.mkdir(exist_ok=True, parents=True)
+        if self.topk_hits_dir is None:
+            self.topk_hits_dir = self.results_dir.with_name(
+                self.results_dir.name + "_topk_hits"
+            )
