@@ -54,8 +54,15 @@ class DenseConfig(AlgorithmConfig):
     # then regrouped to accessions by max score. The streaming dense path scores
     # every accession and ignores this.
     top_k: int = 10
+    # Rows sampled (in contiguous blocks) to estimate the RaBitQ centroid,
+    # instead of a full pass over the fbin. Ignored unless use_rabitq.
+    rabitq_sample_rows: int = 2_000_000
 
     def __post_init__(self):
+        if sum([self.use_ann, self.use_rabitq, self.exact_search]) > 1:
+            raise ValueError(
+                "use_ann, use_rabitq and exact_search are mutually exclusive"
+            )
         config_tag = f"maxlen{self.max_seq_len}_pool{self.pooling}_chunkstride"
         if self.name == "dnabert":
             self.index_suffix: Path = Path("dnabert") / config_tag
@@ -114,6 +121,10 @@ class DenseConfig(AlgorithmConfig):
         # compared against.
         if self.exact_search:
             self.experiment_id = f"{self.experiment_id}_exacttop{self.top_k}"
+        # Same reasoning for the 1-bit RaBitQ ranking: same index_suffix (the
+        # codes live under <index>/rabitq/), distinct results.
+        if self.use_rabitq:
+            self.experiment_id = f"{self.experiment_id}_rabitq1bit_top{self.top_k}"
 
     def __str__(self):
         return self.experiment_id

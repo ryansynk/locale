@@ -88,6 +88,14 @@ per-query hits are also written to
 (`topk_hits_dir` defaults to `<results_dir>_topk_hits`, deliberately outside
 `results_dir`, whose parquets `print_results.py` reads with a strict schema).
 
+With `model.use_rabitq: true` the same vector-level path runs over 1-bit
+RaBitQ codes instead of fp32 rows. The codes are built once into
+`<index>/rabitq/`, one shard per node when the build itself runs under a
+multi-node `srun` (the centroid is estimated from `model.rabitq_sample_rows`
+sampled rows rather than a full pass), and at search time each node loads
+only its row range of packed codes onto its GPUs (~96 B/vector at 768 dims).
+`use_rabitq` appends `_rabitq1bit_top<k>` to the `experiment_id`.
+
 ### Re-scoring saved top-k hits at smaller k
 
 Because the top-k-then-regroup ranking at any `k' <= k` depends only on the

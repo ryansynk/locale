@@ -16,6 +16,7 @@ from src.config import (
     CentroidConfig,
 )
 from src.dense_index import DenseIndex
+from src.rabitq import build_rabitq_index
 from src.centroid_index import CentroidIndex
 from src.download_accessions import download_accessions
 from src.metagraph_index import MetagraphIndex
@@ -142,7 +143,12 @@ def _multi_node_search(
     return results
 
 
-def _multi_node_exact_topk(
+def _topk_engine_tag(cfg: ExperimentConfig) -> str:
+    assert isinstance(cfg.model, DenseConfig)
+    return "exact" if cfg.model.exact_search else "rabitq1bit"
+
+
+def _multi_node_topk_hits(
     cfg: ExperimentConfig,
     index: DenseIndex,
     queries: pl.DataFrame,
@@ -150,22 +156,25 @@ def _multi_node_exact_topk(
     node_rank: int,
     num_nodes: int,
 ) -> pl.DataFrame | None:
-    """Shard the exact top-k vector scan across nodes; node 0 merges the hits.
+    """Shard a vector-level top-k scan across nodes; node 0 merges the hits.
 
     Unlike the streaming search, which deals out accessions, this splits the
     index's *vector rows* into num_nodes contiguous, equal ranges (the scan is
-    a flat matmul over rows, so this balances the 7 TB read exactly). Every
-    node writes its per-query top-k hits over its range; node 0 unions the
-    partials and re-takes each query's global top-k, which is exact because
-    each partial is exact over a disjoint range. Returns the merged hits frame
-    on node 0, None elsewhere. Partials are keyed by the search parameters and
-    top_k and reused when present, so a timed-out run resumes.
+    a flat matmul over rows, so this balances the read exactly). Every node
+    writes its per-query top-k hits over its range; node 0 unions the partials
+    and re-takes each query's global top-k, which equals a single-node scan
+    because each partial is complete over a disjoint range. Works for the
+    exact fp32 scan and the 1-bit RaBitQ scan alike (index.topk_hits picks
+    the engine; with RaBitQ each node loads only its range's codes). Returns
+    the merged hits frame on node 0, None elsewhere. Partials are keyed by
+    engine, top_k and the search parameters and reused when present, so a
+    timed-out run resumes.
     """
     n_vecs = index.num_vectors()
     bounds = [n_vecs * r // num_nodes for r in range(num_nodes + 1)]
     vec_range = (bounds[node_rank], bounds[node_rank + 1])
     partials_dir = index_path / (
-        f"exact_top{index.top_k}_partials_mut{cfg.mutation_rate}"
+        f"{_topk_engine_tag(cfg)}_top{index.top_k}_partials_mut{cfg.mutation_rate}"
         f"_n{len(queries)}_seed{cfg.random_seed}"
     )
     partials_dir.mkdir(parents=True, exist_ok=True)
@@ -175,7 +184,7 @@ def _multi_node_exact_topk(
         print(f"[Node {node_rank}] Partial top-k hits exist, reusing.")
     else:
         print(f"[Node {node_rank}] Scanning vectors {vec_range[0]:,}-{vec_range[1]:,}")
-        partial = index.exact_topk_hits(queries, vec_range=vec_range)
+        partial = index.topk_hits(queries, vec_range=vec_range)
         tmp_path = partial_path.with_suffix(".parquet.tmp")
         partial.write_parquet(tmp_path)
         tmp_path.rename(partial_path)
@@ -313,13 +322,27 @@ def main(cfg: ExperimentConfig):
     dense_streaming = isinstance(cfg.model, DenseConfig) and not (
         cfg.model.use_ann or cfg.model.use_rabitq or cfg.model.exact_search
     )
-    exact_topk = isinstance(cfg.model, DenseConfig) and cfg.model.exact_search
-    multi_node_search = num_nodes > 1 and (dense_streaming or exact_topk)
+    topk_engine = isinstance(cfg.model, DenseConfig) and (
+        cfg.model.exact_search or cfg.model.use_rabitq
+    )
+    multi_node_search = num_nodes > 1 and (dense_streaming or topk_engine)
     if num_nodes > 1 and not multi_node_search and node_rank != 0:
         print(
             f"[Node {node_rank}] Index built. Skipping search (only node 0 searches)."
         )
         sys.exit(0)
+
+    if isinstance(cfg.model, DenseConfig) and cfg.model.use_rabitq and num_nodes > 1:
+        # Quantize the fbin into one shard per node (resumable; a no-op once
+        # meta.json exists). Every rank returns with the index complete, so
+        # load() below finds it and each node then searches its own row range.
+        build_rabitq_index(
+            index_path / "embeddings.fbin",
+            index_path / "rabitq",
+            rank=node_rank,
+            num_ranks=num_nodes,
+            centroid_sample_rows=cfg.model.rabitq_sample_rows,
+        )
 
     index.load(index_path)
     if cfg.mutation_rate > 0.0:
@@ -330,18 +353,18 @@ def main(cfg: ExperimentConfig):
         queries = apply_mutations(queries, cfg.mutation_rate)
 
     hits: pl.DataFrame | None = None
-    if exact_topk and not cfg.do_timing:
+    if topk_engine and not cfg.do_timing:
         # Compute-once, re-score-many: the scan yields each query's raw top-k
         # vector hits, which are persisted (rescore_topk.py derives every
         # smaller k from them) and regrouped into the standard results here.
         if multi_node_search:
-            hits = _multi_node_exact_topk(
+            hits = _multi_node_topk_hits(
                 cfg, index, queries, index_path, node_rank, num_nodes
             )
             if hits is None:
                 sys.exit(0)
         else:
-            hits = index.exact_topk_hits(queries)
+            hits = index.topk_hits(queries)
         results = regroup_topk_hits(hits, index.indexed_accessions())
         avg_time = -1.0
     elif multi_node_search:

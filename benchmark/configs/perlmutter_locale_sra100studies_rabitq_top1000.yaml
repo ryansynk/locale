@@ -1,0 +1,36 @@
+# 1-bit RaBitQ variant of perlmutter_locale_sra100studies.yaml.
+#
+# Same index (index_suffix unchanged); the codes are built once into
+# <index>/rabitq/ as one shard per node (~96 B/vector, ~260 GB for 2.5 B
+# vectors; the centroid comes from a 2 M-row sample, not a full pass) and
+# each node then searches its own row range with the codes resident on its
+# GPUs. Ranking = top-1000 vectors by estimated inner product, regrouped to
+# accessions by max -- the same top-k-then-regroup validated exact at
+# k=100-200, so the yardstick is recall of these hits against
+# results_100studies_topk_hits/<...>_exacttop1000/.
+#
+# use_rabitq flips experiment_id to ..._rabitq1bit_top1000 so results land in
+# their own directory; the hits artifact goes to results_100studies_topk_hits/.
+#
+# Launch (build + search in one 8-node job the first time; ~4-5 h for the
+# quantization pass, minutes for the search; later rates skip the build):
+#   sbatch perlmutter_100studies_search.sbatch <rate> \
+#       configs/perlmutter_locale_sra100studies_rabitq_top1000.yaml
+model:
+  name: locale
+  checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/8vqiabk9/checkpoint5859.pth.tar
+  batch_size: 1000
+  device: cuda
+  pooling: mean
+  max_seq_len: 256
+  chunk_overlap: 150
+  use_rabitq: true
+  top_k: 1000
+  rabitq_sample_rows: 2000000
+
+dataset_name: sra100studies
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/100studies_work/bundle
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes_100studies
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results_100studies
+mutation_rate: 0.0
+num_queries: 1000

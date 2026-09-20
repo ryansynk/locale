@@ -1,7 +1,5 @@
 import copy
 import faulthandler
-import json
-import math
 import multiprocessing as mp
 import os
 import random
@@ -32,6 +30,7 @@ from .config import DenseConfig, ExperimentConfig
 # them from here.
 from .encoders import DenseEncoder, _strings_to_one_hot, batched  # noqa: F401
 from .fbin import _create_fbin_memmap, _load_fbin_mmap  # noqa: F401
+from .rabitq import RaBitQIndex, build_rabitq_index  # noqa: F401
 from .topk_regroup import build_hits_frame, regroup_topk_hits
 
 # cuVS CAGRA serializes to a single file rather than DiskANN's directory of them.
@@ -43,319 +42,6 @@ CAGRA_INDEX_FILE = "cagra_index.bin"
 CAGRA_GRAPH_DEGREE = 64
 CAGRA_INTERMEDIATE_GRAPH_DEGREE = 128
 CAGRA_ITOPK_SIZE = 128
-
-
-# ---------------------------------------------------------------------------
-# RaBitQ 1-bit quantization index
-# ---------------------------------------------------------------------------
-
-
-def _build_rabitq_index(
-    fbin_path: Path,
-    rabitq_dir: Path,
-    chunk_rows: int = 200_000,
-    seed: int = 0,
-) -> None:
-    """Build a RaBitQ index from an existing .fbin file.
-
-    Pass 1 computes the centroid on CPU. Pass 2 rotates and quantizes chunks
-    in parallel across all available GPUs via ThreadPoolExecutor (CUDA ops
-    release the GIL). Output memmaps are pre-allocated so each worker writes
-    directly to its offset with no sequential bottleneck.
-    """
-    rabitq_dir.mkdir(parents=True, exist_ok=True)
-
-    mmap = _load_fbin_mmap(fbin_path)
-    n, d = mmap.shape
-    if d % 8 != 0:
-        raise ValueError(
-            f"Embedding dim={d} must be a multiple of 8 for RaBitQ packing."
-        )
-
-    bytes_per_vec = d // 8
-    sqrt_d = math.sqrt(d)
-
-    n_gpus = torch.cuda.device_count()
-    devices = [f"cuda:{i}" for i in range(n_gpus)] if n_gpus > 0 else ["cpu"]
-    print(f"Building RaBitQ index using {len(devices)} device(s)...")
-
-    # Pass 1: streaming centroid (CPU)
-    centroid = np.zeros(d, dtype=np.float64)
-    num_chunks = n // chunk_rows
-    for start in tqdm(
-        range(0, n, chunk_rows), total=num_chunks, desc="Streaming centroid..."
-    ):
-        centroid += mmap[start : start + chunk_rows].sum(axis=0, dtype=np.float64)
-    centroid = (centroid / n).astype(np.float32)
-
-    # Random orthogonal rotation via QR decomposition
-    rng = np.random.default_rng(seed)
-    g = rng.standard_normal((d, d)).astype(np.float32)
-    q, r = np.linalg.qr(g)
-    rotation = (q * np.sign(np.diag(r))).astype(np.float32)
-
-    # Move centroid and rotation to each device once
-    centroid_per_dev = {dev: torch.from_numpy(centroid).to(dev) for dev in devices}
-    rotation_per_dev = {dev: torch.from_numpy(rotation).to(dev) for dev in devices}
-
-    # Pre-allocate output memmaps — random-access writes are safe across threads
-    # since each chunk writes to a non-overlapping offset range.
-    codes_mm = np.memmap(
-        rabitq_dir / "codes.u8", dtype=np.uint8, mode="w+", shape=(n, bytes_per_vec)
-    )
-    norms_mm = np.memmap(
-        rabitq_dir / "norms.f32", dtype=np.float32, mode="w+", shape=(n,)
-    )
-    dots_mm = np.memmap(
-        rabitq_dir / "dots.f32", dtype=np.float32, mode="w+", shape=(n,)
-    )
-
-    def _quantize_chunk(start: int, dev: str):
-        end = min(start + chunk_rows, n)
-        chunk = torch.from_numpy(np.array(mmap[start:end], dtype=np.float32)).to(dev)
-        xr = (chunk - centroid_per_dev[dev]) @ rotation_per_dev[dev]
-        chunk_norms = torch.linalg.norm(xr, dim=1).float().cpu().numpy()
-        signs = torch.where(xr >= 0, torch.ones_like(xr), -torch.ones_like(xr))
-        chunk_dots = (xr * signs).sum(dim=1).float().cpu().numpy() / sqrt_d
-        packed = np.packbits(
-            (signs > 0).to(torch.uint8).cpu().numpy(), axis=-1, bitorder="little"
-        )
-        return start, end, packed, chunk_norms, chunk_dots
-
-    # Pass 2: parallel quantization — distribute chunks round-robin across GPUs
-    chunk_starts = list(range(0, n, chunk_rows))
-    chunk_devs = [devices[i % len(devices)] for i in range(len(chunk_starts))]
-
-    with ThreadPoolExecutor(max_workers=len(devices)) as pool:
-        futures = {
-            pool.submit(_quantize_chunk, start, dev): start
-            for start, dev in zip(chunk_starts, chunk_devs)
-        }
-        for future in tqdm(
-            as_completed(futures), total=len(futures), desc="Quantizing chunks"
-        ):
-            start, end, packed, norms, dots = future.result()
-            codes_mm[start:end] = packed
-            norms_mm[start:end] = norms
-            dots_mm[start:end] = dots
-
-    codes_mm.flush()
-    norms_mm.flush()
-    dots_mm.flush()
-    del codes_mm, norms_mm, dots_mm
-
-    np.save(rabitq_dir / "centroid.npy", centroid)
-    np.save(rabitq_dir / "rotation.npy", rotation)
-    with open(rabitq_dir / "meta.json", "w") as f:
-        json.dump({"n": n, "d": d, "bytes_per_vec": bytes_per_vec}, f)
-
-    print(f"RaBitQ index built: {n:,} vectors -> {rabitq_dir}")
-
-
-class RaBitQIndex:
-    """Sharded GPU RaBitQ index for approximate inner-product search.
-
-    Codes are stored as int8 {-1, +1} on each GPU shard. Search is asymmetric:
-    fp32 rotated queries vs int8 codes via fp16 matmul, with per-vector
-    norm/dot scalars to debias the estimator.
-    """
-
-    def __init__(
-        self,
-        n: int,
-        d: int,
-        centroid: torch.Tensor,
-        rotation: torch.Tensor,
-        shards: list[dict],
-    ):
-        self.n = n
-        self.d = d
-        self.centroid = centroid
-        self.rotation = rotation
-        self.shards = shards
-        self.sqrt_d = math.sqrt(d)
-
-    @classmethod
-    def load(cls, rabitq_dir: Path, devices: list[str] | None = None) -> "RaBitQIndex":
-        with open(rabitq_dir / "meta.json") as f:
-            meta = json.load(f)
-        n, d, bytes_per_vec = meta["n"], meta["d"], meta["bytes_per_vec"]
-
-        if devices is None:
-            n_gpus = torch.cuda.device_count()
-            devices = [f"cuda:{i}" for i in range(n_gpus)] if n_gpus > 0 else ["cpu"]
-
-        codes_mm = np.memmap(
-            rabitq_dir / "codes.u8", dtype=np.uint8, mode="r", shape=(n, bytes_per_vec)
-        )
-        norms_mm = np.memmap(
-            rabitq_dir / "norms.f32", dtype=np.float32, mode="r", shape=(n,)
-        )
-        dots_mm = np.memmap(
-            rabitq_dir / "dots.f32", dtype=np.float32, mode="r", shape=(n,)
-        )
-
-        primary_dev = devices[0]
-        centroid = torch.from_numpy(np.load(rabitq_dir / "centroid.npy")).to(
-            primary_dev
-        )
-        rotation = torch.from_numpy(np.load(rabitq_dir / "rotation.npy")).to(
-            primary_dev
-        )
-
-        shard_sizes = [n // len(devices)] * len(devices)
-        for i in range(n % len(devices)):
-            shard_sizes[i] += 1
-
-        shards = []
-        offset = 0
-        for dev, size in zip(devices, shard_sizes):
-            packed = torch.from_numpy(
-                np.ascontiguousarray(codes_mm[offset : offset + size])
-            )
-            unpacked01 = torch.from_numpy(
-                np.unpackbits(packed.numpy(), axis=1, bitorder="little").astype(np.int8)
-            )
-            codes_pm1 = (unpacked01 * 2 - 1).to(dev)
-            norms = torch.from_numpy(
-                np.ascontiguousarray(norms_mm[offset : offset + size])
-            ).to(dev)
-            dots = torch.from_numpy(
-                np.ascontiguousarray(dots_mm[offset : offset + size])
-            ).to(dev)
-            shards.append(
-                {
-                    "device": dev,
-                    "offset": offset,
-                    "codes": codes_pm1,
-                    "norms": norms,
-                    "dots": dots,
-                }
-            )
-            offset += size
-
-        print(f"Loaded RaBitQ index: {n:,} vectors across {len(devices)} device(s)")
-        return cls(n, d, centroid, rotation, shards)
-
-    @torch.no_grad()
-    def search(
-        self, queries: torch.Tensor, k: int
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return (scores, indices) each (q, k); indices are global row ids.
-
-        queries may be on any device; centering and rotation run on the primary
-        device (where centroid/rotation live), then q_rot is scattered to each
-        shard's device for the matmul.
-        """
-        if queries.dtype != torch.float32:
-            queries = queries.float()
-        if queries.dim() == 1:
-            queries = queries.unsqueeze(0)
-
-        # Pre-rotate on the primary device (GPU if available, else CPU).
-        primary_dev = self.centroid.device
-        q = queries.to(primary_dev, non_blocking=True)
-        q_rot = (q - self.centroid) @ self.rotation  # (n_q, d) on primary_dev
-        q_dot_centroid = q @ self.centroid  # (n_q,)   on primary_dev
-
-        n_q = q.shape[0]
-        per_shard_scores: list[torch.Tensor] = []
-        per_shard_indices: list[torch.Tensor] = []
-        for shard in self.shards:
-            dev = shard["device"]
-            shard_size = shard["codes"].shape[0]
-            local_k = min(k, shard_size)
-
-            qd_fp16 = q_rot.to(dev, non_blocking=True).to(torch.float16)
-            qdot = q_dot_centroid.to(dev)
-
-            # Size sub-batches to stay within ~40% of free GPU memory, avoiding
-            # a full fp16 cast of the entire shard (2x the int8 footprint).
-            if dev != "cpu":
-                free_mem, _ = torch.cuda.mem_get_info(torch.device(dev))
-                sub_batch = max(1, int(free_mem * 0.4 / (self.d * 2 + n_q * 4)))
-            else:
-                sub_batch = shard_size
-
-            # Running top-k merged across sub-batches.
-            running_scores = torch.full((n_q, local_k), float("-inf"), device=dev)
-            running_indices = torch.zeros((n_q, local_k), dtype=torch.long, device=dev)
-
-            for sub_start in range(0, shard_size, sub_batch):
-                sub_end = min(sub_start + sub_batch, shard_size)
-
-                sub_codes = shard["codes"][sub_start:sub_end].to(torch.float16)
-                sub_raw = (qd_fp16 @ sub_codes.T).float()
-                del sub_codes
-
-                sub_scale = shard["norms"][sub_start:sub_end] / (
-                    self.sqrt_d * shard["dots"][sub_start:sub_end]
-                )
-                sub_est = sub_raw * sub_scale + qdot.unsqueeze(1)
-                del sub_raw
-
-                sub_local_k = min(local_k, sub_end - sub_start)
-                sub_scores, sub_local_idx = sub_est.topk(sub_local_k, dim=1)
-                del sub_est
-
-                combined_scores = torch.cat([running_scores, sub_scores], dim=1)
-                combined_indices = torch.cat(
-                    [running_indices, sub_local_idx + sub_start], dim=1
-                )
-                running_scores, sel = combined_scores.topk(local_k, dim=1)
-                running_indices = combined_indices.gather(1, sel)
-
-            per_shard_scores.append(running_scores.cpu())
-            per_shard_indices.append((running_indices + shard["offset"]).cpu())
-
-        all_scores = torch.cat(per_shard_scores, dim=1)
-        all_indices = torch.cat(per_shard_indices, dim=1)
-        final_scores, sel = all_scores.topk(k, dim=1)
-        final_indices = all_indices.gather(1, sel)
-        return final_scores, final_indices
-
-    @torch.no_grad()
-    def search_cpu(
-        self, queries: torch.Tensor, k: int
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return (scores, indices) each (q, k); indices are global row ids.
-
-        queries may be on any device; centering and rotation run on the primary
-        device (where centroid/rotation live), then q_rot is scattered to each
-        shard's device for the matmul.
-        """
-        if queries.dtype != torch.float32:
-            queries = queries.float()
-        if queries.dim() == 1:
-            queries = queries.unsqueeze(0)
-
-        # Pre-rotate on the primary device (GPU if available, else CPU).
-        primary_dev = self.centroid.device
-        q = queries.to(primary_dev, non_blocking=True)
-        q_rot = (q - self.centroid) @ self.rotation  # (n_q, d) on primary_dev
-        q_dot_centroid = q @ self.centroid  # (n_q,)   on primary_dev
-
-        per_shard_scores: list[torch.Tensor] = []
-        per_shard_indices: list[torch.Tensor] = []
-        for shard in self.shards:
-            dev = shard["device"]
-            qd_fp16 = q_rot.to(dev, non_blocking=True).to(torch.float16)
-            codes_fp16 = shard["codes"].to(torch.float16)
-
-            raw = (qd_fp16 @ codes_fp16.T).float()
-            scale = shard["norms"] / (self.sqrt_d * shard["dots"])
-            est = raw * scale + q_dot_centroid.to(dev).unsqueeze(1)
-
-            local_k = min(k, est.shape[1])
-            top_scores, top_local_idx = est.topk(local_k, dim=1)
-            per_shard_scores.append(top_scores.cpu())
-            per_shard_indices.append((top_local_idx + shard["offset"]).cpu())
-
-        all_scores = torch.cat(per_shard_scores, dim=1)
-        all_indices = torch.cat(per_shard_indices, dim=1)
-        final_scores, sel = all_scores.topk(k, dim=1)
-        final_indices = all_indices.gather(1, sel)
-        return final_scores, final_indices
 
 
 def _chunks_for_length(seq_len: int, chunk_size: int, step_size: int) -> int:
@@ -470,6 +156,7 @@ class DenseIndex(BaseIndex):
         self.exact_search: bool = cfg.model.exact_search
         self.use_rabitq: bool = cfg.model.use_rabitq
         self.top_k: int = cfg.model.top_k
+        self.rabitq_sample_rows: int = cfg.model.rabitq_sample_rows
         self.model_cfg = cfg.model
 
         # Unconditional: build() needs the encoder for embed_dim and the chunking
@@ -489,6 +176,7 @@ class DenseIndex(BaseIndex):
         starts = meta["start_row"].to_list()
         counts = meta["num_rows"].to_list()
         self.acc_offsets = starts + [starts[-1] + counts[-1]] if starts else [0]
+        self.n_vectors: int = int(self.acc_offsets[-1])
         if self.use_ann:
             # Imported here, not at module scope: cuvs pulls in the CUDA runtime, and
             # run_benchmark imports this module on nodes that have no GPU.
@@ -501,11 +189,18 @@ class DenseIndex(BaseIndex):
             self.index = cagra.load(str(cagra_path))
             self.all_embeddings = None
         elif self.use_rabitq:
+            # Single-node build if missing (a multi-node run builds the shards
+            # before load, see run_benchmark). Only metadata is read here; the
+            # codes for a row range are brought onto the GPUs by topk_hits.
             rabitq_dir = index_path / "rabitq"
-            if not rabitq_dir.exists():
+            if not (rabitq_dir / "meta.json").exists():
                 print("RaBitQ index not found, building from embeddings.fbin...")
-                _build_rabitq_index(index_path / "embeddings.fbin", rabitq_dir)
-            self.rabitq_index = RaBitQIndex.load(rabitq_dir)
+                build_rabitq_index(
+                    index_path / "embeddings.fbin",
+                    rabitq_dir,
+                    centroid_sample_rows=self.rabitq_sample_rows,
+                )
+            self.rabitq_index = RaBitQIndex.open(rabitq_dir)
             self.all_embeddings = None
         else:
             mmap = _load_fbin_mmap(index_path / "embeddings.fbin")
@@ -647,7 +342,11 @@ class DenseIndex(BaseIndex):
 
         if self.use_rabitq:
             print("Building RaBitQ quantized index...")
-            _build_rabitq_index(index_path / "embeddings.fbin", index_path / "rabitq")
+            build_rabitq_index(
+                index_path / "embeddings.fbin",
+                index_path / "rabitq",
+                centroid_sample_rows=self.rabitq_sample_rows,
+            )
 
     @torch.no_grad()
     def search(
@@ -668,12 +367,12 @@ class DenseIndex(BaseIndex):
             raise NotImplementedError(
                 "acc_indices is only supported by the streaming search path"
             )
-        if self.exact_search:
-            # Exact global top-k over every index vector, regrouped to
-            # accessions. The scan lives in exact_topk_hits so run_benchmark can
-            # persist the vector-level hits and shard the scan across nodes;
-            # this is the single-node convenience wrapper.
-            hits = self.exact_topk_hits(queries)
+        if self.exact_search or self.use_rabitq:
+            # Global top-k over index vectors (exact fp32 or 1-bit RaBitQ
+            # estimates), regrouped to accessions. The scans live in topk_hits
+            # so run_benchmark can persist the vector-level hits and shard the
+            # scan across nodes; this is the single-node convenience wrapper.
+            hits = self.topk_hits(queries)
             df = regroup_topk_hits(hits, self.acc_names_flat)
             assert len(df) == len(queries)
             return df
@@ -717,30 +416,6 @@ class DenseIndex(BaseIndex):
             # -2 sentinel and maximum.at reduction below carry over unchanged.
             flat_ids = identifiers.cpu().numpy().ravel()
             flat_dists = distances.cpu().numpy().ravel()
-            chunk_idx_flat = np.repeat(np.arange(n_chunks), top_k)
-
-            acc_offsets_arr = np.array(self.acc_offsets)
-            acc_idx_flat = np.searchsorted(acc_offsets_arr, flat_ids, side="right") - 1
-            query_idx_flat = chunk_to_query_np[chunk_idx_flat]
-
-            scores_cpu = -2 * np.ones((n_queries, n_acc), dtype=np.float32)
-            np.maximum.at(scores_cpu, (query_idx_flat, acc_idx_flat), flat_dists)
-        elif self.use_rabitq:
-            n_chunks = len(query_chunk_features)
-            n_queries = len(queries)
-            n_acc = len(self.acc_names_flat)
-            top_k = self.top_k
-
-            chunk_to_query_np = np.zeros(n_chunks, dtype=np.int64)
-            for qi, (s, e) in enumerate(query_indices):
-                chunk_to_query_np[s:e] = qi
-
-            scores_tensor, ids_tensor = self.rabitq_index.search(
-                query_chunk_features, top_k
-            )
-
-            flat_ids = ids_tensor.numpy().ravel()
-            flat_dists = scores_tensor.numpy().ravel()
             chunk_idx_flat = np.repeat(np.arange(n_chunks), top_k)
 
             acc_offsets_arr = np.array(self.acc_offsets)
@@ -918,23 +593,84 @@ class DenseIndex(BaseIndex):
         top_vals, top_pos = torch.topk(all_vals, k, dim=-1)
         top_ids = torch.gather(all_ids, 1, top_pos)
 
+        return self._hits_from_chunk_topk(queries, query_indices, top_vals, top_ids)
+
+    def _hits_from_chunk_topk(
+        self,
+        queries: pl.DataFrame,
+        query_indices: list[tuple[int, int]],
+        top_vals: torch.Tensor,
+        top_ids: torch.Tensor,
+    ) -> pl.DataFrame:
+        """Per-chunk (n_chunks, k) top-k -> per-query hits frame.
+
+        Maps chunk rows back to their query and lets build_hits_frame union a
+        query's chunks, dedup by vector and cut to top_k. Padding slots
+        (id -1 / -inf) fall out there.
+        """
+        n_chunks, k = top_ids.shape
         chunk_to_query = np.zeros(n_chunks, dtype=np.int64)
         for qi, (cs, ce) in enumerate(query_indices):
             chunk_to_query[cs:ce] = qi
-        flat_query_pos = np.repeat(chunk_to_query, k)
         return build_hits_frame(
             query_ids=queries["query_id"].to_list(),
-            flat_query_pos=flat_query_pos,
+            flat_query_pos=np.repeat(chunk_to_query, k),
             flat_vector_ids=top_ids.numpy().ravel(),
             flat_scores=top_vals.numpy().ravel().astype(np.float64),
             acc_offsets=np.asarray(self.acc_offsets, dtype=np.int64),
             acc_names=self.acc_names_flat,
-            top_k=top_k,
+            top_k=self.top_k,
         )
 
+    @torch.no_grad()
+    def rabitq_topk_hits(
+        self, queries: pl.DataFrame, vec_range: tuple[int, int] | None = None
+    ) -> pl.DataFrame:
+        """Top-k by 1-bit RaBitQ estimated inner product over rows [vec_range).
+
+        Same contract as exact_topk_hits (hits frame with global vector ids,
+        score-descending, at most top_k per query) so the multi-node merge,
+        the hits artifact and the re-scoring all apply unchanged; the scores
+        are estimates, so validate the candidate set against an exact run.
+        The range's packed codes are loaded onto this node's devices on first
+        use -- one node of an N-node search holds 1/N of the codes.
+        """
+        assert self.rabitq_index is not None
+        n_vecs = self.rabitq_index.n
+        start, end = (0, n_vecs) if vec_range is None else vec_range
+        if not (0 <= start <= end <= n_vecs):
+            raise ValueError(f"vec_range {vec_range} outside [0, {n_vecs}]")
+        query_chunk_features, query_indices = self._embed_queries(queries)
+        if end == start:
+            n_chunks = len(query_chunk_features)
+            return self._hits_from_chunk_topk(
+                queries,
+                query_indices,
+                torch.empty((n_chunks, 0)),
+                torch.empty((n_chunks, 0), dtype=torch.long),
+            )
+        if torch.cuda.is_available():
+            devices = [f"cuda:{i}" for i in range(torch.cuda.device_count())]
+        else:
+            devices = [self.model_cfg.device]
+        self.rabitq_index.load_rows(start, end, devices)
+        scores, ids = self.rabitq_index.search(
+            query_chunk_features.cpu().float(), self.top_k
+        )
+        return self._hits_from_chunk_topk(queries, query_indices, scores, ids)
+
+    def topk_hits(
+        self, queries: pl.DataFrame, vec_range: tuple[int, int] | None = None
+    ) -> pl.DataFrame:
+        """Vector-level top-k hits from whichever top-k engine is configured."""
+        if self.exact_search:
+            return self.exact_topk_hits(queries, vec_range)
+        if self.use_rabitq:
+            return self.rabitq_topk_hits(queries, vec_range)
+        raise NotImplementedError("topk_hits needs exact_search or use_rabitq")
+
     def num_vectors(self) -> int:
-        assert self.all_embeddings is not None
-        return int(self.all_embeddings.shape[0])
+        return self.n_vectors
 
     def indexed_accessions(self) -> list[str]:
         return self.acc_names_flat
@@ -1090,7 +826,7 @@ class DenseIndex(BaseIndex):
 
         if use_rabitq:
             print("Building RaBitQ quantized index from merged embeddings...")
-            _build_rabitq_index(index_path / "embeddings.fbin", index_path / "rabitq")
+            build_rabitq_index(index_path / "embeddings.fbin", index_path / "rabitq")
 
     def _embed_queries(self, queries) -> tuple[torch.Tensor, list[tuple[int, int]]]:
         """Embed every query, chunking any that exceed max_seq_len.
