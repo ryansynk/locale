@@ -5,7 +5,6 @@ import time
 from pathlib import Path
 
 import polars as pl
-import torch
 from huggingface_hub import snapshot_download
 from jsonargparse import CLI
 from src.config import (
@@ -22,8 +21,6 @@ from src.download_accessions import download_accessions
 from src.metagraph_index import MetagraphIndex
 from src.mmseqs2_index import MMseqs2Index
 from src.topk_regroup import merge_topk_hits, regroup_topk_hits
-
-from lae.training.batcher import Augmenter
 
 DATASETS = {
     "sra50": "rsynk/locale-benchmark-sra50",
@@ -47,12 +44,15 @@ def verify_download(accession_ids: list[str], accession_paths: list[Path]):
         )
 
 
-def apply_mutations(queries: pl.DataFrame, mutation_rate: float) -> pl.DataFrame:
-    return queries.with_columns(
-        pl.col("query_sequence").map_elements(
-            lambda query_seq: Augmenter.augment(query_seq, identity=1 - mutation_rate)
-        )
-    )
+def query_file_name(mutation_rate: float) -> str:
+    """Per-rate query file in the bundle, e.g. queries_mut0.05.parquet.
+
+    Queries are mutated ahead of time (locale-data/benchmark/mutate_queries.py)
+    so every run at a rate sees identical sequences; mutation_rate only
+    selects the file. Each file has queries.parquet's rows in the same order,
+    so the seeded subsample below picks the same query_ids at every rate.
+    """
+    return f"queries_mut{mutation_rate:.2f}.parquet"
 
 
 def _wait_for_shards(
@@ -100,8 +100,7 @@ def _multi_node_search(
     acc_names = index.indexed_accessions()
     acc_indices = list(range(node_rank, len(acc_names), num_nodes))
     partials_dir = index_path / (
-        f"search_partials_mut{cfg.mutation_rate}"
-        f"_n{len(queries)}_seed{cfg.random_seed}"
+        f"search_partials_mut{cfg.mutation_rate}_n{len(queries)}_seed{cfg.random_seed}"
     )
     partials_dir.mkdir(parents=True, exist_ok=True)
     partial_path = partials_dir / f"rank_{node_rank}_of_{num_nodes}.parquet"
@@ -230,18 +229,20 @@ def main(cfg: ExperimentConfig):
     index_path: Path = cfg.index_dir / cfg.model.index_suffix
 
     # Download datasets and queries. A dataset_name not in DATASETS is a local
-    # dataset: dataset_dir must already hold accs.txt and queries.parquet (the
-    # bundle layout finalize_query_dataset.py writes).
+    # dataset: dataset_dir must already hold accs.txt and the per-rate query
+    # files (the bundle layout finalize_query_dataset.py + mutate_queries.py
+    # write).
+    queries_file = query_file_name(cfg.mutation_rate)
     if cfg.dataset_name in DATASETS:
         local_path = snapshot_download(
             DATASETS[cfg.dataset_name],
             repo_type="dataset",
             local_dir=cfg.dataset_dir,
-            allow_patterns=["accs.txt", "queries.parquet", "*.json"],
+            allow_patterns=["accs.txt", queries_file, "*.json"],
         )
     else:
         local_path = cfg.dataset_dir
-        for required in ("accs.txt", "queries.parquet"):
+        for required in ("accs.txt", queries_file):
             if not (Path(local_path) / required).exists():
                 raise FileNotFoundError(
                     f"Local dataset '{cfg.dataset_name}': {required} not found in "
@@ -251,7 +252,7 @@ def main(cfg: ExperimentConfig):
     with open(accession_ids_path) as f:
         accession_ids = f.read().splitlines()
     accessions_dir = Path(local_path).resolve() / "logan_accessions"
-    queries_path: Path = Path(local_path).resolve() / "queries.parquet"
+    queries_path: Path = Path(local_path).resolve() / queries_file
     accession_paths: list[Path] = sorted(list(accessions_dir.rglob("*.contigs.fa")))
     if not accession_paths:
         download_accessions(accession_ids, accessions_dir)
@@ -345,12 +346,6 @@ def main(cfg: ExperimentConfig):
         )
 
     index.load(index_path)
-    if cfg.mutation_rate > 0.0:
-        # Mutations draw from torch's RNG; seeding makes every node mutate the
-        # queries identically, which multi-node search requires for a query's
-        # scores to be comparable across accession shards.
-        torch.manual_seed(cfg.random_seed)
-        queries = apply_mutations(queries, cfg.mutation_rate)
 
     hits: pl.DataFrame | None = None
     if topk_engine and not cfg.do_timing:

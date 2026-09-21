@@ -59,6 +59,8 @@ uv run python run_benchmark.py \
   --mutation_rate 0.0
 ```
 
+`--mutation_rate` selects a pre-mutated query file from the dataset bundle, `queries_mut<rate>.parquet` (0.00 / 0.05 / 0.10; written by `locale-data/benchmark/mutate_queries.py` with mutation-simulator). The benchmark itself never mutates sequences, so every run at a rate searches identical queries.
+
 Results are written to `<results_dir>/<experiment_id>/raw_read_mut_<mutation_rate>.parquet`, where `experiment_id` encodes the method, checkpoint, and chunking config.
 
 Use `--num_queries` to subsample (default 1000, capped at the dataset size) and `--no_search` to build the index and exit.

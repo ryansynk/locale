@@ -15,13 +15,11 @@ from pathlib import Path
 
 import numpy as np
 import polars as pl
-import torch
 from jsonargparse import auto_cli
 from jsonargparse.typing import Path_dc, Path_drw
 
 from benchmark.src.config import ExperimentConfig
 from benchmark.src.dense_index import DenseIndex
-from lae.training.batcher import Augmenter
 
 MUTATION_RATES = [0.00, 0.05, 0.10]
 
@@ -35,37 +33,24 @@ def _create_fbin_memmap(path: Path, n: int, d: int) -> np.memmap:
     return np.memmap(path, dtype=np.float32, mode="r+", offset=8, shape=(n, d))
 
 
-def _apply_mutations(queries: pl.DataFrame, mutation_rate: float) -> pl.DataFrame:
-    # Inlined from run_benchmark.apply_mutations: that module does `from
-    # src.config import ...`, which only resolves with cwd=benchmark/.
-    return queries.with_columns(
-        pl.col("query_sequence").map_elements(
-            lambda query_seq: Augmenter.augment(query_seq, identity=1 - mutation_rate),
-            return_dtype=pl.String,
-        )
-    )
-
-
-def generate_queries(
-    dataset_path: Path_drw, cfg: ExperimentConfig, out: Path_dc, seed: int = 0
-):
+def generate_queries(dataset_path: Path_drw, cfg: ExperimentConfig, out: Path_dc):
     dataset_path = Path(dataset_path)
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
 
-    queries = pl.read_parquet(dataset_path / "queries.parquet")
     index = DenseIndex(cfg)
 
     for mutation_rate in MUTATION_RATES:
         mut_out = out / f"mut{mutation_rate:.2f}"
         mut_out.mkdir(exist_ok=True)
 
-        # Reseed per rate rather than once up front, so any single rate can be
-        # regenerated on its own. Augmenter draws from the global torch RNG.
-        torch.manual_seed(seed)
-        mut_queries = _apply_mutations(queries, mutation_rate)
+        # The pre-mutated bundle files (locale-data/benchmark/mutate_queries.py),
+        # so these vectors embed exactly the sequences the benchmark searches.
+        queries = pl.read_parquet(
+            dataset_path / f"queries_mut{mutation_rate:.2f}.parquet"
+        )
 
-        embeds, query_indices = index._embed_queries(mut_queries)
+        embeds, query_indices = index._embed_queries(queries)
         embeds = embeds.cpu().numpy()
 
         n, d = embeds.shape
