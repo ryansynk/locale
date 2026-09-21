@@ -31,6 +31,13 @@ DATASETS = {
     # contigs - the point being that no aligner decides the correct answer.
     # 52 accessions = 47 sra50 distractors + 5 genotype-B targets.
     "sra52viral": "rsynk/locale-benchmark-sra52-viral",
+    # 2026-09 rebuild (locale-data list-first pipeline): fresh seeded draws
+    # disjoint from the training/validation runs, source run required in the
+    # relevant set, both strands aligned (`strand` column). sra4571 stays
+    # local (see configs/perlmutter_locale_sra4571.yaml).
+    "sra50v2": "rsynk/locale-benchmark-sra50-v2",
+    "sra500v2": "rsynk/locale-benchmark-sra500-v2",
+    "sra55viral": "rsynk/locale-benchmark-sra55viral",
 }
 
 
@@ -304,6 +311,10 @@ def main(cfg: ExperimentConfig):
                 print(f"[Node {node_rank}] Shard saved. Exiting.")
                 sys.exit(0)
 
+            if cfg.build_only:
+                print("[build_only]: Shard 0 saved. Run finish_merge.py to merge. Exiting.")
+                sys.exit(0)
+
             print(f"[Node 0] Waiting for {num_nodes - 1} other node(s) to finish...")
             _wait_for_shards(index_path, num_nodes)
             DenseIndex.merge_shards(index_path, num_nodes)
@@ -313,7 +324,7 @@ def main(cfg: ExperimentConfig):
             index.save(index_path)
             (index_path / ".done").touch()
 
-    if cfg.no_search:
+    if cfg.no_search or cfg.build_only:
         print("[no_search]: Index built. Exiting.")
         sys.exit(0)
 

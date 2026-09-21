@@ -1,0 +1,33 @@
+# Top-k-vectors-then-regroup variant of perlmutter_locale_sra4571.yaml.
+#
+# Identical encoder/index settings (same index_suffix, so it reads the merged
+# index that perlmutter_sra4571.sbatch + perlmutter_sra4571_merge.sbatch built)
+# but scores each query by its exact global top-1000 nearest index VECTORS
+# regrouped to accessions by max score. This is the yardstick ranking (see
+# memory: exact hits) and the one an ANN index accelerates.
+#
+# exact_search flips experiment_id to ..._exacttop1000, so results land in
+# results_sra4571/<experiment_id>_exacttop1000/ beside -- never over -- the
+# full-dense baseline. Raw per-query top-1000 hits go to
+# results_sra4571_topk_hits/ (config default topk_hits_dir), from which
+# rescore_topk.py derives k = 10/20/50/100/200 without rescanning.
+#
+# Launch: sbatch perlmutter_sra4571_search.sbatch <rate> \
+#             configs/perlmutter_locale_sra4571_exact_topk1000.yaml
+model:
+  name: locale
+  checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/8vqiabk9/checkpoint5859.pth.tar
+  batch_size: 1000
+  device: cuda
+  pooling: mean
+  max_seq_len: 256
+  chunk_overlap: 150
+  exact_search: true
+  top_k: 1000
+
+dataset_name: sra4571
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra4571/bundle
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes_sra4571
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results_sra4571
+mutation_rate: 0.0
+num_queries: 1000

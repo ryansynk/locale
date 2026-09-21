@@ -224,5 +224,6 @@ checkpoints_smoke
 CLAUDE.md
 .claude/
 benchmark/indexes_100studies
+benchmark/indexes_sra4571
 benchmark/indexes_500_sweep
 benchmark/slurm_logs

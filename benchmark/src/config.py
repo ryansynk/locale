@@ -228,6 +228,10 @@ class ExperimentConfig:
     num_queries: int = 1000
     random_seed: int = 1337
     no_search: bool = False
+    # Multi-node build: every node (node 0 included) exits as soon as its shard
+    # is .done, skipping the serial merge so GPU nodes are not held for it.
+    # Run finish_merge.py (CPU) afterwards, then search with the index .done.
+    build_only: bool = False
     # Smoke-test knob: cap how many accessions enter the index so an end-to-end
     # run finishes in minutes. Leave unset for real runs — a truncated index is
     # still marked .done, so always pair this with a throwaway index_dir.

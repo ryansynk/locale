@@ -1,0 +1,36 @@
+# LOCALE dense index on the sra4571 dataset: 4571 accessions sampled from the
+# 100-studies table excluding the train/val lists, built 2026-09-21 by
+# locale-data/benchmark/build_sra_bundle.sh sra4571 4571 5000 (list frozen at
+# locale-data/accessions/sra4571.txt).
+#
+# "sra4571" is not an HF dataset: any dataset_name outside
+# run_benchmark.DATASETS is treated as local, and dataset_dir must already hold
+# accs.txt + queries_mut<rate>.parquet (the finalize bundle layout) plus
+# logan_accessions/<ACC>/<ACC>.contigs.fa. finalize does not write
+# logan_accessions/; perlmutter_sra4571.sbatch links it per accession from
+# constructed/sra4571/work/logan_contigs before the build so nothing is
+# re-downloaded and only manifest accessions enter the index.
+#
+# Encoder settings mirror perlmutter_locale_sra100studies.yaml (paper
+# checkpoint 8vqiabk9/5859), so index_suffix and experiment_id match the
+# 100studies runs; only index_dir/results_dir differ.
+model:
+  name: locale
+  checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/8vqiabk9/checkpoint5859.pth.tar
+  batch_size: 1000
+  device: cuda
+  pooling: mean
+  max_seq_len: 256
+  chunk_overlap: 150
+
+dataset_name: sra4571
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra4571/bundle
+# index_suffix encodes only the model, not the dataset, so this dataset needs
+# its own index root -- pointing at indexes_100studies would silently reuse
+# the 5092-accession index.
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes_sra4571
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results_sra4571
+mutation_rate: 0.0
+# The bundle ships 10000 queries (FINAL_QUERIES=10000); 1000 keeps parity with
+# the 100studies runs. Raise deliberately, never by accident.
+num_queries: 1000
