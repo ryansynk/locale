@@ -280,9 +280,10 @@ def _dense_index(built: Path, fbin: Path, query_rows: list[int]) -> DenseIndex:
     index.no_search = False
     index.k = 10
     index.use_ann = False
-    index.exact_search = False
     index.use_rabitq = True
+    index.exhaustive = False
     index.top_k = 10
+    index.both_strands = False
     index.rabitq_sample_rows = N
     index.rabitq_index = RaBitQIndex.open(built)
     index.all_embeddings = None

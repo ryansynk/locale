@@ -1,0 +1,25 @@
+# Both-strand variant of perlmutter_locale_sra4571.yaml under the default
+# top-k regroup protocol: each query and its reverse complement are embedded,
+# the two top-100 hit lists are unioned and regrouped to accessions by max
+# hit. Same index (index_suffix unchanged); results land in
+# results_sra4571/<id>_exacttop100_bothstrands/ and the raw hits in
+# results_sra4571_topk_hits/<id>_exact_bothstrands/raw_read_mut_<rate>_topk100.parquet,
+# where a later run at a smaller top_k finds them and skips the scan.
+# Drop both_strands for the forward-only run (…_exacttop100/).
+model:
+  name: locale
+  checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/8vqiabk9/checkpoint5859.pth.tar
+  batch_size: 1000
+  device: cuda
+  pooling: mean
+  max_seq_len: 256
+  chunk_overlap: 150
+  top_k: 100
+  both_strands: true
+
+dataset_name: sra4571
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra4571/bundle
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes_sra4571
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results_sra4571
+mutation_rate: 0.0
+num_queries: 1000

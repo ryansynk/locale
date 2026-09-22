@@ -2,9 +2,10 @@
 Synthetic DenseIndex search tests — no GPU or model download required.
 
 We bypass __init__ with __new__ so no DenseEncoder is created, then wire in
-a FakeEncoder that returns predetermined embeddings. Using standard basis
-vectors makes the expected top-1 result deterministic: the query is e_2, so
-only acc1 (whose vectors include e_2) can score 1.0.
+a FakeEncoder that returns predetermined embeddings. _make_index defaults to
+the exhaustive reference protocol; the top-k tests flip `exhaustive` off.
+Using standard basis vectors makes the expected top-1 result deterministic: the
+query is e_2, so only acc1 (whose vectors include e_2) can score 1.0.
 """
 
 import torch
@@ -37,9 +38,10 @@ def _make_index(query_vec: torch.Tensor, all_embeddings: torch.Tensor):
     index.no_search = False
     index.k = 10
     index.use_ann = False
-    index.exact_search = False
     index.use_rabitq = False
+    index.exhaustive = True
     index.top_k = 10
+    index.both_strands = False
     index.all_embeddings = all_embeddings
     index.acc_names_flat = ["acc0", "acc1", "acc2"]
     index.acc_offsets = [0, 2, 4, 6]
@@ -147,7 +149,7 @@ class TestExactTopKSearch:
 
     def test_hits_are_sorted_and_map_to_the_right_accession(self):
         index = _make_index(_basis(_DIM, 2), _ALL_EMBEDDINGS)
-        index.exact_search = True
+        index.exhaustive = False
         index.top_k = 3
         hits = index.exact_topk_hits(self._queries())
         assert hits.columns == ["query_id", "hits"]
@@ -159,7 +161,7 @@ class TestExactTopKSearch:
 
     def test_top_k_larger_than_index_returns_every_vector_once(self):
         index = _make_index(_basis(_DIM, 0), _ALL_EMBEDDINGS)
-        index.exact_search = True
+        index.exhaustive = False
         index.top_k = 50
         hits = index.exact_topk_hits(self._queries())
         ids = sorted(r["vector_id"] for r in hits["hits"][0].to_list())
@@ -171,7 +173,7 @@ class TestExactTopKSearch:
 
     def test_block_streaming_matches_single_block(self):
         index = _make_index(self._DISTINCT, _ALL_EMBEDDINGS)
-        index.exact_search = True
+        index.exhaustive = False
         index.top_k = 4
         one = index.exact_topk_hits(self._queries(), block_rows=1_000_000)
         many = index.exact_topk_hits(self._queries(), block_rows=1)
@@ -181,7 +183,7 @@ class TestExactTopKSearch:
         from src.topk_regroup import merge_topk_hits
 
         index = _make_index(self._DISTINCT, _ALL_EMBEDDINGS)
-        index.exact_search = True
+        index.exhaustive = False
         index.top_k = 4
         full = index.exact_topk_hits(self._queries())
         assert [r["vector_id"] for r in full["hits"][0].to_list()] == [3, 1, 5, 2]
@@ -200,13 +202,13 @@ class TestExactTopKSearch:
 
     def test_empty_range_yields_empty_hits(self):
         index = _make_index(_basis(_DIM, 3), _ALL_EMBEDDINGS)
-        index.exact_search = True
+        index.exhaustive = False
         hits = index.exact_topk_hits(self._queries(), vec_range=(4, 4))
         assert hits["hits"][0].to_list() == []
 
     def test_search_regroups_with_sentinel_for_misses(self):
         index = _make_index(_basis(_DIM, 2), _ALL_EMBEDDINGS)
-        index.exact_search = True
+        index.exhaustive = False
         index.top_k = 1
         result = index.search(self._queries())
         assert result.columns == ["query_id", "results"]
@@ -219,7 +221,7 @@ class TestExactTopKSearch:
         for slot in range(6):
             stream = _make_index(_basis(_DIM, slot), _ALL_EMBEDDINGS)
             exact = _make_index(_basis(_DIM, slot), _ALL_EMBEDDINGS)
-            exact.exact_search = True
+            exact.exhaustive = False
 
             def top(df):
                 return max(df["results"][0], key=lambda r: r["score"])["accession"]

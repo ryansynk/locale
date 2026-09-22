@@ -43,6 +43,17 @@ CAGRA_GRAPH_DEGREE = 64
 CAGRA_INTERMEDIATE_GRAPH_DEGREE = 128
 CAGRA_ITOPK_SIZE = 128
 
+# IUPAC complement; case is preserved. Anything else (gaps, '*') maps to itself,
+# which the encoders' own tokenizers already have to cope with in the forward
+# strand.
+_COMPLEMENT = str.maketrans(
+    "ACGTUNRYSWKMBDHVacgtunryswkmbdhv", "TGCAANYRSWMKVHDBtgcaanyrswmkvhdb"
+)
+
+
+def reverse_complement(seq: str) -> str:
+    return seq.translate(_COMPLEMENT)[::-1]
+
 
 def _chunks_for_length(seq_len: int, chunk_size: int, step_size: int) -> int:
     """Chunk count _iter_chunks yields for one sequence, from its length alone.
@@ -153,9 +164,12 @@ class DenseIndex(BaseIndex):
         self.k = cfg.model.k
         self.cfg = cfg
         self.use_ann: bool = cfg.model.use_ann
-        self.exact_search: bool = cfg.model.exact_search
         self.use_rabitq: bool = cfg.model.use_rabitq
+        # Scoring protocol, see DenseConfig: top_k vectors regrouped to
+        # accessions unless exhaustive.
+        self.exhaustive: bool = cfg.model.exhaustive
         self.top_k: int = cfg.model.top_k
+        self.both_strands: bool = cfg.model.both_strands
         self.rabitq_sample_rows: int = cfg.model.rabitq_sample_rows
         self.model_cfg = cfg.model
 
@@ -352,137 +366,103 @@ class DenseIndex(BaseIndex):
     def search(
         self, queries: pl.DataFrame, acc_indices: list[int] | None = None
     ) -> pl.DataFrame:
-        # Unified replacement for search/search_short/search_long.
-        # Short queries (< max_seq_len) produce a single chunk identical to the
-        # full query, so sum-of-chunk-maxima reduces to a plain max — the same
-        # score search_short would produce.  Long queries are chunked without
-        # overlap and scored as sum of per-chunk maxima, identical to search_long.
-        #
-        # acc_indices restricts scoring to that subset of accessions — used by
-        # multi-node search, where each node scores a stride of the index. The
-        # returned results then cover only those accessions.
-        if acc_indices is not None and (
-            self.use_ann or self.use_rabitq or self.exact_search
-        ):
-            raise NotImplementedError(
-                "acc_indices is only supported by the streaming search path"
-            )
-        if self.exact_search or self.use_rabitq:
-            # Global top-k over index vectors (exact fp32 or 1-bit RaBitQ
-            # estimates), regrouped to accessions. The scans live in topk_hits
-            # so run_benchmark can persist the vector-level hits and shard the
-            # scan across nodes; this is the single-node convenience wrapper.
+        """Per-accession results frame for ``queries`` (see topk_regroup).
+
+        Default protocol: the configured vector engine retrieves each query's
+        top_k nearest index vectors (topk_hits), the hits are grouped by
+        accession and each accession scored by its max hit;
+        accessions with no hit get MISS_SCORE. run_benchmark calls topk_hits
+        itself to persist the raw hits and shard the scan across nodes; this
+        is the single-node wrapper that also serves the timing runs.
+
+        ``exhaustive`` is the reference protocol: every accession is scored
+        by the max over all its vectors (a long query is chunked without
+        overlap and scored as the sum of per-chunk maxima; a query at most
+        max_seq_len long is one chunk, so that reduces to a plain max). With
+        both_strands the query and its reverse complement are scored
+        separately and the accession keeps the larger. acc_indices restricts
+        the exhaustive scan to that subset of accessions -- used by multi-node
+        search, where each node scores a stride of the index -- and the
+        results then cover only those accessions.
+        """
+        if not self.exhaustive:
+            if acc_indices is not None:
+                raise NotImplementedError(
+                    "acc_indices is only supported by the exhaustive search path"
+                )
             hits = self.topk_hits(queries)
             df = regroup_topk_hits(hits, self.acc_names_flat)
             assert len(df) == len(queries)
             return df
+        assert not (self.use_ann or self.use_rabitq)
         if acc_indices is None:
             acc_indices = list(range(len(self.acc_names_flat)))
         queries = queries.with_row_index()
-        query_chunk_features, query_indices = self._embed_queries(queries)
+        query_chunk_features, query_indices, chunk_strand = self._embed_queries(queries)
         query_chunk_features = query_chunk_features.to(self.model_cfg.device)
-        if self.use_ann:
-            from cuvs.neighbors import cagra
+        n_strands = 2 if self.both_strands else 1
+        assert self.all_embeddings is not None
+        n_chunks = len(query_chunk_features)
+        n_queries = len(queries)
+        n_acc = len(acc_indices)
 
-            n_queries = len(queries)
-            n_acc = len(self.acc_names_flat)
-            n_chunks = len(query_chunk_features)
-            top_k = self.top_k
-
-            # cuVS reads and writes through the CUDA array interface, which torch
-            # tensors implement -- passing the output buffers in keeps the results in
-            # torch and avoids a cupy dependency just to move them back.
-            device = query_chunk_features.device
-            identifiers = torch.empty(
-                (n_chunks, top_k), dtype=torch.int64, device=device
-            )
-            distances = torch.empty(
-                (n_chunks, top_k), dtype=torch.float32, device=device
-            )
-            cagra.search(
-                cagra.SearchParams(itopk_size=CAGRA_ITOPK_SIZE),
-                self.index,
-                query_chunk_features.contiguous(),
-                top_k,
-                neighbors=identifiers,
-                distances=distances,
-            )
-
-            chunk_to_query_np = np.zeros(n_chunks, dtype=np.int64)
-            for qi, (s, e) in enumerate(query_indices):
-                chunk_to_query_np[s:e] = qi
-
-            # inner_product distances are the raw similarities, largest first, so the
-            # -2 sentinel and maximum.at reduction below carry over unchanged.
-            flat_ids = identifiers.cpu().numpy().ravel()
-            flat_dists = distances.cpu().numpy().ravel()
-            chunk_idx_flat = np.repeat(np.arange(n_chunks), top_k)
-
-            acc_offsets_arr = np.array(self.acc_offsets)
-            acc_idx_flat = np.searchsorted(acc_offsets_arr, flat_ids, side="right") - 1
-            query_idx_flat = chunk_to_query_np[chunk_idx_flat]
-
-            scores_cpu = -2 * np.ones((n_queries, n_acc), dtype=np.float32)
-            np.maximum.at(scores_cpu, (query_idx_flat, acc_idx_flat), flat_dists)
+        # Per-accession scoring (2 GPU ops per accession instead of
+        # n_queries), parallelized across all GPUs: accessions are dealt
+        # round-robin to one thread per device. GPU ops and memmap page
+        # faults release the GIL, so the threads also overlap the multi-TB
+        # index read. Each accession streams through its GPU in blocks:
+        # the largest ones (~30M+ vectors, 90+ GB fp32) do not fit on a
+        # 40 GB A100 as a single slice, and maximum() over block maxima
+        # equals the full max.
+        block_rows = 2_000_000
+        if torch.cuda.is_available():
+            devices = [f"cuda:{i}" for i in range(torch.cuda.device_count())]
         else:
-            assert self.all_embeddings is not None
-            n_chunks = len(query_chunk_features)
-            n_queries = len(queries)
-            n_acc = len(acc_indices)
+            devices = [self.model_cfg.device]
+        qcf_cpu = query_chunk_features.cpu()
+        # Slot = (query, strand): chunk maxima are summed within a slot and
+        # a query keeps its best strand.
+        chunk_to_query_cpu = torch.zeros(n_chunks, dtype=torch.long)
+        for qi, (s, e) in enumerate(query_indices):
+            chunk_to_query_cpu[s:e] = qi
+        chunk_to_slot_cpu = chunk_to_query_cpu * n_strands + chunk_strand.long()
 
-            # Per-accession scoring (2 GPU ops per accession instead of
-            # n_queries), parallelized across all GPUs: accessions are dealt
-            # round-robin to one thread per device. GPU ops and memmap page
-            # faults release the GIL, so the threads also overlap the multi-TB
-            # index read. Each accession streams through its GPU in blocks:
-            # the largest ones (~30M+ vectors, 90+ GB fp32) do not fit on a
-            # 40 GB A100 as a single slice, and maximum() over block maxima
-            # equals the full max.
-            block_rows = 2_000_000
-            if torch.cuda.is_available():
-                devices = [f"cuda:{i}" for i in range(torch.cuda.device_count())]
-            else:
-                devices = [self.model_cfg.device]
-            qcf_cpu = query_chunk_features.cpu()
-            chunk_to_query_cpu = torch.zeros(n_chunks, dtype=torch.long)
-            for qi, (s, e) in enumerate(query_indices):
-                chunk_to_query_cpu[s:e] = qi
+        all_embeddings = self.all_embeddings
+        acc_offsets = self.acc_offsets
+        # Threads write disjoint columns, so unsynchronized writes are safe
+        scores_cpu = np.zeros((n_queries, n_acc), dtype=np.float32)
 
-            all_embeddings = self.all_embeddings
-            acc_offsets = self.acc_offsets
-            # Threads write disjoint columns, so unsynchronized writes are safe
-            scores_cpu = np.zeros((n_queries, n_acc), dtype=np.float32)
+        def _score_accessions(dev_idx: int):
+            dev = devices[dev_idx]
+            q = qcf_cpu.to(dev)
+            c2s = chunk_to_slot_cpu.to(dev)
+            positions = range(dev_idx, n_acc, len(devices))
+            if dev_idx == 0:
+                positions = tqdm(
+                    positions, desc=f"Scoring accessions ({len(devices)} GPUs)"
+                )
+            for pos in positions:
+                i = acc_indices[pos]
+                s, e = acc_offsets[i], acc_offsets[i + 1]
+                if e <= s:
+                    continue
+                chunk_maxes = torch.full(
+                    (n_chunks,), float("-inf"), device=dev, dtype=q.dtype
+                )
+                for bs in range(s, e, block_rows):
+                    be = min(bs + block_rows, e)
+                    logits = q @ all_embeddings[bs:be].to(dev).T
+                    chunk_maxes = torch.maximum(chunk_maxes, logits.max(dim=-1).values)
+                slot_scores = torch.zeros(
+                    n_queries * n_strands, device=dev, dtype=q.dtype
+                )
+                slot_scores.scatter_add_(0, c2s, chunk_maxes)
+                acc_scores = slot_scores.view(n_queries, n_strands).max(dim=1)
+                scores_cpu[:, pos] = acc_scores.values.cpu().numpy()
 
-            def _score_accessions(dev_idx: int):
-                dev = devices[dev_idx]
-                q = qcf_cpu.to(dev)
-                c2q = chunk_to_query_cpu.to(dev)
-                positions = range(dev_idx, n_acc, len(devices))
-                if dev_idx == 0:
-                    positions = tqdm(
-                        positions, desc=f"Scoring accessions ({len(devices)} GPUs)"
-                    )
-                for pos in positions:
-                    i = acc_indices[pos]
-                    s, e = acc_offsets[i], acc_offsets[i + 1]
-                    if e <= s:
-                        continue
-                    chunk_maxes = torch.full(
-                        (n_chunks,), float("-inf"), device=dev, dtype=q.dtype
-                    )
-                    for bs in range(s, e, block_rows):
-                        be = min(bs + block_rows, e)
-                        logits = q @ all_embeddings[bs:be].to(dev).T
-                        chunk_maxes = torch.maximum(
-                            chunk_maxes, logits.max(dim=-1).values
-                        )
-                    acc_scores = torch.zeros(n_queries, device=dev, dtype=q.dtype)
-                    acc_scores.scatter_add_(0, c2q, chunk_maxes)  # (n_queries,)
-                    scores_cpu[:, pos] = acc_scores.cpu().numpy()
-
-            with ThreadPoolExecutor(max_workers=len(devices)) as pool:
-                # list() propagates any worker exception
-                list(pool.map(_score_accessions, range(len(devices))))
+        with ThreadPoolExecutor(max_workers=len(devices)) as pool:
+            # list() propagates any worker exception
+            list(pool.map(_score_accessions, range(len(devices))))
 
         accession_names = [self.acc_names_flat[i] for i in acc_indices]
         # scores_col = []
@@ -521,8 +501,8 @@ class DenseIndex(BaseIndex):
 
         Scans index rows [vec_range) -- the whole index when None -- and returns
         one row per query: ``query_id`` and ``hits``, a score-descending list of
-        at most ``self.top_k`` ``{accession, score, vector_id}`` structs. This is
-        the artifact the top-k-then-regroup experiment saves: smaller k are its
+        at most ``self.top_k`` ``{accession, score, vector_id}`` structs.
+        This is the artifact run_benchmark persists: smaller k are its
         prefixes, and regroup_topk_hits turns any prefix into the standard
         per-accession results.
 
@@ -532,8 +512,11 @@ class DenseIndex(BaseIndex):
         running (n_chunks, top_k) buffer, so the full 7 TB index never has to
         fit anywhere. A long query's chunks each keep their own top-k; the
         query's list is their union, deduplicated by vector (max score) and cut
-        back to top_k. vec_range makes the scan shardable: each node's hits are
-        exact over its own range, so node 0 merges them with merge_topk_hits.
+        back to top_k. vec_range makes the scan shardable: each node's
+        hits are exact over its own range, so node 0 merges them with
+        merge_topk_hits. With both_strands a query's reverse-complement chunks
+        are simply more chunks of that query, so its list is the union of both
+        strands' hits.
         """
         assert self.all_embeddings is not None
         all_embeddings = self.all_embeddings
@@ -543,7 +526,7 @@ class DenseIndex(BaseIndex):
             raise ValueError(f"vec_range {vec_range} outside [0, {n_vecs}]")
         top_k = self.top_k
 
-        query_chunk_features, query_indices = self._embed_queries(queries)
+        query_chunk_features, query_indices, _ = self._embed_queries(queries)
         qcf_cpu = query_chunk_features.cpu().float()
         n_chunks = len(qcf_cpu)
 
@@ -567,7 +550,7 @@ class DenseIndex(BaseIndex):
             if dev_idx == 0:
                 blocks = tqdm(
                     blocks,
-                    desc=f"Exact top-{top_k} scan ({n_dev} device(s), "
+                    desc=f"Exact top-{top_k} vector scan ({n_dev} device(s), "
                     f"{end - start:,} vectors)",
                 )
             for bs in blocks:
@@ -605,8 +588,9 @@ class DenseIndex(BaseIndex):
         """Per-chunk (n_chunks, k) top-k -> per-query hits frame.
 
         Maps chunk rows back to their query and lets build_hits_frame union a
-        query's chunks, dedup by vector and cut to top_k. Padding slots
-        (id -1 / -inf) fall out there.
+        query's chunks (positions and, with both_strands, strands), dedup by
+        vector and cut to top_k. Padding slots (id -1 / -inf) fall out
+        there.
         """
         n_chunks, k = top_ids.shape
         chunk_to_query = np.zeros(n_chunks, dtype=np.int64)
@@ -640,7 +624,7 @@ class DenseIndex(BaseIndex):
         start, end = (0, n_vecs) if vec_range is None else vec_range
         if not (0 <= start <= end <= n_vecs):
             raise ValueError(f"vec_range {vec_range} outside [0, {n_vecs}]")
-        query_chunk_features, query_indices = self._embed_queries(queries)
+        query_chunk_features, query_indices, _ = self._embed_queries(queries)
         if end == start:
             n_chunks = len(query_chunk_features)
             return self._hits_from_chunk_topk(
@@ -659,15 +643,56 @@ class DenseIndex(BaseIndex):
         )
         return self._hits_from_chunk_topk(queries, query_indices, scores, ids)
 
+    @torch.no_grad()
+    def ann_topk_hits(self, queries: pl.DataFrame) -> pl.DataFrame:
+        """Top-k by CAGRA graph search; same hits contract as the scans.
+
+        The graph holds the whole index, so there is no vec_range: an ANN
+        search runs on one node. Results are approximate (a true neighbor the
+        graph walk misses is absent from the list rather than mis-scored).
+        """
+        from cuvs.neighbors import cagra
+
+        query_chunk_features, query_indices, _ = self._embed_queries(queries)
+        q = query_chunk_features.to(self.model_cfg.device).float().contiguous()
+        n_chunks = len(q)
+        top_k = self.top_k
+        # cuVS reads and writes through the CUDA array interface, which torch
+        # tensors implement -- passing the output buffers in keeps the results
+        # in torch and avoids a cupy dependency just to move them back.
+        identifiers = torch.empty((n_chunks, top_k), dtype=torch.int64, device=q.device)
+        distances = torch.empty((n_chunks, top_k), dtype=torch.float32, device=q.device)
+        cagra.search(
+            # itopk_size must be at least k for CAGRA to return k neighbors.
+            cagra.SearchParams(itopk_size=max(CAGRA_ITOPK_SIZE, top_k)),
+            self.index,
+            q,
+            top_k,
+            neighbors=identifiers,
+            distances=distances,
+        )
+        # inner_product "distances" are the raw similarities, largest first.
+        return self._hits_from_chunk_topk(
+            queries, query_indices, distances.cpu(), identifiers.cpu()
+        )
+
     def topk_hits(
         self, queries: pl.DataFrame, vec_range: tuple[int, int] | None = None
     ) -> pl.DataFrame:
-        """Vector-level top-k hits from whichever top-k engine is configured."""
-        if self.exact_search:
-            return self.exact_topk_hits(queries, vec_range)
+        """Each query's top_k vector hits from the configured engine.
+
+        Exact fp32 scan by default; use_rabitq and use_ann select the others.
+        Only the two scans accept vec_range (the multi-node row sharding).
+        """
+        if self.exhaustive:
+            raise NotImplementedError("topk_hits has no meaning under exhaustive")
         if self.use_rabitq:
             return self.rabitq_topk_hits(queries, vec_range)
-        raise NotImplementedError("topk_hits needs exact_search or use_rabitq")
+        if self.use_ann:
+            if vec_range is not None:
+                raise NotImplementedError("CAGRA search cannot be row-sharded")
+            return self.ann_topk_hits(queries)
+        return self.exact_topk_hits(queries, vec_range)
 
     def num_vectors(self) -> int:
         return self.n_vectors
@@ -828,30 +853,42 @@ class DenseIndex(BaseIndex):
             print("Building RaBitQ quantized index from merged embeddings...")
             build_rabitq_index(index_path / "embeddings.fbin", index_path / "rabitq")
 
-    def _embed_queries(self, queries) -> tuple[torch.Tensor, list[tuple[int, int]]]:
+    def _embed_queries(
+        self, queries
+    ) -> tuple[torch.Tensor, list[tuple[int, int]], torch.Tensor]:
         """Embed every query, chunking any that exceed max_seq_len.
 
         Queries are split into non-overlapping max_seq_len windows, so a query
-        shorter than that yields exactly one chunk identical to itself. Returns
-        the (n_chunks, dim) features and, per query, the [start, end) range of
-        rows it owns -- callers that need per-query results reduce over that
-        range rather than assuming one row per query.
+        shorter than that yields exactly one chunk identical to itself. With
+        both_strands the query's reverse complement is chunked the same way
+        and its chunks follow the forward ones inside the query's range, so
+        the second strand costs one more embedding per chunk and nothing
+        else -- every caller that reduces over a query's range sees both
+        strands. Returns the (n_chunks, dim) features, per query the
+        [start, end) range of rows it owns, and per row its strand (0
+        forward, 1 reverse complement) for callers that must not sum across
+        strands.
         """
         query_chunks: list[str] = []
         query_indices: list[tuple[int, int]] = []
+        strands: list[int] = []
         prev_idx = 0
+        max_len = self.model_cfg.max_seq_len
         for query in queries["query_sequence"].to_list():
-            chunked_query = [
-                query[i : (i + self.model_cfg.max_seq_len)]
-                for i in range(0, len(query), self.model_cfg.max_seq_len)
-            ]
-            num_chunks = len(chunked_query)
+            variants = [query]
+            if self.both_strands:
+                variants.append(reverse_complement(query))
+            num_chunks = 0
+            for strand, seq in enumerate(variants):
+                chunked = [seq[i : i + max_len] for i in range(0, len(seq), max_len)]
+                query_chunks.extend(chunked)
+                strands.extend([strand] * len(chunked))
+                num_chunks += len(chunked)
             query_indices.append((prev_idx, prev_idx + num_chunks))
-            query_chunks.extend(chunked_query)
-            prev_idx = prev_idx + num_chunks
+            prev_idx += num_chunks
 
         query_features = self.model.encode(query_chunks)
-        return query_features, query_indices
+        return query_features, query_indices, torch.tensor(strands, dtype=torch.long)
 
 
 def chunk_sequence(

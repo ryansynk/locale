@@ -30,8 +30,8 @@ set -euo pipefail
 # (streaming, exact-over-all-accessions) baseline. For the top-k-then-regroup
 # experiment pass configs/perlmutter_locale_sra100studies_exact_topk1000.yaml:
 # same index, but each node scans an equal range of vector rows and node 0
-# merges the per-query top-1000 hits (written under results_100studies_topk_hits/
-# for rescore_topk.py) plus a standard results parquet under a distinct
+# merges the per-query top-1000 hits (written under results_100studies_topk_hits/,
+# reused by later runs at smaller k) plus a standard results parquet under a distinct
 # experiment_id (..._exacttop1000), so the baseline is never overwritten.
 MUT_RATE="${1:?usage: sbatch perlmutter_100studies_search.sbatch <mutation_rate> [config.yaml]}"
 CONFIG="${2:-configs/perlmutter_locale_sra100studies.yaml}"

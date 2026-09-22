@@ -46,22 +46,40 @@ class DenseConfig(AlgorithmConfig):
     max_seq_len: int = 1024
     chunk_overlap: int = 150
     neuroseed_path: Optional[str] = "/pscratch/sd/r/rsynk/NeuroSEED"
+    # --- Scoring protocol (search-time only; the built index is identical) ---
+    # Default: retrieve each query's top_k nearest index VECTORS, group the
+    # hits by accession, score each accession by its max hit and rank;
+    # accessions with no hit sit at MISS_SCORE, below every scored one. The
+    # raw hits are persisted under <topk_hits_dir>/<hits_id>/ and reused by
+    # any later run of the same encoder/dataset/strands whose top_k is no
+    # larger (the ranking at k depends only on the first k hits), so a k-sweep
+    # is one scan at the largest k followed by cheap reruns.
+    top_k: int = 100
+    # Reference protocol: score every accession by the max over ALL its
+    # vectors (the streaming per-accession scan). No hits are persisted.
+    exhaustive: bool = False
+    # Vector engine for the top-k protocol. Default is the exact fp32 scan;
+    # use_ann searches a CAGRA graph, use_rabitq scans 1-bit RaBitQ codes.
     use_ann: bool = False
-    exact_search: bool = False
     use_rabitq: bool = False
-    # Vector-level candidate count for the top-k engines (ANN, RaBitQ, exact
-    # search): each query chunk keeps its top_k nearest index vectors, which are
-    # then regrouped to accessions by max score. The streaming dense path scores
-    # every accession and ignores this.
-    top_k: int = 10
+    # Also embed each query's reverse complement and union the two hit lists
+    # before the top_k cut (dense methods only; metagraph/mmseqs already see
+    # both strands). Suffixes experiment_id with _bothstrands.
+    both_strands: bool = False
+    # Deprecated no-op kept so older configs still parse: the exact top-k
+    # regroup it used to switch on is now the default protocol.
+    exact_search: bool = False
     # Rows sampled (in contiguous blocks) to estimate the RaBitQ centroid,
     # instead of a full pass over the fbin. Ignored unless use_rabitq.
     rabitq_sample_rows: int = 2_000_000
 
     def __post_init__(self):
-        if sum([self.use_ann, self.use_rabitq, self.exact_search]) > 1:
+        if self.use_ann and self.use_rabitq:
+            raise ValueError("use_ann and use_rabitq are mutually exclusive")
+        if self.exhaustive and (self.use_ann or self.use_rabitq or self.exact_search):
             raise ValueError(
-                "use_ann, use_rabitq and exact_search are mutually exclusive"
+                "exhaustive scores every accession directly; it has no vector "
+                "engine (use_ann/use_rabitq/exact_search)"
             )
         config_tag = f"maxlen{self.max_seq_len}_pool{self.pooling}_chunkstride"
         if self.name == "dnabert":
@@ -114,17 +132,26 @@ class DenseConfig(AlgorithmConfig):
             raise ValueError(
                 f"name expected: locale, dnabert, generator, neuroseed, dna2vec, or llmed. Got = {self.name}"
             )
-        # Exact top-k search reads the same built index as the streaming path
-        # (index_suffix is unchanged) but ranks differently, so it must not
-        # overwrite the full-dense results under the same experiment_id -- the
-        # 100-studies full-dense baseline is exactly what these runs are
-        # compared against.
-        if self.exact_search:
-            self.experiment_id = f"{self.experiment_id}_exacttop{self.top_k}"
-        # Same reasoning for the 1-bit RaBitQ ranking: same index_suffix (the
-        # codes live under <index>/rabitq/), distinct results.
-        if self.use_rabitq:
-            self.experiment_id = f"{self.experiment_id}_rabitq1bit_top{self.top_k}"
+        # Every scoring protocol reads the same built index (index_suffix is
+        # unchanged) but ranks differently, so each gets its own experiment_id.
+        # The bare id stays with the exhaustive per-accession max: that is what
+        # the existing full-dense baseline directories were written under, and
+        # what the top-k protocols are compared against. hits_id is the
+        # experiment_id without k: the persisted hits directory, shared by
+        # every k of the same encoder/engine/strands.
+        strands = "_bothstrands" if self.both_strands else ""
+        if self.exhaustive:
+            self.hits_id: str | None = None
+        else:
+            if self.use_rabitq:
+                engine, sep = "rabitq1bit", "_top"
+            elif self.use_ann:
+                engine, sep = "cagra", "_top"
+            else:
+                engine, sep = "exact", "top"
+            self.hits_id = f"{self.experiment_id}_{engine}{strands}"
+            self.experiment_id = f"{self.experiment_id}_{engine}{sep}{self.top_k}"
+        self.experiment_id = f"{self.experiment_id}{strands}"
 
     def __str__(self):
         return self.experiment_id
@@ -236,9 +263,9 @@ class ExperimentConfig:
     # run finishes in minutes. Leave unset for real runs — a truncated index is
     # still marked .done, so always pair this with a throwaway index_dir.
     max_accessions: int | None = None
-    # Where an exact_search run persists each query's raw top-k vector hits
-    # (rescore_topk.py re-derives smaller-k results from them without another
-    # scan). Kept OUT of results_dir: print_results.py rglobs every parquet
+    # Where a top-k run persists each query's raw vector hits, and where later
+    # runs at a smaller top_k find them instead of scanning again. Kept OUT of
+    # results_dir: print_results.py rglobs every parquet
     # under results_dir against a strict schema, and the hits artifact does not
     # match it. Unset means a sibling of results_dir named
     # "<results_dir>_topk_hits".

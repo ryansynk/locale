@@ -11,7 +11,7 @@
 # results_100studies/<experiment_id>_exacttop1000/ beside -- never over -- the
 # full-dense baseline. The raw per-query top-1000 hits go to
 # results_100studies_topk_hits/ (config default topk_hits_dir), from which
-# rescore_topk.py derives k = 10/20/50/100/200 without rescanning.
+# later runs at k <= 1000 are served without rescanning.
 #
 # Launch: sbatch perlmutter_100studies_search.sbatch <rate> \
 #             configs/perlmutter_locale_sra100studies_exact_topk1000.yaml
@@ -23,6 +23,9 @@ model:
   pooling: mean
   max_seq_len: 256
   chunk_overlap: 150
+  # Since 2026-09-22 the top-k regroup is the default protocol, so
+  # exact_search is a no-op; top_k: 1000 keeps this run's ranking (and its
+  # _exacttop1000 experiment_id) identical to before.
   exact_search: true
   top_k: 1000
 

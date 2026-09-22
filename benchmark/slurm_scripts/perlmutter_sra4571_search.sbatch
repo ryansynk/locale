@@ -26,8 +26,8 @@
 # (streaming, exact-over-all-accessions) baseline. For the top-k-then-regroup
 # yardstick pass configs/perlmutter_locale_sra4571_exact_topk1000.yaml: same
 # index, each node scans an equal range of vector rows, node 0 merges the
-# per-query top-1000 hits (under results_sra4571_topk_hits/ for
-# rescore_topk.py) plus a results parquet under experiment_id ..._exacttop1000.
+# per-query top-1000 hits (under results_sra4571_topk_hits/, reused
+# by later runs at smaller k) plus a results parquet under experiment_id ..._exacttop1000.
 MUT_RATE="${1:?usage: sbatch perlmutter_sra4571_search.sbatch <mutation_rate> [config.yaml]}"
 CONFIG="${2:-configs/perlmutter_locale_sra4571.yaml}"
 

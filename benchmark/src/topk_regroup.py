@@ -6,8 +6,8 @@ regrouped: an accession's score is the max over its vectors in the hit list, and
 every accession absent from the list gets ``MISS_SCORE`` (plot_results
 DEFAULT_SCORE, which its metrics treat as "never returned").
 
-This lives apart from dense_index so rescore_topk.py can import it without
-pulling in torch/CUDA. Nothing here touches a GPU.
+This lives apart from dense_index so it can be used without pulling in
+torch/CUDA. Nothing here touches a GPU.
 
 Hits frame schema (one row per query):
     query_id: str

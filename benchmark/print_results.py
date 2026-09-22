@@ -60,8 +60,7 @@ def main(
             tables instead of the paper's first-token display names ("LOCALE").
             The default (None) decides from the data: full ids whenever the
             short names would pool distinct models -- e.g. the full-dense
-            baseline, an exact top-k run and its rescore_topk.py derivatives all
-            start with "locale" and would otherwise be averaged into one row.
+            baseline and exact top-k runs at several k all start with "locale" and would otherwise be averaged into one row.
             The AUPRC table always uses full ids.
     """
     results_dir = Path(results_dir)

@@ -75,49 +75,68 @@ srun uv run python run_benchmark.py --config configs/nexus_locale.yaml ...
 
 An index is rebuilt only when `<index_dir>/<index_suffix>/.done` is absent, so reruns reuse existing indexes.
 
+### Scoring protocol (dense methods: LOCALE, ESA/dna2vec, LLM-ED, ...)
+
+All dense methods share `DenseIndex`, so these settings apply to every
+`DenseConfig` run. Index building is unaffected: every protocol reads the same
+`<index_dir>/<index_suffix>/` and the `.done` marker logic is unchanged.
+
+**Default: top-k regroup.** Each query's `model.top_k` (default 100) nearest
+index *vectors* are retrieved, grouped by accession, each accession is scored
+by its max hit and the accessions are ranked; accessions with no hit get the
+miss sentinel (-2.0) and rank below every scored one. The vector engine is
+the exact fp32 scan unless `model.use_rabitq` (1-bit RaBitQ codes) or
+`model.use_ann` (CAGRA graph) is set. `experiment_id` gets an engine suffix
+(`_exacttop<k>`, `_rabitq1bit_top<k>`, `_cagra_top<k>`) so the results never
+overwrite an exhaustive run's.
+
+**Persisted hits and k-sweeps.** The raw hits are written to
+`<topk_hits_dir>/<hits_id>/raw_read_mut_<rate>_topk<k>.parquet`: one row per
+query with a score-descending list of `{accession, score, vector_id}` structs
+plus the run metadata columns. `hits_id` is the `experiment_id` without k, so
+every k of one encoder/engine/strands shares the directory, and a run whose
+`top_k` is at most a saved file's k (and whose queries it covers) loads and
+truncates that file instead of scanning. A k-sweep is therefore one scan at
+the largest k, then reruns of the same config at smaller k, each producing its
+own `results_dir/<experiment_id>/`. `topk_hits_dir` defaults to
+`<results_dir>_topk_hits`, deliberately outside `results_dir`, whose parquets
+`print_results.py` reads with a strict schema. Timing runs (`--do_timing`)
+always search and never persist. When several models share a first-token
+display name (`locale_...`), `print_results.py` keeps the full ids apart in
+its tables instead of pooling them (`--full_model_names` overrides).
+
+**Reference: exhaustive.** `model.exhaustive: true` scores every accession by
+the max over all its vectors (the original full-dense scan). It keeps the bare
+`experiment_id`, which is what the existing baseline result directories were
+written under. No hits are persisted.
+
+**Both strands.** `model.both_strands: true` (off by default) also embeds each
+query's reverse complement, retrieves `top_k` hits for both, unions the two
+lists (deduplicated by vector, max score, cut back to `top_k`) and then
+regroups as above; the timing runs include the second embedding. Under
+`exhaustive` the accession keeps the better of its two strand scores. Appends
+`_bothstrands` to `experiment_id` and `hits_id`. Metagraph and MMseqs2 already
+see both strands and ignore the flag. Example:
+`configs/perlmutter_locale_sra4571_bothstrands.yaml`.
+
+`model.exact_search: true` in older configs is accepted as a no-op (that
+protocol is now the default).
+
 ### Multi-node search (dense methods only)
 
 With the index built, a multi-node `srun` also shards the search. The default
-(full-dense) path deals accessions out across nodes and node 0 reassembles the
-per-accession scores. With `model.exact_search: true` the search instead ranks
-each query's exact global top-`model.top_k` nearest index *vectors* (the
-ranking an ANN index approximates) and regroups them to accessions by max
-score; each node scans an equal range of vector rows and node 0 merges the
-per-query top-k lists. `exact_search` appends `_exacttop<k>` to the
-`experiment_id`, so its results sit beside the full-dense ones, and the raw
-per-query hits are also written to
-`<topk_hits_dir>/<experiment_id>/raw_read_mut_<rate>_topk<k>.parquet`
-(`topk_hits_dir` defaults to `<results_dir>_topk_hits`, deliberately outside
-`results_dir`, whose parquets `print_results.py` reads with a strict schema).
+top-k protocol has each node scan an equal range of vector *rows* (exact fp32
+or RaBitQ) and node 0 merge the per-query top-k lists; the exhaustive
+protocol deals accessions out across nodes and node 0 reassembles the
+per-accession scores. CAGRA (`use_ann`) searches on node 0 alone. A run that
+finds cached hits skips the scan on every node.
 
-With `model.use_rabitq: true` the same vector-level path runs over 1-bit
-RaBitQ codes instead of fp32 rows. The codes are built once into
-`<index>/rabitq/`, one shard per node when the build itself runs under a
-multi-node `srun` (the centroid is estimated from `model.rabitq_sample_rows`
-sampled rows rather than a full pass), and at search time each node loads
-only its row range of packed codes onto its GPUs (~96 B/vector at 768 dims).
-`use_rabitq` appends `_rabitq1bit_top<k>` to the `experiment_id`.
-
-### Re-scoring saved top-k hits at smaller k
-
-Because the top-k-then-regroup ranking at any `k' <= k` depends only on the
-first `k'` saved hits, every smaller `k'` is derived without another scan:
-
-```bash
-uv run python rescore_topk.py \
-  <topk_hits_dir>/<experiment_id> \
-  results_regroup/ \
-  <dataset_dir>/accs.txt \
-  --ks "[10,20,50,100,200,1000]"
-```
-
-This writes one standard results parquet per `k'` under
-`results_regroup/<experiment_id>_k<k'>/`, scorable with `print_results.py`.
-When several models share a first-token display name (`locale_...`),
-`print_results.py` keeps the full ids apart in its tables instead of pooling
-them (`--full_model_names` overrides the auto-detection).
-
----
+With `model.use_rabitq: true` the vector-level path runs over 1-bit RaBitQ
+codes instead of fp32 rows. The codes are built once into `<index>/rabitq/`,
+one shard per node when the build itself runs under a multi-node `srun` (the
+centroid is estimated from `model.rabitq_sample_rows` sampled rows rather than
+a full pass), and at search time each node loads only its row range of packed
+codes onto its GPUs (~96 B/vector at 768 dims).
 
 ## Plotting Results
 
