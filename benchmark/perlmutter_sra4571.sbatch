@@ -35,18 +35,30 @@ CONTIGS=/pscratch/sd/r/rsynk/locale-data/constructed/sra4571/work/logan_contigs
 
 # finalize_query_dataset.py writes accs.txt + queries but not logan_accessions/.
 # Link exactly the manifest accessions from the already-downloaded contig tree
-# (layout <ACC>/<ACC>.contigs.fa, same as src/download_accessions.py) so
-# run_benchmark neither re-downloads nor indexes stray accessions. Idempotent.
+# so run_benchmark neither re-downloads nor indexes stray accessions. Layout
+# must be a REAL directory per accession holding a symlink to the .contigs.fa:
+# run_benchmark finds contigs with Path.rglob, which on Python 3.11 does not
+# descend into symlinked directories (a per-accession *directory* symlink made
+# it find nothing and re-download all 4571, job 58713395). Idempotent; replaces
+# any leftover directory symlinks.
 mkdir -p "$BUNDLE/logan_accessions"
 missing=0
 while read -r acc; do
   [ -n "$acc" ] || continue
-  src="$CONTIGS/$acc"
-  if [ ! -f "$src/$acc.contigs.fa" ]; then echo "missing contigs: $acc"; missing=$((missing+1)); continue; fi
-  [ -e "$BUNDLE/logan_accessions/$acc" ] || ln -s "$src" "$BUNDLE/logan_accessions/$acc"
+  src="$CONTIGS/$acc/$acc.contigs.fa"
+  dst="$BUNDLE/logan_accessions/$acc"
+  if [ ! -f "$src" ]; then echo "missing contigs: $acc"; missing=$((missing+1)); continue; fi
+  [ -L "$dst" ] && rm "$dst"
+  mkdir -p "$dst"
+  [ -e "$dst/$acc.contigs.fa" ] || ln -s "$src" "$dst/$acc.contigs.fa"
 done < "$BUNDLE/accs.txt"
 [ "$missing" -eq 0 ] || { echo "$missing accessions lack contigs; aborting"; exit 1; }
-echo "logan_accessions: $(ls "$BUNDLE/logan_accessions" | wc -l) links for $(wc -l < "$BUNDLE/accs.txt") accessions"
+# Self-check with the same call run_benchmark uses; abort before srun rather
+# than let 32 GPU nodes fall back to downloading.
+n_found=$(uv run python -c "from pathlib import Path; print(len(list(Path('$BUNDLE/logan_accessions').rglob('*.contigs.fa'))))")
+n_accs=$(wc -l < "$BUNDLE/accs.txt")
+echo "logan_accessions: rglob finds $n_found contigs for $n_accs accessions"
+[ "$n_found" -eq "$n_accs" ] || { echo "rglob count mismatch; aborting before srun"; exit 1; }
 
 export PYTHONUNBUFFERED=1
 
