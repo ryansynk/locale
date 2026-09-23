@@ -1,0 +1,37 @@
+# LOCALE on sra500v2 (the 2026-09 rebuild of the 500-accession benchmark).
+#
+# Default top-k regroup protocol at k=100 with both-strand querying: q and its
+# reverse complement are embedded, the two top-100 hit lists unioned, hits
+# regrouped to accessions by max. experiment_id ends in
+# _exacttop100_bothstrands; raw hits land in results/sra500_topk_hits/ and are
+# reused by any later run at k <= 100.
+#
+# Paper checkpoint (8vqiabk9/5859), encoder settings as in the sra4571 runs.
+# Layout: indexes/<dataset>/<index_suffix>, results/<dataset>/<experiment_id>.
+# Multi-node: the build shards accessions and the search shards vector rows
+# across the nodes of the job (run through srun, one task per node).
+model:
+  name: locale
+  checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/8vqiabk9/checkpoint5859.pth.tar
+  batch_size: 1000
+  device: cuda
+  pooling: mean
+  max_seq_len: 256
+  chunk_overlap: 150
+  top_k: 100
+  both_strands: true
+
+# Local bundle (locale-data list-first pipeline, built 2026-09-21; the source
+# of the HF sra500-v2 upload): 500 accessions disjoint from train/val, 500
+# raw-read queries from 228 runs, both strands aligned (strand column: 245 +,
+# 255 -), per-rate query files queries_mut0.00/0.05/0.10.parquet. The name is
+# deliberately NOT a run_benchmark.DATASETS key: a registered name makes
+# snapshot_download write the HF copies of accs.txt and the query files over
+# this directory. logan_accessions/ is a per-accession directory of symlinks
+# into ../work/logan_contigs, laid out by the same loop as
+# slurm_scripts/perlmutter_sra4571.sbatch.
+dataset_name: sra500v2_local
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra500/bundle
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes/sra500
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results/sra500
+mutation_rate: 0.0

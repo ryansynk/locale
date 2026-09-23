@@ -16,7 +16,7 @@
 # override of the config's mutation_rate. The index must be .done (run the
 # merge first); all nodes skip build and go straight to search.
 #
-# Default config: configs/perlmutter_locale_sra4571_exact_topk1000.yaml, the
+# Default config: configs/sra4571/perlmutter_locale_sra4571_exact_topk1000.yaml, the
 # exact top-1000 regroup over both strands. Each node scans an equal range of the fbin's vector
 # rows for every query's top-1000 nearest vectors; node 0 unions the partials,
 # re-takes the global top-1000, regroups to accessions and writes
@@ -26,9 +26,9 @@
 # rescan, which is what makes the later ANN-vs-exact comparison cheap.
 #
 # Optional second argument: another config over the same index, e.g.
-# configs/perlmutter_locale_sra4571.yaml (default protocol, k=100 -- note it
+# configs/sra4571/perlmutter_locale_sra4571.yaml (default protocol, k=100 -- note it
 # is NOT the streaming per-accession baseline unless it sets exhaustive: true)
-# or configs/perlmutter_locale_sra4571_bothstrands.yaml. Both-strand hits live
+# or configs/sra4571/perlmutter_locale_sra4571_bothstrands.yaml. Both-strand hits live
 # in a separate hits_id, so a both-strands run does not reuse single-strand hits.
 #
 # The three rates write distinct result and hits files and can run
@@ -38,7 +38,7 @@
 # ~15 min, so 4 nodes (515M rows each) finish in ~30 min plus query embedding
 # and merge; 2h is generous headroom.
 MUT_RATE="${1:?usage: sbatch perlmutter_sra4571_search.sbatch <mutation_rate> [config.yaml]}"
-CONFIG="${2:-configs/perlmutter_locale_sra4571_exact_topk1000.yaml}"
+CONFIG="${2:-configs/sra4571/perlmutter_locale_sra4571_exact_topk1000.yaml}"
 
 set -euo pipefail
 

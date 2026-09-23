@@ -62,4 +62,4 @@ echo "logan_accessions: rglob finds $n_found contigs for $n_accs accessions"
 
 export PYTHONUNBUFFERED=1
 
-srun uv run python run_benchmark.py --config configs/perlmutter_locale_sra4571.yaml --build_only true
+srun uv run python run_benchmark.py --config configs/sra4571/perlmutter_locale_sra4571.yaml --build_only true

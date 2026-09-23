@@ -117,7 +117,7 @@ regroups as above; the timing runs include the second embedding. Under
 `exhaustive` the accession keeps the better of its two strand scores. Appends
 `_bothstrands` to `experiment_id` and `hits_id`. Metagraph and MMseqs2 already
 see both strands and ignore the flag. Example:
-`configs/perlmutter_locale_sra4571_bothstrands.yaml`.
+`configs/sra4571/perlmutter_locale_sra4571_bothstrands.yaml`.
 
 `model.exact_search: true` in older configs is accepted as a no-op (that
 protocol is now the default).

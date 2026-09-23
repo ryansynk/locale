@@ -1,0 +1,30 @@
+# LLM-ED (PSUXL/LLMED-MAE, downloaded by the encoder) on sra55viral. Same
+# protocol as the LOCALE config: top-k regroup at k=100, both strands.
+model:
+  name: llmed
+  checkpoint_path: null
+  batch_size: 1000
+  device: cuda
+  pooling: mean
+  max_seq_len: 256
+  chunk_overlap: 150
+  top_k: 100
+  both_strands: true
+
+# Local bundle (locale-data list-first pipeline, 2026-09): 55 accessions,
+# 500 raw-read queries (Rq=5) drawn from 10 HBV genotype-D runs, per-rate
+# query files queries_mut0.00/0.05/0.10.parquet. The name is deliberately NOT
+# a run_benchmark.DATASETS key ("sra55viral" is registered there): a
+# registered name makes snapshot_download write the HF copies of accs.txt and
+# the query files over this directory. logan_accessions/ is created by
+# run_sra55viral.sh (one directory per accession holding the .contigs.fa),
+# downloaded from Logan on first use.
+#
+# Evaluated on the clean queries only (run_sra55viral.sh defaults to rate
+# 0.00): the cross-genotype divergence is the point of this set, so the
+# synthetic mut0.05 / mut0.10 files are not part of the protocol.
+dataset_name: sra55viral_local
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra55viral/bundle
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes/sra55viral
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results/sra55viral
+mutation_rate: 0.0

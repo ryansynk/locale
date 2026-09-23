@@ -1,0 +1,26 @@
+# Metagraph k-mer baseline on sra500v2. Runs inside the published container:
+# add --image=ghcr.io/ratschlab/metagraph:master to salloc/sbatch. Metagraph
+# canonicalises k-mers, so it already searches both strands; no flag needed.
+#
+# Single-node method: launch it on one node with SLURM_NNODES=1 SLURM_NODEID=0
+# (as run_sra55viral.sh / perlmutter_sra55viral_metagraph.sbatch do); the
+# multi-node build path shards and merges dense indexes only.
+model:
+  name: metagraph
+  executable: shifter metagraph
+  k: 31
+
+# Local bundle (locale-data list-first pipeline, built 2026-09-21; the source
+# of the HF sra500-v2 upload): 500 accessions disjoint from train/val, 500
+# raw-read queries from 228 runs, both strands aligned (strand column: 245 +,
+# 255 -), per-rate query files queries_mut0.00/0.05/0.10.parquet. The name is
+# deliberately NOT a run_benchmark.DATASETS key: a registered name makes
+# snapshot_download write the HF copies of accs.txt and the query files over
+# this directory. logan_accessions/ is a per-accession directory of symlinks
+# into ../work/logan_contigs, laid out by the same loop as
+# slurm_scripts/perlmutter_sra4571.sbatch.
+dataset_name: sra500v2_local
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra500/bundle
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes/sra500
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results/sra500
+mutation_rate: 0.0

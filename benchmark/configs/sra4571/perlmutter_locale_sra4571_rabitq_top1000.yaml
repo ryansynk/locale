@@ -14,7 +14,7 @@
 #
 # Launch:
 #   sbatch -t 4:00:00 slurm_scripts/perlmutter_sra4571_search.sbatch 0.00 \
-#       configs/perlmutter_locale_sra4571_rabitq_top1000.yaml
+#       configs/sra4571/perlmutter_locale_sra4571_rabitq_top1000.yaml
 model:
   name: locale
   checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/8vqiabk9/checkpoint5859.pth.tar
