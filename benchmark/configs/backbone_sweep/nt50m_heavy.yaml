@@ -1,0 +1,35 @@
+# NT-v2 (nucleotide transformer, 50M) / heavy rung -- backbone-swap ablation on sra50v2, Perlmutter.
+#
+# LOCALE recipe trained on top of the nt50m backbone (run 6gkcc735, step
+# 11718); LOCALEEncoder reads `backbone: nt50m` out of the checkpoint's
+# model_args and picks the encoder and tokenizer itself. The configs in this
+# directory differ ONLY in checkpoint_path, so the columns are comparable.
+#
+# Protocol: default top-k regroup at k=100 with both-strand querying, same as
+# configs/perlmutter_locale_sra50v2.yaml. experiment_id encodes the run id, so
+# every rung gets its own results/ and indexes/ subtree.
+#
+# checkpoint_path is the Perlmutter mirror of the Nexus ladder checkpoint
+# (/fs/nexus-scratch/ryansynk/rawbert/checkpoints/6gkcc735/checkpoint11718.pth.tar);
+# copy it there before running.
+#
+# --mutation_rate (0.0 / 0.05 / 0.1) is the eval-noise axis; the value below is
+# only the default.
+model:
+  name: locale
+  checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/6gkcc735/checkpoint11718.pth.tar
+  batch_size: 1000
+  device: cuda
+  pooling: mean
+  max_seq_len: 256
+  chunk_overlap: 150
+  top_k: 100
+  both_strands: true
+
+# Local bundle, see configs/perlmutter_locale_sra50v2.yaml for why the name is
+# not a run_benchmark.DATASETS key.
+dataset_name: sra50v2_local
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra50/bundle
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes/sra50_backbone_sweep
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results/sra50_backbone_sweep
+mutation_rate: 0.0
