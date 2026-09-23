@@ -2,8 +2,8 @@
 #SBATCH -A m5408_g
 #SBATCH -C gpu
 #SBATCH -q premium
-#SBATCH -N 8
-#SBATCH -t 8:00:00
+#SBATCH -N 4
+#SBATCH -t 2:00:00
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
 #SBATCH -c 128
@@ -34,7 +34,9 @@
 # The three rates write distinct result and hits files and can run
 # concurrently. Partials are keyed by (mutation_rate, num_queries, seed) and
 # reused on rerun, so a resubmit after a timeout resumes rather than rescoring.
-# 8 nodes / 8h was sized for the streaming scan; the flat top-k scan is faster.
+# Sizing: the 8-node run of 2026-09-22 scanned each node's 257M-row range in
+# ~15 min, so 4 nodes (515M rows each) finish in ~30 min plus query embedding
+# and merge; 2h is generous headroom.
 MUT_RATE="${1:?usage: sbatch perlmutter_sra4571_search.sbatch <mutation_rate> [config.yaml]}"
 CONFIG="${2:-configs/perlmutter_locale_sra4571_exact_topk1000.yaml}"
 
@@ -44,6 +46,10 @@ cd /pscratch/sd/r/rsynk/locale/benchmark
 mkdir -p slurm_logs
 
 export PYTHONUNBUFFERED=1
+# The exact scan allocates and frees a ~15 GB logits tile per block; without
+# expandable segments the caching allocator fragments and can fail a
+# 15 GB request with 12 GB reported free (seen on the 2026-09-22 runs).
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 srun --ntasks-per-node=1 --gpus-per-node=4 --cpus-per-task=128 \
   uv run python run_benchmark.py \

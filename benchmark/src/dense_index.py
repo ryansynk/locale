@@ -558,10 +558,17 @@ class DenseIndex(BaseIndex):
                 logits = q @ all_embeddings[bs:be].to(dev).T  # (n_chunks, be-bs)
                 k = min(top_k, be - bs)
                 vals, idx = torch.topk(logits, k, dim=-1)
+                # The logits tile is the big allocation (2024 chunks x 2M rows
+                # fp32 = 15 GB with 1000 both-strand queries). Drop it before
+                # the next block is copied in; otherwise the previous tile is
+                # still bound when the next matmul allocates and the peak is
+                # two tiles plus a block, which OOMs a 40 GB A100.
+                del logits
                 cand_vals = torch.cat([best_vals, vals], dim=1)
                 cand_ids = torch.cat([best_ids, idx + bs], dim=1)
                 best_vals, pos = torch.topk(cand_vals, top_k, dim=-1)
                 best_ids = torch.gather(cand_ids, 1, pos)
+                del vals, idx, cand_vals, cand_ids, pos
             return best_vals.cpu(), best_ids.cpu()
 
         with ThreadPoolExecutor(max_workers=n_dev) as pool:
