@@ -19,7 +19,7 @@ model:
 
 dataset_name: sra4571
 dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra4571/bundle
-index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes_sra4571
-results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results_sra4571
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes/sra4571
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results/sra4571
 mutation_rate: 0.0
 num_queries: 1000
