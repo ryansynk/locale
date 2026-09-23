@@ -273,7 +273,7 @@ def plot_r_precision_vs_noise_line(
             )
             ax.fill_between(x, y - margin, y + margin, alpha=0.2, color=color)
         ax.set_xlim(0, 10)
-        ax.set_ylim(0.0, 0.85)
+        ax.set_ylim(0.0, 1.0)
         ax.set_xlabel("Mutation Rate \%", fontsize=30)
         ax.set_ylabel("Average Recall@$R_q$", fontsize=30)
         ax.tick_params(labelsize=22)
@@ -610,6 +610,12 @@ def plot_r_precision_vs_time(
     bootstrap_samples: int,
     mutation_rate: float = 10.0,
 ):
+    """Recall@R_q at ``mutation_rate`` against query time.
+
+    Query time is taken from the mutation-rate-0.0 runs: timing (--do_timing)
+    is only run at that rate, since the search cost does not depend on the
+    mutation level. Untimed runs carry avg_time = -1 and are left out.
+    """
     data = data.filter(~pl.col("model").is_in(["random", "oracle"]))
     data = data.with_columns(pl.col("model").str.split("_").list.get(0))
     title_names = {
@@ -621,6 +627,13 @@ def plot_r_precision_vs_time(
     }
     data = data.with_columns(pl.col("model").replace(title_names))
     data = data.with_columns(pl.col("mutation_rate") * 100)
+
+    model_keys = ["model", "checkpoint", "max_len", "checkpoint_step_num", "chunk_type"]
+    times = (
+        data.filter((pl.col("mutation_rate") == 0.0) & (pl.col("avg_time") > 0))
+        .group_by(model_keys + ["query_type"])
+        .agg(pl.col("avg_time").mean())
+    )
 
     accession_order = sorted(accessions)  # canonical, stable ordering
     acc_to_idx = {acc: i for i, acc in enumerate(accession_order)}
@@ -681,8 +694,6 @@ def plot_r_precision_vs_time(
         recall_std_err = np.std(recall_bootstrap_means)
         recall_margin = 1.96 * recall_std_err
 
-        time_mean_estimate = np.mean(df["avg_time"].to_list())
-
         r_precision_rows.append(
             {
                 "model": name[0],
@@ -694,12 +705,18 @@ def plot_r_precision_vs_time(
                 "query_type": name[6],
                 "average_recall": recall_mean_estimate,
                 "average_recall_margin": recall_margin,
-                "avg_time": time_mean_estimate,
             }
         )
 
-    r_precision_df = pl.from_dicts(r_precision_rows)
-    r_precision_df = r_precision_df.filter(pl.col("mutation_rate") == mutation_rate)
+    r_precision_df = (
+        pl.from_dicts(r_precision_rows)
+        .filter(pl.col("mutation_rate") == mutation_rate)
+        # nulls_equal: checkpoint/max_len/... are null for the non-dense methods
+        .join(times, on=model_keys + ["query_type"], how="inner", nulls_equal=True)
+    )
+    if r_precision_df.is_empty():
+        print("recall vs time: no timed mutation-rate-0.0 runs, skipping plot")
+        return
 
     for name, data in r_precision_df.group_by("query_type"):
         query_type = name[0]
