@@ -1,0 +1,19 @@
+# MMseqs2 alignment baseline on sra50v2. mmseqs must be on PATH (or give an
+# absolute path in executable). Nucleotide search aligns both strands by
+# default; no flag needed.
+model:
+  name: mmseqs
+  executable: mmseqs
+  max_seqs: 300
+
+# Local bundle (locale-data list-first pipeline; the source of the HF
+# sra50-v2 upload). The name is deliberately NOT a run_benchmark.DATASETS key:
+# a registered name makes snapshot_download write the HF copies of accs.txt
+# and the query files over this directory. logan_accessions/ is a per-accession
+# directory of symlinks into ../work/logan_contigs, laid out by the same loop
+# as slurm_scripts/perlmutter_sra4571.sbatch.
+dataset_name: sra50v2_local
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra50/bundle
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes/sra50
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results/sra50
+mutation_rate: 0.0
