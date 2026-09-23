@@ -35,6 +35,7 @@ The pre-shard layout (codes.u8/norms.f32/dots.f32, meta.json without
 import json
 import math
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -43,10 +44,32 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from .fbin import _load_fbin_mmap
+from .fbin import _load_fbin_mmap, pread_into, read_fbin_rows
 
 DEFAULT_CENTROID_SAMPLE_ROWS = 2_000_000
 CENTROID_SAMPLE_BLOCK_ROWS = 1_000
+
+
+class _FbinRows:
+    """Rows of the fbin behind ``mmap`` by pread (see fbin.pread_into), falling
+    back to slicing when the array is not file-backed (in-memory tests).
+    Each thread gets its own descriptor and (max_rows, d) float32 buffer."""
+
+    def __init__(self, mmap: np.ndarray, max_rows: int):
+        self.mmap = mmap
+        self.path = getattr(mmap, "filename", None)
+        self.max_rows = max_rows
+        self.d = mmap.shape[1]
+        self._local = threading.local()
+
+    def __call__(self, start: int, end: int) -> np.ndarray:
+        if self.path is None:
+            return np.array(self.mmap[start:end], dtype=np.float32)
+        loc = self._local
+        if not hasattr(loc, "fd"):
+            loc.fd = os.open(self.path, os.O_RDONLY)
+            loc.buf = np.empty((self.max_rows, self.d), dtype=np.float32)
+        return read_fbin_rows(loc.fd, start, end, loc.buf)
 
 
 def shard_bounds(n: int, num_ranks: int) -> list[int]:
@@ -70,17 +93,19 @@ def estimate_centroid(
     acc = np.zeros(d, dtype=np.float64)
     if sample_rows >= n:
         step = max(block_rows, 200_000)
+        rows_of = _FbinRows(mmap, step)
         for start in range(0, n, step):
-            acc += mmap[start : start + step].sum(axis=0, dtype=np.float64)
+            acc += rows_of(start, min(start + step, n)).sum(axis=0, dtype=np.float64)
         return (acc / n).astype(np.float32)
 
     num_blocks = n // block_rows
     want = min(num_blocks, -(-sample_rows // block_rows))
     rng = np.random.default_rng(seed)
     blocks = np.sort(rng.choice(num_blocks, size=want, replace=False))
+    rows_of = _FbinRows(mmap, block_rows)
     rows = 0
     for b in tqdm(blocks, desc="Sampling centroid blocks", mininterval=5):
-        chunk = mmap[b * block_rows : (b + 1) * block_rows]
+        chunk = rows_of(b * block_rows, (b + 1) * block_rows)
         acc += chunk.sum(axis=0, dtype=np.float64)
         rows += len(chunk)
     return (acc / rows).astype(np.float32)
@@ -152,8 +177,9 @@ def quantize_rows(
 ) -> None:
     """Quantize rows [start, end) into this rank's shard files.
 
-    Chunks are dealt round-robin to the node's GPUs (CUDA ops release the
-    GIL); each result lands at its offset in pre-sized memmaps. The marker
+    Chunks are dealt round-robin to the node's GPUs (CUDA ops and the pread
+    chunk loads release the GIL); each result lands at its offset in
+    pre-sized memmaps. The marker
     json is written only after the three files are flushed, so a rank is
     resumable: an existing marker for the same range skips the work.
     """
@@ -184,10 +210,12 @@ def quantize_rows(
     norms_mm = np.memmap(norms_p, dtype=np.float32, mode="w+", shape=(n_rows,))
     dots_mm = np.memmap(dots_p, dtype=np.float32, mode="w+", shape=(n_rows,))
 
+    rows_of = _FbinRows(mmap, chunk_rows)
+
     @torch.no_grad()
     def _quantize_chunk(cs: int, dev: str):
         ce = min(cs + chunk_rows, end)
-        chunk = torch.from_numpy(np.array(mmap[cs:ce], dtype=np.float32)).to(dev)
+        chunk = torch.from_numpy(rows_of(cs, ce)).to(dev)
         xr = (chunk - centroid_dev[dev]) @ rotation_dev[dev]
         norms = torch.linalg.norm(xr, dim=1).float().cpu().numpy()
         signs = torch.where(xr >= 0, 1.0, -1.0).to(xr.dtype)
@@ -378,15 +406,24 @@ class RaBitQIndex:
             lo, hi = max(start, s_start), min(end, s_end)
             if lo >= hi:
                 continue
-            rows = s_end - s_start
-            cm = np.memmap(
-                codes_p, dtype=np.uint8, mode="r", shape=(rows, self.bytes_per_vec)
-            )
-            nm = np.memmap(norms_p, dtype=np.float32, mode="r", shape=(rows,))
-            dm = np.memmap(dots_p, dtype=np.float32, mode="r", shape=(rows,))
-            codes.append(np.ascontiguousarray(cm[lo - s_start : hi - s_start]))
-            norms.append(np.ascontiguousarray(nm[lo - s_start : hi - s_start]))
-            dots.append(np.ascontiguousarray(dm[lo - s_start : hi - s_start]))
+            # Headerless raw arrays; pread the slice (see fbin.pread_into).
+            first, n_rows = lo - s_start, hi - lo
+            c = np.empty((n_rows, self.bytes_per_vec), np.uint8)
+            nm = np.empty(n_rows, np.float32)
+            dm = np.empty(n_rows, np.float32)
+            for path, out in ((codes_p, c), (norms_p, nm), (dots_p, dm)):
+                fd = os.open(path, os.O_RDONLY)
+                try:
+                    pread_into(
+                        fd,
+                        first * out.itemsize * (out.shape[1] if out.ndim > 1 else 1),
+                        out,
+                    )
+                finally:
+                    os.close(fd)
+            codes.append(c)
+            norms.append(nm)
+            dots.append(dm)
         if not codes:
             e = np.empty((0, self.bytes_per_vec), dtype=np.uint8)
             return e, np.empty(0, dtype=np.float32), np.empty(0, dtype=np.float32)

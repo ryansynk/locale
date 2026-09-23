@@ -1,0 +1,36 @@
+# 1-bit RaBitQ variant of perlmutter_locale_sra4571_exact_topk1000.yaml.
+#
+# Same encoder, index (index_suffix unchanged, reads the merged sra4571
+# embeddings.fbin), strands and k as the exact top-1000 run, so its hits under
+# results/sra4571_topk_hits/<...>_rabitq1bit_bothstrands/ compare directly with
+# the exact ones under <...>_exact_bothstrands/: same queries, same k, only the
+# scoring engine differs. experiment_id ends in _rabitq1bit_top1000_bothstrands.
+#
+# First run builds the RaBitQ index at indexes/sra4571/.../rabitq/ (one shard
+# per node of the build job, ~198 GB of packed codes for 2.06 B vectors) and
+# marks it with meta.json; every later run at any node count reuses it. Build
+# it with ONE job -- concurrent builders would truncate each other's shard
+# files -- then submit the other rates with --dependency=afterok.
+#
+# Launch:
+#   sbatch -t 4:00:00 slurm_scripts/perlmutter_sra4571_search.sbatch 0.00 \
+#       configs/perlmutter_locale_sra4571_rabitq_top1000.yaml
+model:
+  name: locale
+  checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/8vqiabk9/checkpoint5859.pth.tar
+  batch_size: 1000
+  device: cuda
+  pooling: mean
+  max_seq_len: 256
+  chunk_overlap: 150
+  use_rabitq: true
+  rabitq_sample_rows: 2000000
+  top_k: 1000
+  both_strands: true
+
+dataset_name: sra4571
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra4571/bundle
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes/sra4571
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results/sra4571
+mutation_rate: 0.0
+num_queries: 1000
