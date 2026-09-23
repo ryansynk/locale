@@ -7,6 +7,7 @@ import sys
 import threading
 import traceback
 from collections import defaultdict
+from contextlib import contextmanager
 from concurrent.futures import (
     ProcessPoolExecutor,
     ThreadPoolExecutor,
@@ -29,7 +30,7 @@ from .config import DenseConfig, ExperimentConfig
 # without importing this one. Re-exported because tests/ and other callers import
 # them from here.
 from .encoders import DenseEncoder, _strings_to_one_hot, batched  # noqa: F401
-from .fbin import _create_fbin_memmap, _load_fbin_mmap  # noqa: F401
+from .fbin import _create_fbin_memmap, _load_fbin_mmap, read_fbin_rows  # noqa: F401
 from .rabitq import RaBitQIndex, build_rabitq_index  # noqa: F401
 from .topk_regroup import build_hits_frame, regroup_topk_hits
 
@@ -157,6 +158,30 @@ def _process_sequence_batch(batch):
         raise e  # Re-raise so the main thread knows it failed
 
 
+class _FbinBlockLoader:
+    """Brings row blocks of an fbin onto one device: pread into a pinned host
+    buffer, then a single H2D copy. One instance per scanning thread; each
+    holds its own descriptor (positional reads, no shared offset) and one
+    (block_rows, d) staging buffer, so a 2M-row block is 6 GB of pinned
+    memory per GPU. See read_fbin_rows for why this replaces memmap slicing.
+    """
+
+    def __init__(self, path: Path, d: int, block_rows: int, device: torch.device):
+        self.fd = os.open(path, os.O_RDONLY)
+        self.device = device
+        self.buf = torch.empty(
+            (block_rows, d), dtype=torch.float32, pin_memory=device.type == "cuda"
+        )
+
+    def __call__(self, bs: int, be: int) -> torch.Tensor:
+        """Rows [bs, be) as a (be - bs, d) tensor on the device."""
+        read_fbin_rows(self.fd, bs, be, self.buf.numpy())
+        return self.buf[: be - bs].to(self.device)
+
+    def close(self) -> None:
+        os.close(self.fd)
+
+
 class DenseIndex(BaseIndex):
     def __init__(self, cfg: ExperimentConfig):
         assert isinstance(cfg.model, DenseConfig)
@@ -220,6 +245,9 @@ class DenseIndex(BaseIndex):
             mmap = _load_fbin_mmap(index_path / "embeddings.fbin")
             self._mmap = mmap  # keep reference to prevent GC closing the mapping
             self.all_embeddings = torch.from_numpy(mmap)
+            # The scans read blocks through _block_loader (pread), not by
+            # slicing this memmap; it stays for shape and small lookups.
+            self._fbin_path = index_path / "embeddings.fbin"
             print(
                 f"Loaded {len(starts)} accessions ({mmap.shape[0]} vectors) [memory-mapped]"
             )
@@ -408,9 +436,9 @@ class DenseIndex(BaseIndex):
 
         # Per-accession scoring (2 GPU ops per accession instead of
         # n_queries), parallelized across all GPUs: accessions are dealt
-        # round-robin to one thread per device. GPU ops and memmap page
-        # faults release the GIL, so the threads also overlap the multi-TB
-        # index read. Each accession streams through its GPU in blocks:
+        # round-robin to one thread per device. GPU ops and the pread
+        # block loads release the GIL, so the threads also overlap the
+        # multi-TB index read. Each accession streams through its GPU in blocks:
         # the largest ones (~30M+ vectors, 90+ GB fp32) do not fit on a
         # 40 GB A100 as a single slice, and maximum() over block maxima
         # equals the full max.
@@ -427,13 +455,12 @@ class DenseIndex(BaseIndex):
             chunk_to_query_cpu[s:e] = qi
         chunk_to_slot_cpu = chunk_to_query_cpu * n_strands + chunk_strand.long()
 
-        all_embeddings = self.all_embeddings
         acc_offsets = self.acc_offsets
         # Threads write disjoint columns, so unsynchronized writes are safe
         scores_cpu = np.zeros((n_queries, n_acc), dtype=np.float32)
 
         def _score_accessions(dev_idx: int):
-            dev = devices[dev_idx]
+            dev = torch.device(devices[dev_idx])
             q = qcf_cpu.to(dev)
             c2s = chunk_to_slot_cpu.to(dev)
             positions = range(dev_idx, n_acc, len(devices))
@@ -441,24 +468,28 @@ class DenseIndex(BaseIndex):
                 positions = tqdm(
                     positions, desc=f"Scoring accessions ({len(devices)} GPUs)"
                 )
-            for pos in positions:
-                i = acc_indices[pos]
-                s, e = acc_offsets[i], acc_offsets[i + 1]
-                if e <= s:
-                    continue
-                chunk_maxes = torch.full(
-                    (n_chunks,), float("-inf"), device=dev, dtype=q.dtype
-                )
-                for bs in range(s, e, block_rows):
-                    be = min(bs + block_rows, e)
-                    logits = q @ all_embeddings[bs:be].to(dev).T
-                    chunk_maxes = torch.maximum(chunk_maxes, logits.max(dim=-1).values)
-                slot_scores = torch.zeros(
-                    n_queries * n_strands, device=dev, dtype=q.dtype
-                )
-                slot_scores.scatter_add_(0, c2s, chunk_maxes)
-                acc_scores = slot_scores.view(n_queries, n_strands).max(dim=1)
-                scores_cpu[:, pos] = acc_scores.values.cpu().numpy()
+            with self._block_loader(block_rows, dev) as load_block:
+                for pos in positions:
+                    i = acc_indices[pos]
+                    s, e = acc_offsets[i], acc_offsets[i + 1]
+                    if e <= s:
+                        continue
+                    chunk_maxes = torch.full(
+                        (n_chunks,), float("-inf"), device=dev, dtype=q.dtype
+                    )
+                    for bs in range(s, e, block_rows):
+                        be = min(bs + block_rows, e)
+                        logits = q @ load_block(bs, be).T
+                        chunk_maxes = torch.maximum(
+                            chunk_maxes, logits.max(dim=-1).values
+                        )
+                        del logits
+                    slot_scores = torch.zeros(
+                        n_queries * n_strands, device=dev, dtype=q.dtype
+                    )
+                    slot_scores.scatter_add_(0, c2s, chunk_maxes)
+                    acc_scores = slot_scores.view(n_queries, n_strands).max(dim=1)
+                    scores_cpu[:, pos] = acc_scores.values.cpu().numpy()
 
         with ThreadPoolExecutor(max_workers=len(devices)) as pool:
             # list() propagates any worker exception
@@ -497,7 +528,7 @@ class DenseIndex(BaseIndex):
         vec_range: tuple[int, int] | None = None,
         block_rows: int = 2_000_000,
     ) -> pl.DataFrame:
-        """Exact top-k nearest index vectors per query, streamed off the memmap.
+        """Exact top-k nearest index vectors per query, streamed off the fbin.
 
         Scans index rows [vec_range) -- the whole index when None -- and returns
         one row per query: ``query_id`` and ``hits``, a score-descending list of
@@ -508,7 +539,7 @@ class DenseIndex(BaseIndex):
 
         The range is split evenly across the node's GPUs; each streams its
         sub-range in ``block_rows`` blocks (2M x 768 fp32 = 6 GB, the same tile
-        the streaming dense path uses) and folds every block's top-k into a
+        the streaming dense path uses; read with pread, see _block_loader) and folds every block's top-k into a
         running (n_chunks, top_k) buffer, so the full 7 TB index never has to
         fit anywhere. A long query's chunks each keep their own top-k; the
         query's list is their union, deduplicated by vector (max score) and cut
@@ -519,8 +550,7 @@ class DenseIndex(BaseIndex):
         strands' hits.
         """
         assert self.all_embeddings is not None
-        all_embeddings = self.all_embeddings
-        n_vecs = all_embeddings.shape[0]
+        n_vecs = self.all_embeddings.shape[0]
         start, end = (0, n_vecs) if vec_range is None else vec_range
         if not (0 <= start <= end <= n_vecs):
             raise ValueError(f"vec_range {vec_range} outside [0, {n_vecs}]")
@@ -553,22 +583,24 @@ class DenseIndex(BaseIndex):
                     desc=f"Exact top-{top_k} vector scan ({n_dev} device(s), "
                     f"{end - start:,} vectors)",
                 )
-            for bs in blocks:
-                be = min(bs + block_rows, e)
-                logits = q @ all_embeddings[bs:be].to(dev).T  # (n_chunks, be-bs)
-                k = min(top_k, be - bs)
-                vals, idx = torch.topk(logits, k, dim=-1)
-                # The logits tile is the big allocation (2024 chunks x 2M rows
-                # fp32 = 15 GB with 1000 both-strand queries). Drop it before
-                # the next block is copied in; otherwise the previous tile is
-                # still bound when the next matmul allocates and the peak is
-                # two tiles plus a block, which OOMs a 40 GB A100.
-                del logits
-                cand_vals = torch.cat([best_vals, vals], dim=1)
-                cand_ids = torch.cat([best_ids, idx + bs], dim=1)
-                best_vals, pos = torch.topk(cand_vals, top_k, dim=-1)
-                best_ids = torch.gather(cand_ids, 1, pos)
-                del vals, idx, cand_vals, cand_ids, pos
+            with self._block_loader(block_rows, dev) as load_block:
+                for bs in blocks:
+                    be = min(bs + block_rows, e)
+                    logits = q @ load_block(bs, be).T  # (n_chunks, be-bs)
+                    k = min(top_k, be - bs)
+                    vals, idx = torch.topk(logits, k, dim=-1)
+                    # The logits tile is the big allocation (2024 chunks x 2M
+                    # rows fp32 = 15 GB with 1000 both-strand queries). Drop it
+                    # before the next block is loaded; otherwise the previous
+                    # tile is still bound when the next matmul allocates and
+                    # the peak is two tiles plus a block, which OOMs a 40 GB
+                    # A100.
+                    del logits
+                    cand_vals = torch.cat([best_vals, vals], dim=1)
+                    cand_ids = torch.cat([best_ids, idx + bs], dim=1)
+                    best_vals, pos = torch.topk(cand_vals, top_k, dim=-1)
+                    best_ids = torch.gather(cand_ids, 1, pos)
+                    del vals, idx, cand_vals, cand_ids, pos
             return best_vals.cpu(), best_ids.cpu()
 
         with ThreadPoolExecutor(max_workers=n_dev) as pool:
@@ -700,6 +732,29 @@ class DenseIndex(BaseIndex):
                 raise NotImplementedError("CAGRA search cannot be row-sharded")
             return self.ann_topk_hits(queries)
         return self.exact_topk_hits(queries, vec_range)
+
+    # Set by load() when the embeddings live in an fbin; None for in-memory
+    # embeddings (tests), which the scans then slice directly.
+    _fbin_path: Path | None = None
+
+    @contextmanager
+    def _block_loader(self, block_rows: int, device: torch.device):
+        """Yields load(bs, be) -> (be - bs, d) tensor of index rows on device.
+
+        Reads through _FbinBlockLoader when the index is file-backed, else
+        slices all_embeddings. One loader per thread: call inside the thread.
+        """
+        if self._fbin_path is None:
+            emb = self.all_embeddings
+            yield lambda bs, be: emb[bs:be].to(device)
+            return
+        loader = _FbinBlockLoader(
+            self._fbin_path, self.all_embeddings.shape[1], block_rows, device
+        )
+        try:
+            yield loader
+        finally:
+            loader.close()
 
     def num_vectors(self) -> int:
         return self.n_vectors

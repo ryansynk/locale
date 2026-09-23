@@ -51,7 +51,9 @@ export PYTHONUNBUFFERED=1
 # 15 GB request with 12 GB reported free (seen on the 2026-09-22 runs).
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-srun --ntasks-per-node=1 --gpus-per-node=4 --cpus-per-task=128 \
+# --unbuffered: srun line-buffers task output, and tqdm's \r updates carry
+# no newline, so without it the progress bars only appear at exit.
+srun --unbuffered --ntasks-per-node=1 --gpus-per-node=4 --cpus-per-task=128 \
   uv run python run_benchmark.py \
     --config "$CONFIG" \
     --mutation_rate "$MUT_RATE"

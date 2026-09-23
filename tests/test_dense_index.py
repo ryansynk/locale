@@ -229,3 +229,43 @@ class TestExactTopKSearch:
             assert top(stream.search(self._queries())) == top(
                 exact.search(self._queries())
             )
+
+
+class TestFileBackedBlockLoader:
+    """The scans read a file-backed index with pread; the result must equal
+    the in-memory slice path the other tests exercise."""
+
+    def _file_backed(self, tmp_path, index):
+        from src.fbin import _create_fbin_memmap
+
+        path = tmp_path / "embeddings.fbin"
+        n, d = index.all_embeddings.shape
+        mm = _create_fbin_memmap(path, n, d)
+        mm[:] = index.all_embeddings.numpy()
+        mm.flush()
+        del mm
+        index._fbin_path = path
+        return index
+
+    def test_exact_topk_hits_match_in_memory(self, tmp_path):
+        queries = pl.DataFrame({"query_sequence": ["ACGT"], "query_id": ["q0"]})
+        mem = _make_index(_basis(_DIM, 2), _ALL_EMBEDDINGS)
+        mem.exhaustive = False
+        expected = mem.exact_topk_hits(queries, block_rows=4)
+
+        disk = self._file_backed(
+            tmp_path, _make_index(_basis(_DIM, 2), _ALL_EMBEDDINGS)
+        )
+        disk.exhaustive = False
+        got = disk.exact_topk_hits(queries, block_rows=4)
+        assert got.to_dicts() == expected.to_dicts()
+
+    def test_exhaustive_search_matches_in_memory(self, tmp_path):
+        queries = pl.DataFrame({"query_sequence": ["ACGT"], "query_id": ["q0"]})
+        mem = _make_index(_basis(_DIM, 2), _ALL_EMBEDDINGS)
+        expected = mem.search(queries)
+        disk = self._file_backed(
+            tmp_path, _make_index(_basis(_DIM, 2), _ALL_EMBEDDINGS)
+        )
+        got = disk.search(queries)
+        assert got.to_dicts() == expected.to_dicts()

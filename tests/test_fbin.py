@@ -127,3 +127,53 @@ class TestMergeShards:
         meta = pl.read_parquet(tmp_path / "meta.parquet")
         assert len(meta) == 3
         assert set(meta["srr_id"].to_list()) == {"acc0", "acc1", "acc2"}
+
+
+# ---------------------------------------------------------------------------
+# pread block reader (what the scans use instead of slicing the memmap)
+# ---------------------------------------------------------------------------
+
+
+class TestReadFbinRows:
+    def _fbin(self, tmp_path, n=257, d=12):
+        from src.fbin import _create_fbin_memmap
+
+        path = tmp_path / "rows.fbin"
+        data = np.random.default_rng(1).standard_normal((n, d)).astype(np.float32)
+        mm = _create_fbin_memmap(path, n, d)
+        mm[:] = data
+        mm.flush()
+        del mm
+        return path, data
+
+    def test_matches_memmap_across_piece_boundaries(self, tmp_path):
+        import os
+        from src.fbin import read_fbin_rows
+
+        path, data = self._fbin(tmp_path)
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            out = np.empty((100, data.shape[1]), dtype=np.float32)
+            # piece smaller than a row and not a multiple of row_bytes
+            got = read_fbin_rows(fd, 37, 137, out, piece_bytes=29)
+            np.testing.assert_array_equal(got, data[37:137])
+            # partial block: only the first rows of the buffer are filled
+            got = read_fbin_rows(fd, 250, 257, out)
+            np.testing.assert_array_equal(got, data[250:257])
+            assert got.shape == (7, data.shape[1])
+        finally:
+            os.close(fd)
+
+    def test_rejects_buffer_too_small_or_wrong_layout(self, tmp_path):
+        import os
+        from src.fbin import read_fbin_rows
+
+        path, data = self._fbin(tmp_path)
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            with pytest.raises(ValueError):
+                read_fbin_rows(fd, 0, 10, np.empty((5, data.shape[1]), np.float32))
+            with pytest.raises(ValueError):
+                read_fbin_rows(fd, 0, 2, np.empty((4, data.shape[1]), np.float64))
+        finally:
+            os.close(fd)

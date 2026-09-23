@@ -54,7 +54,7 @@ for backbone in "${BACKBONES[@]}"; do
         fi
         for rate in "${RATE_LIST[@]}"; do
             echo "=== $cfg @ mutation_rate $rate  ($(date))  nodes=${SLURM_JOB_NUM_NODES:-?} ==="
-            if ! srun --ntasks-per-node=1 \
+            if ! srun --unbuffered --ntasks-per-node=1 \
                       --gpus-per-node="$GPUS_PER_NODE" \
                       --cpus-per-task="$CPUS_PER_TASK" \
                       uv run python run_benchmark.py \
