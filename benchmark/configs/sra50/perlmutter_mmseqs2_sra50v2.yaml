@@ -1,6 +1,8 @@
 # MMseqs2 alignment baseline on sra50v2. mmseqs must be on PATH (or give an
 # absolute path in executable). Nucleotide search aligns both strands by
-# default; no flag needed.
+# default; no flag needed. One database over all accessions' contigs
+# (indexes/sra50/mmseqs/db); max_seqs is the prefilter cap per query across
+# the whole database. Launch: slurm_scripts/perlmutter_sra50_mmseqs.sbatch.
 model:
   name: mmseqs
   executable: mmseqs

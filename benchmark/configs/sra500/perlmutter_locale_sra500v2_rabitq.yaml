@@ -1,0 +1,23 @@
+# LOCALE + 1-bit RaBitQ on sra500v2: the same fp32 index as
+# perlmutter_locale_sra500v2.yaml, scanned through packed 1-bit codes
+# (built into <index>/rabitq/ on first load; centroid from 2M sampled rows).
+# top_k 100, both strands, so the row is comparable to the fp32 LOCALE row.
+# experiment_id: locale_8vqiabk9_5859_maxlen256_poolmean_chunkstride_rabitq1bit_top100_bothstrands
+model:
+  name: locale
+  checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/8vqiabk9/checkpoint5859.pth.tar
+  batch_size: 1000
+  device: cuda
+  pooling: mean
+  max_seq_len: 256
+  chunk_overlap: 150
+  use_rabitq: true
+  rabitq_sample_rows: 2000000
+  top_k: 100
+  both_strands: true
+
+dataset_name: sra500v2_local
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra500/bundle
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes/sra500
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results/sra500
+mutation_rate: 0.0

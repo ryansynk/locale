@@ -1,0 +1,32 @@
+# Ablation table row "Cropping: Both" -- eval on sra50v2, Perlmutter.
+#
+# Checkpoint: wandb run 7lvoe2hj (tomg-group-umd/rawbert), step 5859.
+# Training recipe: 50/50 containment/overlap cropping; reference-genome training data.
+# The original table numbers came from benchmark/old/results_ablations/ on the
+# sra50 v1 bundle; this re-scores the same checkpoint on the 2026-09 v2 rebuild.
+#
+# The configs in this directory differ ONLY in checkpoint_path, so the rows are
+# comparable. Protocol: default top-k regroup at k=100 with both-strand
+# querying, same as configs/sra50/perlmutter_locale_sra50v2.yaml. experiment_id
+# encodes the run id, so every row gets its own results/ and indexes/ subtree.
+#
+# --mutation_rate (0.0 / 0.05 / 0.1) is the eval-noise axis; the value below is
+# only the default. run_ablation_sweep.sh loops over all three.
+model:
+  name: locale
+  checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/7lvoe2hj/checkpoint5859.pth.tar
+  batch_size: 1000
+  device: cuda
+  pooling: mean
+  max_seq_len: 256
+  chunk_overlap: 150
+  top_k: 100
+  both_strands: true
+
+# Local bundle, see configs/sra50/perlmutter_locale_sra50v2.yaml for why the
+# name is not a run_benchmark.DATASETS key.
+dataset_name: sra50v2_local
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra50/bundle
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes/sra50_ablation_sweep
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results/sra50_ablation_sweep
+mutation_rate: 0.0

@@ -1,0 +1,17 @@
+# MMseqs2 alignment baseline on sra500v2. One database over all 500
+# accessions' contigs (indexes/sra500/mmseqs/db, ~23 GB of contigs);
+# max_seqs is the prefilter cap per query across the whole database.
+# Nucleotide search aligns both strands by default; no flag needed.
+# Launch: slurm_scripts/perlmutter_sra500_mmseqs.sbatch (one CPU node).
+model:
+  name: mmseqs
+  executable: /pscratch/sd/r/rsynk/mmseqs/bin/mmseqs
+  max_seqs: 300
+
+# Same local bundle as perlmutter_locale_sra500v2.yaml: dataset_name is not a
+# run_benchmark.DATASETS key, so nothing is downloaded over the bundle.
+dataset_name: sra500v2_local
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra500/bundle
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes/sra500
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results/sra500
+mutation_rate: 0.0
