@@ -2,9 +2,9 @@
 # add --image=ghcr.io/ratschlab/metagraph:master to salloc/sbatch. Metagraph
 # canonicalises k-mers, so it already searches both strands; no flag needed.
 #
-# Single-node method: launch it on one node with SLURM_NNODES=1 SLURM_NODEID=0
-# (as run_sra55viral.sh / perlmutter_sra55viral_metagraph.sbatch do); the
-# multi-node build path shards and merges dense indexes only.
+# One node suffices here (perlmutter_sra500_metagraph.sbatch pins
+# SLURM_NNODES=1); a multi-node srun would instead build one shard per node
+# and search them together, see perlmutter_metagraph_sra500v2_sharded.yaml.
 model:
   name: metagraph
   executable: shifter metagraph

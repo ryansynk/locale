@@ -3,13 +3,13 @@
 # add --image=ghcr.io/ratschlab/metagraph:master to salloc/sbatch. Metagraph
 # canonicalises k-mers, so it already searches both strands; no flag needed.
 #
-# Single-node method: run_benchmark's multi-node build path shards accessions
-# and merges DENSE indexes only, so launch this on one node with
-# SLURM_NNODES=1 SLURM_NODEID=0 (as slurm_scripts/perlmutter_sra500_metagraph.sbatch
-# does). 4571 accessions of contigs is a large single-node build; budget a
-# long time limit and expect the index under indexes/sra4571/metagraph_k31/ to
-# be well into the hundreds of GB. Results: results/sra4571/metagraph_k31/,
-# beside the LOCALE experiment directories.
+# Multi-node: slurm_scripts/perlmutter_sra4571_metagraph.sbatch runs it on 8
+# CPU nodes; each builds one shard of the index under
+# indexes/sra4571/metagraph/k31/shard_<r>/ and node 0 searches all shards
+# through one query server (see README "Multi-node metagraph"). A single-node
+# build of 296 GB of contigs would exceed a 512 GB node even with disk swap
+# headroom, so do not launch this with SLURM_NNODES=1. Results:
+# results/sra4571/metagraph_k31/, beside the LOCALE experiment directories.
 model:
   name: metagraph
   executable: shifter metagraph

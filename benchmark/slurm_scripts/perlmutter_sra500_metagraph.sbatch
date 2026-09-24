@@ -12,9 +12,9 @@
 #SBATCH -e slurm_logs/sra500_metagraph_%j.err
 
 # Metagraph k-mer baseline on sra500v2 at every eval mutation rate. One CPU
-# node on purpose: metagraph is not sharded in run_benchmark (the multi-node
-# build path splits accessions across nodes and merges DENSE indexes only), so
-# extra nodes would sit idle. The whole node's 256 hardware threads go to the
+# node: 500 accessions build comfortably on one node, and this run is the
+# reference the 2-node perlmutter_sra500_metagraph_sharded.sbatch is checked
+# against. The whole node's 256 hardware threads go to the
 # single task; build_metagraph.sh sizes its parallelism from
 # SLURM_CPUS_PER_TASK. The container is requested on the job (--image), which
 # is why this is a batch script rather than a run_sra500.sh step.

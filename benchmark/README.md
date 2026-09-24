@@ -122,6 +122,19 @@ see both strands and ignore the flag. Example:
 `model.exact_search: true` in older configs is accepted as a no-op (that
 protocol is now the default).
 
+### Multi-node metagraph
+
+Under a multi-node `srun`, node r builds a complete metagraph index of
+`accessions[r::N]` into `<index>/shard_r/` (with disk swap and memory caps
+sized from node RAM), and node 0 writes `graphs.csv` listing every shard plus
+the joined manifest. Node 0 alone then runs one `server_query` over all
+shards; an accession's k-mer count does not depend on which other accessions
+share its graph, so the results equal a single joint index (each shard's
+top-100 is unioned and cut back to 100). `index_size_gb` sums the shards,
+which overstates a joint index by the duplicated graph part. See
+`slurm_scripts/perlmutter_sra4571_metagraph.sbatch`; the same node count must
+be reused when resuming. MMseqs2 and the centroid index are still single node.
+
 ### Multi-node search (dense methods only)
 
 With the index built, a multi-node `srun` also shards the search. The default

@@ -64,8 +64,10 @@ def query_file_name(mutation_rate: float) -> str:
 
 
 def _wait_for_shards(
-    index_path: Path, num_nodes: int, timeout: int = 7200, poll_interval: int = 30
+    index_path: Path, num_nodes: int, timeout: int = 8 * 3600, poll_interval: int = 30
 ):
+    # Node 0 may find its own shard .done from an earlier run while the others
+    # build from scratch, so the wait spans a whole shard build, not a merge.
     elapsed = 0
     while elapsed < timeout:
         if all(
@@ -383,7 +385,7 @@ def main(cfg: ExperimentConfig):
                     f"[Node 0] Waiting for {num_nodes - 1} other node(s) to finish..."
                 )
                 _wait_for_shards(index_path, num_nodes)
-                DenseIndex.merge_shards(index_path, num_nodes)
+                type(index).merge_shards(index_path, num_nodes)
                 (index_path / ".done").touch()
         else:
             index.build(accession_paths, index_path)
