@@ -1,0 +1,46 @@
+# GPU IVF-PQ (cuVS) version of perlmutter_locale_sra50v2.yaml: the sra4571 parity recipe
+# (configs/sra4571/perlmutter_locale_sra4571_ivfpq_L16k.yaml: PQ 128x8, top_k 100,
+# both strands, exact fp32 rerank of the top 10 per chunk) scaled to this index
+# by keeping its ratios -- ~7.9K vectors per list and ~1.66% of lists probed.
+# 10.75M vectors -> 1 shard x 1360 lists, nprobe 23 (1.69%).
+# Build + timed search: sbatch slurm_scripts/perlmutter_ivfpq_build_search.sbatch <this config>
+# LOCALE on sra50v2 (rsynk/locale-benchmark-sra50-v2, the 2026-09 rebuild:
+# both strands aligned, source run required in the relevant set).
+#
+# Default top-k regroup protocol at k=100 with both-strand querying: q and its
+# reverse complement are embedded, the two top-100 hit lists unioned, hits
+# regrouped to accessions by max. experiment_id ends in
+# _exacttop100_bothstrands; raw hits land in results/sra50_topk_hits/ and are
+# reused by any later run at k <= 100.
+#
+# Paper checkpoint (8vqiabk9/5859), encoder settings as in the sra4571 runs.
+# Layout: indexes/<dataset>/<index_suffix>, results/<dataset>/<experiment_id>.
+model:
+  name: locale
+  checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/8vqiabk9/checkpoint5859.pth.tar
+  batch_size: 1000
+  device: cuda
+  pooling: mean
+  max_seq_len: 256
+  chunk_overlap: 150
+  top_k: 100
+  both_strands: true
+  use_ivfpq: true
+  ivfpq_pq_dim: 128
+  ivfpq_pq_bits: 8
+  ivfpq_lists_per_shard: 1360
+  ivfpq_num_shards: 1
+  ivfpq_nprobe: 23
+  ivfpq_rerank: 10
+
+# Local bundle (locale-data list-first pipeline; the source of the HF
+# sra50-v2 upload). The name is deliberately NOT a run_benchmark.DATASETS key:
+# a registered name makes snapshot_download write the HF copies of accs.txt
+# and the query files over this directory. logan_accessions/ is a per-accession
+# directory of symlinks into ../work/logan_contigs, laid out by the same loop
+# as slurm_scripts/perlmutter_sra4571.sbatch.
+dataset_name: sra50v2_local
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra50/bundle
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes/sra50
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results/sra50
+mutation_rate: 0.0

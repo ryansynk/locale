@@ -228,3 +228,8 @@ benchmark/indexes_sra4571
 benchmark/indexes_500_sweep
 benchmark/slurm_logs
 benchmark/old
+
+# vector-index binaries and IVF benchmark scratch (never committed)
+*.fbin
+*.cuvs
+benchmark/logs_ivf/

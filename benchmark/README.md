@@ -151,6 +151,47 @@ centroid is estimated from `model.rabitq_sample_rows` sampled rows rather than
 a full pass), and at search time each node loads only its row range of packed
 codes onto its GPUs (~96 B/vector at 768 dims).
 
+### Single-node IVF search (sra4571 scale)
+
+Two partitioned vector engines search the whole 2.06 B-vector sra4571 index
+from one node; both return the standard hits frame (top-k regroup protocol)
+and every search knob is part of the experiment id.
+
+**GPU IVF-PQ (`model.use_ivfpq`, cuVS; the metagraph-parity engine).**
+`ivfpq_num_shards` (16) independent IVF-PQ indexes over contiguous fbin row
+ranges, `ivfpq_lists_per_shard` lists each, 128 x 8-bit PQ codes (PQ at 96 B
+ranks clearly worse than 1-bit RaBitQ on these embeddings; 128 B matches it).
+The 280 GB of codes + ids sit 4 shards per card on one 4 x A100-80GB node
+(`-C "gpu&hbm80g"`), one worker process per GPU that also embeds its slice of
+the queries (a cuVS search call blocks its host thread, so threads would run
+the GPUs one after another). `ivfpq_nprobe` lists are probed per shard;
+`ivfpq_rerank` re-scores each query chunk's best candidates exactly from the
+fbin (Lustre preads: cheap at 10 per chunk, too slow for hundreds).
+
+```bash
+sbatch slurm_scripts/perlmutter_sra4571_ivfpq_build.sbatch configs/sra4571/perlmutter_locale_sra4571_ivfpq_L16k.yaml  # 4 GPU nodes, ~20 min
+CONFIG=configs/sra4571/perlmutter_locale_sra4571_ivfpq_L16k.yaml sbatch slurm_scripts/perlmutter_sra4571_ivfpq_search.sbatch  # do_timing
+```
+
+**CPU IVF-RaBitQ (`model.use_ivf`, faiss).** 1-bit RaBitQ residual codes in
+`ivf_nlist` spherical k-means cells (~112 B/vector, 231 GB, fits a 512 GB CPU
+node), FastScan, flat or HNSW (`ivf_quantizer: hnsw`) coarse quantizer, exact
+fp32 rerank of `ivf_rerank` candidates. Near-exact accuracy, but ~60-190 s per
+1000 queries on sra4571: the accuracy reference for the GPU engine, not a
+parity option. Built by `perlmutter_sra4571_ivf_build.sbatch` (8 GPU nodes,
+~11 min); FastScan shards are searched side by side because faiss'
+`merge_from` corrupts the heap on FastScan indexes of this size.
+
+`ivf_probe.py` measures, before any build, how many lists must be probed to
+keep the exact top-k hits of noised queries (finer cells win at small scanned
+fractions); `ivf_sweep.py` loads either index once and sweeps nprobe x rerank
+over all rates, writing results/hits exactly as run_benchmark does.
+
+Metagraph's warm query time depends on client parallelism:
+`model.server_parallel: N` starts `server_query -p N` and splits the batch
+into N concurrent requests (experiment id `metagraph_k31_p<N>`); the default
+1 is the original single-request protocol.
+
 ## Plotting Results
 
 `plot_results.py` takes three positional arguments: the results directory, the queries parquet, and the accessions list. The latter two come from the downloaded dataset.

@@ -158,6 +158,10 @@ def _topk_engine_tag(cfg: ExperimentConfig) -> str:
         return "rabitq1bit"
     if cfg.model.use_ann:
         return "cagra"
+    if cfg.model.use_ivf:
+        return "ivf"
+    if cfg.model.use_ivfpq:
+        return "ivfpq"
     return "exact"
 
 
@@ -405,7 +409,9 @@ def main(cfg: ExperimentConfig):
     dense = isinstance(cfg.model, DenseConfig)
     dense_exhaustive = dense and cfg.model.exhaustive
     topk_engine = dense and not cfg.model.exhaustive
-    shardable_topk = topk_engine and not cfg.model.use_ann
+    shardable_topk = topk_engine and not (
+        cfg.model.use_ann or cfg.model.use_ivf or cfg.model.use_ivfpq
+    )
     multi_node_search = num_nodes > 1 and (dense_exhaustive or shardable_topk)
     if num_nodes > 1 and not multi_node_search and node_rank != 0:
         print(
@@ -466,7 +472,9 @@ def main(cfg: ExperimentConfig):
             results: pl.DataFrame = index.search(queries)
             elapsed = time.time() - start
             times.append(elapsed)
+            print(f"[timing] run {i + 1}/{cfg.timing_runs}: {elapsed:.3f}s", flush=True)
         avg_time = sum(times[1:]) / (cfg.timing_runs - 1)
+        print(f"[timing] avg_time (runs 2-{cfg.timing_runs}) {avg_time:.3f}s", flush=True)
     else:
         results: pl.DataFrame = index.search(queries)
         avg_time = -1.0

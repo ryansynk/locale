@@ -1,0 +1,37 @@
+# GPU IVF-PQ (cuVS) on sra4571, searched on ONE 4 x A100-80GB node (-C
+# "gpu&hbm80g"): 16 IVF-PQ shards (128 x 8-bit PQ codes, 4096 lists each,
+# ~17.5 GB) held 4 per GPU, 280 GB of HBM in total. Same encoder/index and
+# default top-k regroup protocol (top_k 100, both strands) as the exact and
+# faiss-IVF configs, so its hits compare with <...>_exact_bothstrands/.
+#
+# Build (4 GPU nodes x 4 GPUs, one shard per GPU, 40 GB cards are enough):
+#   sbatch slurm_scripts/perlmutter_sra4571_ivfpq_build.sbatch
+# Search / timing (1 hbm80g node):
+#   sbatch slurm_scripts/perlmutter_sra4571_ivfpq_search.sbatch
+# ivfpq_nprobe 34 of 4096 lists scans 0.84% of every shard (cells of ~31K
+# vectors, like the 65536-list global partition of ivf_probe.py).
+model:
+  name: locale
+  checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/8vqiabk9/checkpoint5859.pth.tar
+  batch_size: 256
+  device: cuda
+  pooling: mean
+  max_seq_len: 256
+  chunk_overlap: 150
+  top_k: 100
+  both_strands: true
+  use_ivfpq: true
+  ivfpq_pq_dim: 128
+  ivfpq_pq_bits: 8
+  ivfpq_lists_per_shard: 4096
+  ivfpq_num_shards: 16
+  ivfpq_nprobe: 34
+  ivfpq_rerank: 0
+  query_embed_gpus: 4
+
+dataset_name: sra4571
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra4571/bundle
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes/sra4571
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results/sra4571
+mutation_rate: 0.0
+num_queries: 1000

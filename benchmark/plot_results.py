@@ -28,6 +28,32 @@ plt.rcParams.update(
 # genuine 0.0 is a middling score and must NOT be treated as "unscored".
 DEFAULT_SCORE = -2.0
 
+TITLE_NAMES = {
+    "mmseqs": "MMseqs2",
+    "llmed": "LLM-ED",
+    "locale": "LOCALE",
+    "metagraph": "MetaGraph",
+    "dna2vec": "ESA",
+}
+
+# Paper-style display names. The leading token of the experiment id names the
+# method ("locale_<ckpt>_<step>_..." -> "LOCALE"), which pools every run of that
+# method into ONE group. The compressed / approximate LOCALE indexes are kept
+# apart, since pooling them with exact search would average an IVF-PQ run into
+# the LOCALE curve and hand the exact-search timing to the ANN point.
+MODEL_ORDER = ["LOCALE", "LOCALE+IVF-PQ", "LOCALE+RaBitQ", "MMseqs2", "LLM-ED", "ESA", "MetaGraph"]
+
+
+def _display_model(model: pl.Expr) -> pl.Expr:
+    base = model.str.split("_").list.get(0).replace(TITLE_NAMES)
+    return (
+        pl.when(model.str.contains("ivfpq"))
+        .then(base + pl.lit("+IVF-PQ"))
+        .when(model.str.contains("rabitq"))
+        .then(base + pl.lit("+RaBitQ"))
+        .otherwise(base)
+    )
+
 
 def _drop_unscored(indices: np.ndarray, y_score: np.ndarray) -> np.ndarray:
     """Remove accessions the method never scored from a ranked selection.
@@ -125,15 +151,7 @@ def plot_r_precision_vs_noise_line(
     # want and exactly wrong for comparing variants of one model -- pass
     # short_model_names=False to keep the full ids apart.
     if short_model_names:
-        data = data.with_columns(pl.col("model").str.split("_").list.get(0))
-    title_names = {
-        "mmseqs": "MMseqs2",
-        "llmed": "LLM-ED",
-        "locale": "LOCALE",
-        "metagraph": "MetaGraph",
-        "dna2vec": "ESA",
-    }
-    data = data.with_columns(pl.col("model").replace(title_names))
+        data = data.with_columns(_display_model(pl.col("model")))
     data = data.with_columns(pl.col("mutation_rate") * 100)
 
     accession_order = sorted(accessions)  # canonical, stable ordering
@@ -215,13 +233,7 @@ def plot_r_precision_vs_noise_line(
     if print_data:
         print("=========== R PRECISION DATA =============")
         pl.Config.set_tbl_rows(len(r_precision_df))
-        order = [
-            "LOCALE",
-            "MMseqs2",
-            "MetaGraph",
-            "LLM-ED",
-            "ESA",
-        ]
+        order = list(MODEL_ORDER)
         # Names outside the paper set (e.g. the pre-rename "rawbert" results or
         # a centroid run) sort after it instead of failing the Enum cast.
         order += sorted(set(r_precision_df["model"].to_list()) - set(order))
@@ -234,13 +246,7 @@ def plot_r_precision_vs_noise_line(
     for name, data in r_precision_df.group_by("query_type"):
         query_type = name[0]
 
-        model_order = [
-            "LOCALE",
-            "MMseqs2",
-            "LLM-ED",
-            "ESA",
-            "MetaGraph",
-        ]
+        model_order = list(MODEL_ORDER)
         models = [m for m in model_order if m in data["model"].to_list()]
         models += [
             m for m in data["model"].unique().sort().to_list() if m not in model_order
@@ -297,15 +303,7 @@ def plot_recall_at_k_vs_noise_line(
     data = data.filter(~pl.col("model").is_in(["random", "oracle"]))
     # See plot_r_precision_vs_noise_line.
     if short_model_names:
-        data = data.with_columns(pl.col("model").str.split("_").list.get(0))
-    title_names = {
-        "mmseqs": "MMseqs2",
-        "llmed": "LLM-ED",
-        "locale": "LOCALE",
-        "metagraph": "MetaGraph",
-        "dna2vec": "ESA",
-    }
-    data = data.with_columns(pl.col("model").replace(title_names))
+        data = data.with_columns(_display_model(pl.col("model")))
     data = data.with_columns(pl.col("mutation_rate") * 100)
 
     accession_order = sorted(accessions)  # canonical, stable ordering
@@ -385,13 +383,7 @@ def plot_recall_at_k_vs_noise_line(
     if print_data:
         pl.Config.set_tbl_rows(len(recall_at_k_df))
         print(f"=========== RECALL AT {k} DATA =============")
-        order = [
-            "LOCALE",
-            "MMseqs2",
-            "MetaGraph",
-            "LLM-ED",
-            "ESA",
-        ]
+        order = list(MODEL_ORDER)
         # Names outside the paper set (e.g. the pre-rename "rawbert" results or
         # a centroid run) sort after it instead of failing the Enum cast.
         order += sorted(set(recall_at_k_df["model"].to_list()) - set(order))
@@ -404,13 +396,7 @@ def plot_recall_at_k_vs_noise_line(
     for name, data in recall_at_k_df.group_by("query_type"):
         query_type = name[0]
 
-        model_order = [
-            "LOCALE",
-            "MMseqs2",
-            "LLM-ED",
-            "ESA",
-            "MetaGraph",
-        ]
+        model_order = list(MODEL_ORDER)
         models = [m for m in model_order if m in data["model"].to_list()]
         models += [
             m for m in data["model"].unique().sort().to_list() if m not in model_order
@@ -461,22 +447,27 @@ def plot_recall_at_k_vs_k_line(
     plots_dir: Path,
     bootstrap_samples: int,
     mutation_rate: float = 10,
+    max_k: int | None = None,
 ):
-    data = data.with_columns(pl.col("model").str.split("_").list.get(0))
-    title_names = {
-        "mmseqs": "MMseqs2",
-        "llmed": "LLM-ED",
-        "locale": "LOCALE",
-        "metagraph": "MetaGraph",
-        "dna2vec": "ESA",
-    }
-    data = data.with_columns(pl.col("model").replace(title_names))
+    """Average Recall@k for k = 0 .. max_k-1 at one mutation rate.
+
+    Recall@k is cumulative in the ranked list, so every k is read off one
+    argsort per query and the bootstrap reuses the same resampled query
+    indices for all k (one Q x K matrix per method instead of a Python loop
+    over k). max_k defaults to the number of accessions, which is the paper's
+    50-accession figure; at 500 accessions pass e.g. max_k=50.
+    """
+    data = data.filter(~pl.col("model").is_in(["random", "oracle"]))
+    data = data.with_columns(_display_model(pl.col("model")))
     data = data.with_columns(pl.col("mutation_rate") * 100)
     data = data.filter(pl.col("mutation_rate") == mutation_rate)
 
     accession_order = sorted(accessions)  # canonical, stable ordering
     acc_to_idx = {acc: i for i, acc in enumerate(accession_order)}
     n_acc = len(accession_order)
+    k_max = n_acc if max_k is None else min(max_k, n_acc)
+    ks = np.arange(k_max)
+    rng = np.random.default_rng(0)
 
     recall_at_k_rows = []
 
@@ -499,36 +490,43 @@ def plot_recall_at_k_vs_k_line(
                 on="query_id",
             )
         )
-        for k in range(n_acc):
-            recalls_at_k = []
-            for row in joined_true_pred.iter_rows(named=True):
-                # Build score vector with defaults
-                y_score = np.full(n_acc, DEFAULT_SCORE)
-                for p in row["pred_results"]:
-                    if p["accession"] in acc_to_idx:
-                        y_score[acc_to_idx[p["accession"]]] = p["score"]
+        per_query = []
+        for row in joined_true_pred.iter_rows(named=True):
+            y_score = np.full(n_acc, DEFAULT_SCORE)
+            for p in row["pred_results"]:
+                if p["accession"] in acc_to_idx:
+                    y_score[acc_to_idx[p["accession"]]] = p["score"]
 
-                # Build truth vector
-                y_true = np.zeros(n_acc, dtype=int)
-                for t in row["true_results"]:
-                    if t["accession"] in acc_to_idx:
-                        y_true[acc_to_idx[t["accession"]]] = 1
+            y_true = np.zeros(n_acc, dtype=int)
+            for t in row["true_results"]:
+                if t["accession"] in acc_to_idx:
+                    y_true[acc_to_idx[t["accession"]]] = 1
 
-                if y_true.sum() > 0:
-                    recalls_at_k.append(recall_at_k_per_query(y_true, y_score, k))
+            n_relevant = int(y_true.sum())
+            if n_relevant == 0:
+                continue
+            ranked = (-y_score).argsort()
+            ranked = _drop_unscored(ranked, y_score)
+            # hits[d] = relevant accessions among the first d ranked; hits[0] = 0
+            # so a query with no scored accessions (an empty MetaGraph result)
+            # contributes zero recall at every k instead of an empty array.
+            hits = np.concatenate([[0], np.cumsum(y_true[ranked])])
+            depth = np.clip(ks, 0, len(ranked))
+            rec = hits[depth] / n_relevant
+            per_query.append(rec)
 
-            mean_estimate = np.mean(recalls_at_k)
+        R = np.stack(per_query)  # queries x k
+        mean_estimate = R.mean(axis=0)
+        n_q = R.shape[0]
+        boots = np.empty((bootstrap_samples, k_max))
+        chunk = max(1, int(2e7 // (n_q * k_max)))
+        for s0 in range(0, bootstrap_samples, chunk):
+            b = min(chunk, bootstrap_samples - s0)
+            idx = rng.integers(0, n_q, size=(b, n_q))
+            boots[s0 : s0 + b] = R[idx].mean(axis=1)
+        margin = 1.96 * boots.std(axis=0)
 
-            bootstrap_means: list[float] = []
-            for _ in range(bootstrap_samples):
-                resample = np.random.choice(
-                    recalls_at_k, size=len(recalls_at_k), replace=True
-                )
-                bootstrap_means.append(np.mean(resample))
-
-            std_err = np.std(bootstrap_means)
-            margin = 1.96 * std_err
-
+        for k, m, mg in zip(ks, mean_estimate, margin):
             recall_at_k_rows.append(
                 {
                     "model": name[0],
@@ -538,9 +536,9 @@ def plot_recall_at_k_vs_k_line(
                     "chunk_type": name[4],
                     "mutation_rate": mutation_rate,
                     "query_type": name[5],
-                    "average_recall": mean_estimate,
-                    "k": k,
-                    "margin": margin,
+                    "average_recall": float(m),
+                    "k": int(k),
+                    "margin": float(mg),
                 }
             )
 
@@ -549,13 +547,7 @@ def plot_recall_at_k_vs_k_line(
     for name, data in recall_at_k_df.group_by("query_type"):
         query_type = name[0]
 
-        model_order = [
-            "LOCALE",
-            "MMseqs2",
-            "LLM-ED",
-            "ESA",
-            "MetaGraph",
-        ]
+        model_order = list(MODEL_ORDER)
         models = [m for m in model_order if m in data["model"].to_list()]
         models += [
             m for m in data["model"].unique().sort().to_list() if m not in model_order
@@ -587,13 +579,13 @@ def plot_recall_at_k_vs_k_line(
                 markersize=6,
             )
             ax.fill_between(x, y - margin, y + margin, alpha=0.2, color=color)
-        ax.set_xlim(0, 49)
+        ax.set_xlim(0, k_max - 1)
         ax.set_ylim(0.0, 1.0)
         ax.set_xlabel("$k$", fontsize=30)
         ax.set_ylabel("Average Recall@$k$", fontsize=30)
         ax.tick_params(labelsize=22)
         ax.grid(True)
-        ax.legend(fontsize=20)
+        ax.legend(fontsize=15, loc="best", framealpha=0.9)
         plt.tight_layout()
         fig.savefig(
             plots_dir
@@ -617,15 +609,7 @@ def plot_r_precision_vs_time(
     mutation level. Untimed runs carry avg_time = -1 and are left out.
     """
     data = data.filter(~pl.col("model").is_in(["random", "oracle"]))
-    data = data.with_columns(pl.col("model").str.split("_").list.get(0))
-    title_names = {
-        "mmseqs": "MMseqs2",
-        "llmed": "LLM-ED",
-        "locale": "LOCALE",
-        "metagraph": "MetaGraph",
-        "dna2vec": "ESA",
-    }
-    data = data.with_columns(pl.col("model").replace(title_names))
+    data = data.with_columns(_display_model(pl.col("model")))
     data = data.with_columns(pl.col("mutation_rate") * 100)
 
     model_keys = ["model", "checkpoint", "max_len", "checkpoint_step_num", "chunk_type"]
@@ -721,13 +705,7 @@ def plot_r_precision_vs_time(
     for name, data in r_precision_df.group_by("query_type"):
         query_type = name[0]
 
-        model_order = [
-            "LOCALE",
-            "MMseqs2",
-            "LLM-ED",
-            "ESA",
-            "MetaGraph",
-        ]
+        model_order = list(MODEL_ORDER)
         models = [m for m in model_order if m in data["model"].to_list()]
         models += [
             m for m in data["model"].unique().sort().to_list() if m not in model_order
@@ -760,7 +738,9 @@ def plot_r_precision_vs_time(
         ax.set_ylabel("Average Recall@$R_q$", fontsize=25)
         ax.tick_params(labelsize=20)
         ax.grid(True)
-        ax.legend(fontsize=18, title_fontsize=20, loc="lower right")
+        # Upper left is empty on every dataset (nothing is both fast and
+        # accurate); lower right hid the slow, low-recall baselines.
+        ax.legend(fontsize=18, title_fontsize=20, loc="upper left")
         plt.tight_layout()
         fig.savefig(
             plots_dir
@@ -877,8 +857,17 @@ def main(
     plots_dir: str = "plots_matplotlib",
     k: int = 7,
     bootstrap_samples: int = 10000,
+    extra_results_dirs: list[str] = [],
+    exclude_models: list[str] = [],
+    max_k: int | None = None,
 ):
-    results_dir: Path = Path(results_dir)
+    """extra_results_dirs: more directories of result parquets, e.g. a
+    ``<dataset>_timing/`` tree whose --do_timing runs carry avg_time. A run
+    present in several directories is kept once, preferring the timed copy.
+    exclude_models: substrings of experiment ids to leave out (e.g. "rabitq"
+    when only its 0% parquet exists and it would plot as a lone point).
+    """
+    results_dirs = [Path(results_dir)] + [Path(d) for d in extra_results_dirs]
     raw_read_queries_path: Path = Path(raw_read_queries_path)
     with open(accessions) as f:
         accs = f.read().splitlines()
@@ -904,10 +893,21 @@ def main(
             "index_size_gb": pl.Float64,
         }
     )
-    for f in list(results_dir.rglob("*.parquet")):
-        df = pl.read_parquet(f, schema=schema)
-        data.append(df)
+    for d in results_dirs:
+        for f in sorted(d.rglob("*.parquet")):
+            df = pl.read_parquet(f, schema=schema)
+            data.append(df)
     data = pl.concat(data)
+    for pat in exclude_models:
+        data = data.filter(~pl.col("model").str.contains(pat))
+    # The same run can appear in results/<ds>/ (accuracy) and results/<ds>_timing/
+    # (timed): keep one copy per (run, rate, query), the timed one, so the
+    # bootstrap does not see every query twice.
+    data = data.sort("avg_time", descending=True, nulls_last=True).unique(
+        subset=["model", "mutation_rate", "query_type", "query_id"],
+        keep="first",
+        maintain_order=True,
+    )
     raw_read_queries_df = pl.read_parquet(raw_read_queries_path)
     raw_read_oracle_data = raw_read_oracle_results(raw_read_queries_df)
 
@@ -924,7 +924,7 @@ def main(
         data, raw_read_oracle_data, accs, k, plots_dir, bootstrap_samples
     )
     plot_recall_at_k_vs_k_line(
-        data, raw_read_oracle_data, accs, plots_dir, bootstrap_samples
+        data, raw_read_oracle_data, accs, plots_dir, bootstrap_samples, max_k=max_k
     )
     plot_r_precision_vs_time(
         data, raw_read_oracle_data, accs, plots_dir, bootstrap_samples

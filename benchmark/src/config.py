@@ -72,14 +72,52 @@ class DenseConfig(AlgorithmConfig):
     # Rows sampled (in contiguous blocks) to estimate the RaBitQ centroid,
     # instead of a full pass over the fbin. Ignored unless use_rabitq.
     rabitq_sample_rows: int = 2_000_000
+    # IVF + RaBitQ (faiss, src/ivf_rabitq.py): scan only the ivf_nprobe of
+    # ivf_nlist spherical k-means cells nearest each query chunk with
+    # ivf_nb_bits RaBitQ residual codes, then re-score the best ivf_rerank
+    # candidates exactly from the fbin (0 = keep the code estimates).
+    # ivf_quantizer "hnsw" puts an HNSW graph over the centroids (per-query
+    # latency option; "flat" is exact and cheap for batches). ivf_fastscan
+    # converts the codes to faiss' SIMD 4-bit LUT layout at load time.
+    # Built multi-node by build_ivf.py; searched on one node.
+    use_ivf: bool = False
+    ivf_nlist: int = 16384
+    ivf_nprobe: int = 512
+    ivf_rerank: int = 300
+    ivf_qb: int = 8
+    ivf_nb_bits: int = 1
+    ivf_quantizer: Literal["flat", "hnsw"] = "flat"
+    ivf_fastscan: bool = False
+    ivf_train_rows: int = 6_000_000
+    # GPU IVF-PQ (cuVS, src/ivfpq_gpu.py): ivfpq_num_shards independent
+    # IVF-PQ indexes (row ranges, ivfpq_lists_per_shard lists each, pq_dim x
+    # pq_bits codes) held in the HBM of one node's GPUs and searched with
+    # ivfpq_nprobe lists per shard; the best ivfpq_rerank candidates per query
+    # chunk are re-scored exactly from the fbin (0 = PQ estimates only).
+    # Built one shard per GPU by build_ivfpq.py.
+    use_ivfpq: bool = False
+    ivfpq_pq_dim: int = 128
+    ivfpq_pq_bits: int = 8
+    ivfpq_lists_per_shard: int = 4096
+    ivfpq_num_shards: int = 16
+    ivfpq_nprobe: int = 34
+    ivfpq_rerank: int = 0
+    ivfpq_lut: Literal["float16", "float32"] = "float16"
+    # Embed query chunks with one encoder replica per GPU (the first
+    # query_embed_gpus visible devices) instead of only on `device`. Search
+    # time only; the embeddings are the same up to GPU float noise.
+    query_embed_gpus: int = 1
 
     def __post_init__(self):
-        if self.use_ann and self.use_rabitq:
-            raise ValueError("use_ann and use_rabitq are mutually exclusive")
-        if self.exhaustive and (self.use_ann or self.use_rabitq or self.exact_search):
+        engines = [self.use_ann, self.use_rabitq, self.use_ivf, self.use_ivfpq]
+        if sum(engines) > 1:
+            raise ValueError(
+                "use_ann, use_rabitq, use_ivf and use_ivfpq are mutually exclusive"
+            )
+        if self.exhaustive and (any(engines) or self.exact_search):
             raise ValueError(
                 "exhaustive scores every accession directly; it has no vector "
-                "engine (use_ann/use_rabitq/exact_search)"
+                "engine (use_ann/use_rabitq/use_ivf/use_ivfpq/exact_search)"
             )
         config_tag = f"maxlen{self.max_seq_len}_pool{self.pooling}_chunkstride"
         if self.name == "dnabert":
@@ -147,6 +185,24 @@ class DenseConfig(AlgorithmConfig):
                 engine, sep = "rabitq1bit", "_top"
             elif self.use_ann:
                 engine, sep = "cagra", "_top"
+            elif self.use_ivf:
+                # Every search knob changes the hits, so all of them are in
+                # hits_id (fastscan/quantizer only when non-default).
+                engine = (
+                    f"ivf{self.ivf_nlist}rabitq{self.ivf_nb_bits}"
+                    f"_np{self.ivf_nprobe}_rr{self.ivf_rerank}_qb{self.ivf_qb}"
+                    + ("_hnsw" if self.ivf_quantizer == "hnsw" else "")
+                    + ("_fs" if self.ivf_fastscan else "")
+                )
+                sep = "_top"
+            elif self.use_ivfpq:
+                engine = (
+                    f"ivfpq{self.ivfpq_pq_dim}x{self.ivfpq_pq_bits}"
+                    f"_L{self.ivfpq_lists_per_shard}x{self.ivfpq_num_shards}"
+                    f"_np{self.ivfpq_nprobe}_rr{self.ivfpq_rerank}"
+                    + ("_lut32" if self.ivfpq_lut == "float32" else "")
+                )
+                sep = "_top"
             else:
                 engine, sep = "exact", "top"
             self.hits_id = f"{self.experiment_id}_{engine}{strands}"
@@ -162,10 +218,18 @@ class MetagraphConfig(AlgorithmConfig):
     name: str = "metagraph"
     executable: str = "metagraph"
     k: int = 31
+    # server_query accepts this many connections at once (its -p) and the
+    # client splits a query batch into as many concurrent requests; 1 is the
+    # original single-request protocol, where one server thread answers the
+    # whole batch. Rankings are per query, so results do not change -- only
+    # wall time, which is why >1 gets its own experiment_id (_p<N>).
+    server_parallel: int = 1
 
     def __post_init__(self):
         self.index_suffix = Path("metagraph") / f"k{self.k}"
         self.experiment_id = f"metagraph_k{self.k}"
+        if self.server_parallel > 1:
+            self.experiment_id += f"_p{self.server_parallel}"
         self.checkpoint: str | None = None
         self.max_len: int | None = None
         self.chunk_type: int | None = None

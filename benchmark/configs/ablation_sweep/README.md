@@ -14,6 +14,7 @@ Run with `./run_ablation_sweep.sh` from inside a multi-node GPU allocation
 | `mut_none.yaml` | Training mutation: None | ep3zkwec |
 | `mut_light.yaml` | Training mutation: Light | sdp7o13s |
 | `mut_medium.yaml` | Training mutation: Medium | 355y3fml |
+| `mut_none_logan.yaml` | Backbone table, DNABERT-2 / none (Logan, no hard negatives) | lgodjvzt |
 
 All seven checkpoints are on Perlmutter under `checkpoints/<run id>/`. The
 Nexus mirror is `/fs/nexus-scratch/ryansynk/rawbert/checkpoints/<run id>/`.

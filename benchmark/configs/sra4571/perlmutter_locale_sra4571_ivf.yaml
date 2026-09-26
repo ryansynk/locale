@@ -1,0 +1,38 @@
+# IVF + 1-bit RaBitQ (faiss FastScan) + exact fp32 rerank on sra4571, searched
+# on ONE CPU node (512 GB: the ~230 GB index is RAM-resident; the rerank preads
+# the fbin). Same encoder/index as perlmutter_locale_sra4571_exact_topk1000.yaml,
+# default top-k regroup protocol (top_k 100, both strands), so its hits compare
+# with <...>_exact_bothstrands/.
+#
+# Build (8 GPU nodes, ~15 min):
+#   sbatch slurm_scripts/perlmutter_sra4571_ivf_build.sbatch
+# Search + timing (1 CPU node; the first load merges the shards):
+#   sbatch slurm_scripts/perlmutter_sra4571_ivf_search.sbatch
+# Search knobs (ivf_nprobe / ivf_rerank / ...) are CLI-overridable and all in
+# the experiment_id; nlist 16384 at nprobe 512 probes ~3% of the vectors,
+# which the 2026-09-24 probe (ivf_probe.py) put within ~0.01-0.02 AUPRC of
+# the exact top-100 at every mutation rate.
+model:
+  name: locale
+  checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/8vqiabk9/checkpoint5859.pth.tar
+  batch_size: 1000
+  # The search node is a CPU node: queries are embedded on its cores.
+  device: cpu
+  pooling: mean
+  max_seq_len: 256
+  chunk_overlap: 150
+  top_k: 100
+  both_strands: true
+  use_ivf: true
+  ivf_nlist: 16384
+  ivf_nprobe: 512
+  ivf_rerank: 300
+  ivf_qb: 8
+  ivf_fastscan: true
+
+dataset_name: sra4571
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra4571/bundle
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes/sra4571
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results/sra4571
+mutation_rate: 0.0
+num_queries: 1000

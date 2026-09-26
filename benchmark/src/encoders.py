@@ -150,7 +150,7 @@ class LOCALEEncoder:
             assert checkpoint_path.is_file(), (
                 f"Checkpoint does not exist: {checkpoint_path}"
             )
-        checkpoint = torch.load(checkpoint_path)
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
         model_args = checkpoint["model_args"]
         # Checkpoints trained before the backbone swap have no "backbone" key;
         # those are all DNABERT-2, so default accordingly.

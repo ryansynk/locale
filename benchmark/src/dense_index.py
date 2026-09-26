@@ -6,6 +6,7 @@ import random
 import sys
 import threading
 import traceback
+import time
 from collections import defaultdict
 from contextlib import contextmanager
 from concurrent.futures import (
@@ -190,6 +191,8 @@ class DenseIndex(BaseIndex):
         self.cfg = cfg
         self.use_ann: bool = cfg.model.use_ann
         self.use_rabitq: bool = cfg.model.use_rabitq
+        self.use_ivf: bool = cfg.model.use_ivf
+        self.use_ivfpq: bool = cfg.model.use_ivfpq
         # Scoring protocol, see DenseConfig: top_k vectors regrouped to
         # accessions unless exhaustive.
         self.exhaustive: bool = cfg.model.exhaustive
@@ -201,7 +204,14 @@ class DenseIndex(BaseIndex):
         # Unconditional: build() needs the encoder for embed_dim and the chunking
         # attributes for _iter_chunks, so a no_search (build-only) run crashed
         # when these lived behind `if not self.no_search`.
-        self.model = DenseEncoder(cfg.model)
+        if cfg.model.use_ivfpq:
+            # The GPU IVF-PQ workers embed the queries on their own cards;
+            # this process stays off CUDA (the cards are ~97% full of index).
+            cpu_cfg = copy.copy(cfg.model)
+            cpu_cfg.device = "cpu"
+            self.model = DenseEncoder(cpu_cfg)
+        else:
+            self.model = DenseEncoder(cfg.model)
         # chunk_type was dropped from DenseConfig during the v1 cleanup;
         # stride is the only supported mode (see the hardcoded "chunkstride"
         # index tag in config.py and the legacy column in run_benchmark.py).
@@ -226,6 +236,53 @@ class DenseIndex(BaseIndex):
                 self.construct_ann_index(index_path)
 
             self.index = cagra.load(str(cagra_path))
+            self.all_embeddings = None
+        elif self.use_ivfpq:
+            from .ivfpq_gpu import IVFPQGPUSearcher, ivfpq_dir, list_shard_files
+
+            m = self.model_cfg
+            d = ivfpq_dir(index_path, m.ivfpq_pq_dim, m.ivfpq_pq_bits, m.ivfpq_lists_per_shard)
+            self.ivf_index_files = list_shard_files(d, m.ivfpq_num_shards)
+            self.ivfpq = IVFPQGPUSearcher(
+                self.ivf_index_files,
+                index_path / "embeddings.fbin",
+                encoder_cfg=copy.copy(m),
+            )
+            self.all_embeddings = None
+        elif self.use_ivf:
+            # Built by build_ivf.py (multi-node, one shard per rank); the first
+            # load on a node with enough RAM folds the shards into one file.
+            from .ivf_rabitq import (
+                IVFRaBitQSearcher,
+                list_shards,
+                merge_ivf_shards,
+                merged_path,
+            )
+
+            m = self.model_cfg
+            ivf_dir = index_path / "ivf"
+            merged = merged_path(ivf_dir, m.ivf_nlist, m.ivf_nb_bits)
+            shards = list_shards(ivf_dir, m.ivf_nlist, m.ivf_nb_bits)
+            if m.ivf_fastscan:
+                # FastScan shards cannot be merged (faiss merge_from bug at
+                # this size), so they are searched side by side.
+                files = shards or [merged]
+            else:
+                if not merged.exists():
+                    if not shards:
+                        raise FileNotFoundError(
+                            f"no IVF index at {merged} and no shards to merge; "
+                            "build it with build_ivf.py"
+                        )
+                    merge_ivf_shards(ivf_dir, m.ivf_nlist, m.ivf_nb_bits, len(shards))
+                files = [merged]
+            self.ivf = IVFRaBitQSearcher(
+                files,
+                index_path / "embeddings.fbin",
+                quantizer=m.ivf_quantizer,
+                fastscan=m.ivf_fastscan,
+            )
+            self.ivf_index_files = files
             self.all_embeddings = None
         elif self.use_rabitq:
             # Single-node build if missing (a multi-node run builds the shards
@@ -715,6 +772,66 @@ class DenseIndex(BaseIndex):
             queries, query_indices, distances.cpu(), identifiers.cpu()
         )
 
+    @torch.no_grad()
+    def ivf_topk_hits(self, queries: pl.DataFrame) -> pl.DataFrame:
+        """Top-k by IVF-RaBitQ candidate scan + exact fp32 rerank.
+
+        Same hits contract as the scans; like CAGRA it holds the whole index,
+        so there is no vec_range. Per-stage wall times of the last call are
+        kept in self.last_timings (embed, 1-bit scan, rerank).
+        """
+        m = self.model_cfg
+        t0 = time.time()
+        query_chunk_features, query_indices, _ = self._embed_queries(queries)
+        q = query_chunk_features.float().cpu().numpy()
+        timings = {"embed_s": time.time() - t0, "n_chunks": len(q)}
+        scores, ids = self.ivf.search(
+            q,
+            self.top_k,
+            nprobe=m.ivf_nprobe,
+            rerank=m.ivf_rerank,
+            qb=m.ivf_qb,
+            timings=timings,
+        )
+        self.last_timings = timings
+        print(f"IVF search timings: {timings}")
+        return self._hits_from_chunk_topk(
+            queries,
+            query_indices,
+            torch.from_numpy(scores),
+            torch.from_numpy(ids),
+        )
+
+    @torch.no_grad()
+    def ivfpq_topk_hits(self, queries: pl.DataFrame) -> pl.DataFrame:
+        """Top-k by GPU IVF-PQ (cuVS) over every shard, optional exact rerank.
+
+        Same hits contract as the scans; the whole index is on this node's
+        GPUs, so there is no vec_range. Stage wall times of the last call are
+        kept in self.last_timings.
+        """
+        m = self.model_cfg
+        t0 = time.time()
+        query_chunk_features, query_indices, _ = self._embed_queries(queries)
+        q = query_chunk_features.float().cpu().numpy()
+        timings = {"embed_s": time.time() - t0, "n_chunks": len(q)}
+        scores, ids = self.ivfpq.search(
+            q,
+            self.top_k,
+            n_probes=m.ivfpq_nprobe,
+            rerank=m.ivfpq_rerank,
+            lut_dtype=m.ivfpq_lut,
+            timings=timings,
+        )
+        t1 = time.time()
+        hits = self._hits_from_chunk_topk(
+            queries, query_indices, torch.from_numpy(scores), torch.from_numpy(ids)
+        )
+        timings["hits_s"] = time.time() - t1
+        self.last_timings = timings
+        print(f"IVF-PQ search timings: {timings}")
+        return hits
+
     def topk_hits(
         self, queries: pl.DataFrame, vec_range: tuple[int, int] | None = None
     ) -> pl.DataFrame:
@@ -731,7 +848,19 @@ class DenseIndex(BaseIndex):
             if vec_range is not None:
                 raise NotImplementedError("CAGRA search cannot be row-sharded")
             return self.ann_topk_hits(queries)
+        if self.use_ivf:
+            if vec_range is not None:
+                raise NotImplementedError("IVF search cannot be row-sharded")
+            return self.ivf_topk_hits(queries)
+        if self.use_ivfpq:
+            if vec_range is not None:
+                raise NotImplementedError("IVF-PQ search cannot be row-sharded")
+            return self.ivfpq_topk_hits(queries)
         return self.exact_topk_hits(queries, vec_range)
+
+    # Engine flag defaults for instances built without __init__ (tests).
+    use_ivf: bool = False
+    use_ivfpq: bool = False
 
     # Set by load() when the embeddings live in an fbin; None for in-memory
     # embeddings (tests), which the scans then slice directly.
@@ -767,6 +896,10 @@ class DenseIndex(BaseIndex):
 
     def index_size_gb(self, index_path: Path):
         total = 0
+        if self.use_ivf or self.use_ivfpq:
+            # The in-memory index (codes + ids + centroids); the rerank reads
+            # the fbin from disk and is not counted, like a DB's raw store.
+            return sum(f.stat().st_size for f in self.ivf_index_files) / (1024**3)
         if self.use_rabitq:
             rabitq_dir = index_path / "rabitq"
             assert rabitq_dir.exists()
@@ -949,8 +1082,39 @@ class DenseIndex(BaseIndex):
             query_indices.append((prev_idx, prev_idx + num_chunks))
             prev_idx += num_chunks
 
-        query_features = self.model.encode(query_chunks)
+        query_features = self._encode_chunks(query_chunks)
         return query_features, query_indices, torch.tensor(strands, dtype=torch.long)
+
+    _query_replicas: list | None = None
+
+    def _encode_chunks(self, chunks: list[str]) -> torch.Tensor:
+        """Encode on self.model, or split across query_embed_gpus replicas.
+
+        Replicas (DenseEncoder on cuda:1..n-1, same checkpoint) are built on
+        first use; each takes a contiguous slice and results are concatenated
+        in order on the CPU.
+        """
+        ivfpq = getattr(self, "ivfpq", None)
+        if ivfpq is not None and ivfpq.has_encoder:
+            return torch.from_numpy(ivfpq.embed(chunks))
+        n_gpu = min(getattr(self.model_cfg, "query_embed_gpus", 1), torch.cuda.device_count())
+        if n_gpu <= 1 or len(chunks) < 2 * n_gpu:
+            return self.model.encode(chunks)
+        if self._query_replicas is None:
+            replicas = [self.model]
+            for i in range(1, n_gpu):
+                rcfg = copy.copy(self.model_cfg)
+                rcfg.device = f"cuda:{i}"
+                replicas.append(DenseEncoder(rcfg))
+            self._query_replicas = replicas
+        bounds = [len(chunks) * i // n_gpu for i in range(n_gpu + 1)]
+
+        def _run(i):
+            with torch.cuda.device(i):
+                return self._query_replicas[i].encode(chunks[bounds[i] : bounds[i + 1]]).cpu()
+
+        with ThreadPoolExecutor(max_workers=n_gpu) as pool:
+            return torch.cat(list(pool.map(_run, range(n_gpu))))
 
 
 def chunk_sequence(

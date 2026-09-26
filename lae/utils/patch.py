@@ -64,6 +64,10 @@ def patch_with_flash_lib(model):
         slopes_b = slopes_b[0::2][: n_heads - closest_power_of_2]
         return slopes_a + slopes_b
 
+    # flash-attn kernels are CUDA-only; CPU inputs (e.g. query embedding on a
+    # CPU search node) go through the model's own attention instead.
+    native_forward = TargetClass.forward
+
     # 3. Define the new forward function
     def flash_lib_forward(
         attn_self,
@@ -80,6 +84,16 @@ def patch_with_flash_lib(model):
             cu_seqlens: (batch + 1)
             bias: IGNORED (We generate alibi slopes internally)
         """
+        if not hidden_states.is_cuda:
+            return native_forward(
+                attn_self,
+                hidden_states,
+                cu_seqlens,
+                max_seqlen_in_batch,
+                indices,
+                attn_mask,
+                bias,
+            )
         # 1. Project QKV
         # Output: [total_nnz, 3 * heads * head_dim]
         qkv = attn_self.Wqkv(hidden_states)

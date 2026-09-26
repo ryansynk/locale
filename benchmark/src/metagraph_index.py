@@ -17,6 +17,7 @@ import socket
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import polars as pl
@@ -44,12 +45,15 @@ RESULTS_DTYPE = pl.List(pl.Struct({"accession": pl.String, "score": pl.Float64})
 
 
 class MetagraphIndex(BaseIndex):
+    server_parallel: int = 1  # default for instances built without __init__ (tests)
+
     def __init__(self, cfg: ExperimentConfig):
         assert isinstance(cfg.model, MetagraphConfig)
         self.port: int = get_free_port()
         self.model_cfg: MetagraphConfig = cfg.model
         self.executable: str = self.model_cfg.executable
         self.k = self.model_cfg.k
+        self.server_parallel: int = self.model_cfg.server_parallel
         self.index_path: Path | None = None
         self.manifest_path: Path | None = None
         self.query_server_proc: subprocess.Popen | None = None
@@ -186,6 +190,8 @@ class MetagraphIndex(BaseIndex):
             graph, anno = self.index_files(index_path)[0]
             cmd += ["-i", str(graph), "-a", str(anno)]
         cmd += ["--port", str(self.port)]
+        if self.server_parallel > 1:
+            cmd += ["-p", str(self.server_parallel)]
         print(f"Starting metagraph query server: {' '.join(cmd)}")
         self.query_server_proc = subprocess.Popen(cmd)
         atexit.register(self.stop_server)
@@ -208,12 +214,34 @@ class MetagraphIndex(BaseIndex):
     # ------------------------------------------------------------------ search
     def search(self, queries: pl.DataFrame) -> pl.DataFrame:
         queries = queries.with_row_index()
-        results = self.graph_client.search(
-            queries["query_sequence"].to_list(),
-            top_labels=TOP_LABELS,
-            discovery_fraction=DISCOVERY_FRACTION,
-        )
-        df = pl.from_pandas(results)
+        seqs = queries["query_sequence"].to_list()
+        n_req = max(1, min(self.server_parallel, len(seqs)))
+        if n_req == 1:
+            results = [self.graph_client.search(
+                seqs, top_labels=TOP_LABELS, discovery_fraction=DISCOVERY_FRACTION
+            )]
+        else:
+            # Contiguous slices, one request each; seq_description is the
+            # position within a request, so shift it back to the batch.
+            bounds = [len(seqs) * r // n_req for r in range(n_req + 1)]
+
+            def _one(r):
+                c = GraphClient("127.0.0.1", self.port, api_path="")
+                out = c.search(
+                    seqs[bounds[r] : bounds[r + 1]],
+                    top_labels=TOP_LABELS,
+                    discovery_fraction=DISCOVERY_FRACTION,
+                )
+                if len(out):
+                    out["seq_description"] = (
+                        out["seq_description"].astype(int) + bounds[r]
+                    ).astype(str)
+                return out
+
+            with ThreadPoolExecutor(max_workers=n_req) as pool:
+                results = list(pool.map(_one, range(n_req)))
+        results = [r for r in results if len(r)]
+        df = pl.concat([pl.from_pandas(r) for r in results]) if results else pl.DataFrame()
         if len(df) == 0:
             return queries.select(
                 "query_id", pl.lit([], dtype=RESULTS_DTYPE).alias("results")
