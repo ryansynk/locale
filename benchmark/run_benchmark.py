@@ -13,11 +13,9 @@ from src.config import (
     ExperimentConfig,
     MetagraphConfig,
     MMseqs2Config,
-    CentroidConfig,
 )
 from src.dense_index import DenseIndex
 from src.rabitq import build_rabitq_index
-from src.centroid_index import CentroidIndex
 from src.download_accessions import download_accessions
 from src.metagraph_index import MetagraphIndex
 from src.mmseqs2_index import MMseqs2Index
@@ -342,8 +340,6 @@ def main(cfg: ExperimentConfig):
         index = MetagraphIndex(cfg)
     elif isinstance(cfg.model, MMseqs2Config):
         index = MMseqs2Index(cfg)
-    elif isinstance(cfg.model, CentroidConfig):
-        index = CentroidIndex(cfg)
     else:
         raise ValueError("Unknown model config")
 

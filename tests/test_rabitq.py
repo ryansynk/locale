@@ -293,7 +293,6 @@ def _dense_index(built: Path, fbin: Path, query_rows: list[int]) -> DenseIndex:
     index.model_cfg = SimpleNamespace(device="cpu", max_seq_len=50)
     index.chunk_type = "stride"
     index.chunk_overlap = 0
-    index.contig_align_intervals = None
     index.model = _RowEncoder(x[query_rows].copy())
     return index
 

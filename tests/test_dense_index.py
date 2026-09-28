@@ -48,7 +48,6 @@ def _make_index(query_vec: torch.Tensor, all_embeddings: torch.Tensor):
     index.model_cfg = SimpleNamespace(device="cpu", max_seq_len=50)
     index.chunk_type = "stride"
     index.chunk_overlap = 0
-    index.contig_align_intervals = None
     index.model = _FakeEncoder(query_vec)
     return index
 

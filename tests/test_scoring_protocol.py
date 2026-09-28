@@ -116,7 +116,6 @@ def _synthetic_index(
     index.model_cfg = SimpleNamespace(device="cpu", max_seq_len=window)
     index.chunk_type = "stride"
     index.chunk_overlap = window - stride
-    index.contig_align_intervals = None
     index.model = enc
     return index, accs, contigs
 

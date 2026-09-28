@@ -2,7 +2,6 @@ import copy
 import faulthandler
 import multiprocessing as mp
 import os
-import random
 import sys
 import threading
 import traceback
@@ -30,7 +29,7 @@ from .config import DenseConfig, ExperimentConfig
 # Encoders and the fbin helpers moved to their own modules so an index can use one
 # without importing this one. Re-exported because tests/ and other callers import
 # them from here.
-from .encoders import DenseEncoder, _strings_to_one_hot, batched  # noqa: F401
+from .encoders import DenseEncoder, batched  # noqa: F401
 from .fbin import _create_fbin_memmap, _load_fbin_mmap, read_fbin_rows  # noqa: F401
 from .rabitq import RaBitQIndex, build_rabitq_index  # noqa: F401
 from .topk_regroup import build_hits_frame, regroup_topk_hits
@@ -215,9 +214,8 @@ class DenseIndex(BaseIndex):
         # chunk_type was dropped from DenseConfig during the v1 cleanup;
         # stride is the only supported mode (see the hardcoded "chunkstride"
         # index tag in config.py and the legacy column in run_benchmark.py).
-        self.chunk_type: Literal["stride", "exact_chunk"] = "stride"
+        self.chunk_type: Literal["stride"] = "stride"
         self.chunk_overlap: int = cfg.model.chunk_overlap
-        self.contig_align_intervals: dict[str, list[tuple[int, int]]] | None = None
 
     def load(self, index_path: Path):
         meta = pl.read_parquet(index_path / "meta.parquet")
@@ -325,7 +323,6 @@ class DenseIndex(BaseIndex):
                         self.model_cfg.max_seq_len,
                         self.chunk_overlap,
                         self.chunk_type,
-                        self.contig_align_intervals,
                     ):
                         yield srr_id, chunk
 
@@ -1122,8 +1119,7 @@ def chunk_sequence(
     contig_id: str,
     chunk_size: int,
     chunk_overlap: int,
-    chunk_type: Literal["stride", "exact_chunk"],
-    contig_align_intervals: dict[str, list[tuple[int, int]]] | None,
+    chunk_type: Literal["stride"],
 ):
     if chunk_type == "stride":
         if chunk_overlap >= chunk_size:
@@ -1138,42 +1134,6 @@ def chunk_sequence(
             seq[i : i + chunk_size]
             for i in range(0, len(seq) - chunk_size + 1, step_size)
         ]
-    elif chunk_type == "exact_chunk":
-        assert contig_align_intervals
-        align_intervals = contig_align_intervals.get(contig_id, [])
-        chunks = []
-        covered = []
-
-        for iv_start, iv_end in align_intervals:
-            # chunk must start early enough to reach iv_start, and late enough to cover iv_end
-            lo = max(0, iv_end - chunk_size)
-            hi = min(iv_start, len(seq) - chunk_size)
-            chunk_start = random.randint(lo, max(lo, hi))
-            chunks.append(seq[chunk_start : chunk_start + chunk_size])
-            covered.append((chunk_start, chunk_start + chunk_size))
-
-        # Merge covered intervals to find uncovered regions
-        covered.sort()
-        merged: list[tuple[int, int]] = []
-        for s, e in covered:
-            if merged and s <= merged[-1][1]:
-                merged[-1] = (merged[-1][0], max(merged[-1][1], e))
-            else:
-                merged.append((s, e))
-
-        uncovered_regions: list[tuple[int, int]] = []
-        prev = 0
-        for s, e in merged:
-            if prev < s:
-                uncovered_regions.append((prev, s))
-            prev = e
-        if prev < len(seq):
-            uncovered_regions.append((prev, len(seq)))
-
-        # Evenly chunk each uncovered region, including any leftover
-        for r_start, r_end in uncovered_regions:
-            for i in range(r_start, r_end, chunk_size):
-                chunks.append(seq[i : i + chunk_size])
     else:
         raise ValueError(f"Incorrect chunk_type recieved: {chunk_type}")
 

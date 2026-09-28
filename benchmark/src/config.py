@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Optional, Union
 
@@ -34,9 +34,7 @@ class AlgorithmConfig:
 
 @dataclass
 class DenseConfig(AlgorithmConfig):
-    name: Literal["locale", "dnabert", "generator", "neuroseed", "dna2vec", "llmed"] = (
-        "locale"  # "dnabert", "locale"
-    )
+    name: Literal["locale", "dna2vec", "llmed"] = "locale"
     checkpoint_path: Optional[str] = None
     checkpoint_step_num: Optional[int] = None
     batch_size: int = 128
@@ -45,7 +43,6 @@ class DenseConfig(AlgorithmConfig):
     k: int = 100
     max_seq_len: int = 1024
     chunk_overlap: int = 150
-    neuroseed_path: Optional[str] = "/pscratch/sd/r/rsynk/NeuroSEED"
     # --- Scoring protocol (search-time only; the built index is identical) ---
     # Default: retrieve each query's top_k nearest index VECTORS, group the
     # hits by accession, score each accession by its max hit and rank;
@@ -120,17 +117,7 @@ class DenseConfig(AlgorithmConfig):
                 "engine (use_ann/use_rabitq/use_ivf/use_ivfpq/exact_search)"
             )
         config_tag = f"maxlen{self.max_seq_len}_pool{self.pooling}_chunkstride"
-        if self.name == "dnabert":
-            self.index_suffix: Path = Path("dnabert") / config_tag
-            self.experiment_id: str = f"dnabert_{config_tag}"
-            self.checkpoint: str | None = None
-            self.max_len: int = self.max_seq_len
-        elif self.name == "generator":
-            self.index_suffix: Path = Path("generator") / config_tag
-            self.experiment_id: str = f"generator_{config_tag}"
-            self.checkpoint: str | None = None
-            self.max_len: int = self.max_seq_len
-        elif self.name == "locale":
+        if self.name == "locale":
             if self.checkpoint_path is None:
                 # Unset means the published checkpoint; dense_index fetches it.
                 ckpt_id = PAPER_CHECKPOINT["ckpt_id"]
@@ -148,13 +135,6 @@ class DenseConfig(AlgorithmConfig):
             )
             self.checkpoint: str | None = ckpt_id
             self.max_len: int = self.max_seq_len
-        elif self.name == "neuroseed":
-            assert self.checkpoint_path is not None
-            ckpt_id = Path(self.checkpoint_path).resolve().stem
-            self.index_suffix: Path = Path("neuroseed") / ckpt_id / config_tag
-            self.experiment_id: str = f"neuroseed_{ckpt_id}_{config_tag}"
-            self.checkpoint: str | None = ckpt_id
-            self.max_len: int = self.max_seq_len
         elif self.name == "dna2vec":
             self.index_suffix: Path = Path("dna2vec") / config_tag
             self.experiment_id: str = f"dna2vec_{config_tag}"
@@ -168,7 +148,7 @@ class DenseConfig(AlgorithmConfig):
             self.max_len: int = self.max_seq_len
         else:
             raise ValueError(
-                f"name expected: locale, dnabert, generator, neuroseed, dna2vec, or llmed. Got = {self.name}"
+                f"name expected: locale, dna2vec, or llmed. Got = {self.name}"
             )
         # Every scoring protocol reads the same built index (index_suffix is
         # unchanged) but ranks differently, so each gets its own experiment_id.
@@ -258,57 +238,8 @@ class MMseqs2Config(AlgorithmConfig):
 
 
 @dataclass
-class CentroidConfig(AlgorithmConfig):
-    """Bag-of-centroids index over embeddings produced by ``encoder``.
-
-    This *composes* a DenseConfig rather than restating its fields, so any of the
-    encoders works with this index and the two axes stay independent.
-
-    ``source_index_dir`` points at a prebuilt dense index directory
-    (``embeddings.fbin`` + ``meta.parquet``); the build clusters those vectors
-    instead of re-embedding the FASTA.
-    """
-
-    encoder: DenseConfig = field(default_factory=DenseConfig)
-    name: str = "centroid"
-    source_index_dir: Optional[str] = None
-    num_centroids: int = 4096
-    nprobe: int = 32
-    sample_size: int = 1_000_000
-    kmeans_iters: int = 25
-    device: str = "cuda"
-    # Rows per streaming tile in the assignment pass. 500k x 768 float32 ~ 1.5 GB,
-    # matching the tile size vecdb_dataset/ground_truth.py settled on for the same
-    # NFS-read-bound scan.
-    tile_rows: int = 500_000
-    probe_weight: Literal["sim", "softmax", "uniform"] = "sim"
-    softmax_temperature: float = 0.05
-    random_seed: int = 0
-
-    def __post_init__(self):
-        # num_centroids changes the index on disk; nprobe and probe_weight are
-        # query-time only, so one built index serves every setting of them. They
-        # belong in experiment_id (results differ) but not in index_suffix.
-        config_tag = f"K{self.num_centroids}"
-        self.index_suffix: Path = (
-            Path("centroid") / self.encoder.index_suffix / config_tag
-        )
-        self.experiment_id: str = (
-            f"centroid_{self.encoder.experiment_id}_{config_tag}"
-            f"_p{self.nprobe}_w{self.probe_weight}"
-        )
-        self.checkpoint: str | None = self.encoder.checkpoint
-        self.max_len: int | None = self.encoder.max_len
-        self.chunk_type: int | None = None
-        self.checkpoint_step_num: int | None = self.encoder.checkpoint_step_num
-
-    def __str__(self):
-        return self.experiment_id
-
-
-@dataclass
 class ExperimentConfig:
-    model: Union[DenseConfig, MetagraphConfig, MMseqs2Config, CentroidConfig]
+    model: Union[DenseConfig, MetagraphConfig, MMseqs2Config]
     dataset_name: str
     dataset_dir: str | None
     index_dir: Path
