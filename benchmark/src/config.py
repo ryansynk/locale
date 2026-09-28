@@ -431,8 +431,8 @@ def ensure_config(directory: Path, identity: dict, artifact_present: bool) -> No
 
     ``artifact_present`` says whether the directory already holds the thing
     the config describes (a .done index, a results parquet); such a directory
-    without config.json predates the label layout and is refused until
-    scripts/migrate_layout.py has stamped it.
+    without config.json was not built by this code and is refused rather
+    than trusted.
     """
     on_disk = read_config(directory)
     if on_disk is not None:
@@ -440,8 +440,9 @@ def ensure_config(directory: Path, identity: dict, artifact_present: bool) -> No
         return
     if artifact_present:
         raise ConfigMismatch(
-            f"{directory} holds an artifact but no {CONFIG_FILE}; run "
-            "scripts/migrate_layout.py before reusing it."
+            f"{directory} holds an artifact but no {CONFIG_FILE}; it was not "
+            "built under this layout. Stamp it with the identity it was built "
+            "under, or use another label."
         )
     write_config(directory, identity)
 

@@ -116,7 +116,7 @@ class TestConfigJson:
             ensure_config(d, {"a": 2}, artifact_present=True)
         legacy = tmp_path / "legacy"
         legacy.mkdir()
-        with pytest.raises(ConfigMismatch, match="migrate_layout"):
+        with pytest.raises(ConfigMismatch, match="not.*built under this layout"):
             ensure_config(legacy, {"a": 1}, artifact_present=True)
 
     def test_run_identity_adds_the_query_draw(self, tmp_path):
