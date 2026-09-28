@@ -15,8 +15,8 @@
 # shards into ivf<nlist>_rabitq1_fs.faiss (~230 GB, needs this node's RAM).
 #
 # Default: ivf_sweep.py over nprobe x rerank at every rate with the index
-# loaded once (results -> results/sra4571/<experiment_id>/, hits ->
-# results/sra4571_topk_hits/). With MODE=timing it instead runs
+# loaded once (results -> results/sra4571/<encoder>/<index>/<search>/, hits ->
+# its hits/ subdirectory). With MODE=timing it instead runs
 # run_benchmark --do_timing per rate for the config as given (5 searches,
 # mean of runs 2-5, query embedding on this node's CPUs included) into
 # results/sra4571_timing/, beside the metagraph timing.

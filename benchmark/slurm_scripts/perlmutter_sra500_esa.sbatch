@@ -18,7 +18,7 @@
 # and rank 0 merges the top-100 hits. Later rates reuse the .done index.
 #
 # Results: results/sra500/dna2vec_maxlen256_poolmax_chunkstride_exacttop100_bothstrands/
-# raw hits: results/sra500_topk_hits/<...>_exact_bothstrands/ (reused at k <= 100).
+# raw hits: results/sra500/esa/exact/top100/hits/ (reused at k <= 100).
 #
 #   sbatch slurm_scripts/perlmutter_sra500_esa.sbatch            # all rates
 #   RATES="0.0" sbatch slurm_scripts/perlmutter_sra500_esa.sbatch
@@ -55,16 +55,12 @@ done
 uv run python - "$CONFIG" "$n_accs" <<'PY'
 import sys
 import polars as pl
-import yaml
-from pathlib import Path
-from src.config import DenseConfig, ExperimentConfig
+from jsonargparse import CLI
+from src.config import ExperimentConfig
 
 cfg_path, n_accs = sys.argv[1], int(sys.argv[2])
-raw = yaml.safe_load(open(cfg_path))
-model = DenseConfig(**raw.pop("model"))
-raw = {k: (Path(v) if k.endswith("_dir") else v) for k, v in raw.items()}
-cfg = ExperimentConfig(model=model, **raw)
-meta = cfg.index_dir / model.index_suffix / "meta.parquet"
+cfg = CLI(ExperimentConfig, as_positional=False, args=["--config", cfg_path])
+meta = cfg.model.index_path(cfg.index_dir) / "meta.parquet"
 n = pl.read_parquet(meta)["srr_id"].n_unique()
 if n != n_accs:
     sys.exit(f"[FAIL] index has {n} accessions, expected {n_accs}: {meta}")

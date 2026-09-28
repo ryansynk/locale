@@ -216,6 +216,7 @@ checkpoints
 logs
 *.old
 benchmark/indexes
+benchmark/results
 benchmark/indexes_500
 *.pdf
 benchmark/configs/local

@@ -44,6 +44,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
+from .config import RaBitQIndex
 from .fbin import _load_fbin_mmap, pread_into, read_fbin_rows
 
 DEFAULT_CENTROID_SAMPLE_ROWS = 2_000_000
@@ -344,7 +345,7 @@ def unpack_codes(packed: torch.Tensor, d: int) -> torch.Tensor:
     return unpacked.reshape(packed.shape[0], d).to(torch.float16) * 2 - 1
 
 
-class RaBitQIndex:
+class RaBitQCodes:
     """Packed 1-bit codes resident on one or more devices, searched by row range.
 
     ``open`` reads only the metadata and transforms; ``load_rows`` brings a
@@ -384,14 +385,14 @@ class RaBitQIndex:
         self.loaded_range: tuple[int, int] | None = None
 
     @classmethod
-    def open(cls, rabitq_dir: Path) -> "RaBitQIndex":
+    def open(cls, rabitq_dir: Path) -> "RaBitQCodes":
         with open(rabitq_dir / "meta.json") as f:
             meta = json.load(f)
         centroid_p, rotation_p = _transform_paths(rabitq_dir)
         return cls(rabitq_dir, meta, np.load(centroid_p), np.load(rotation_p))
 
     @classmethod
-    def load(cls, rabitq_dir: Path, devices: list[str] | None = None) -> "RaBitQIndex":
+    def load(cls, rabitq_dir: Path, devices: list[str] | None = None) -> "RaBitQCodes":
         """Open and bring every row onto the devices (single-node use)."""
         index = cls.open(rabitq_dir)
         index.load_rows(0, index.n, devices)
@@ -525,4 +526,63 @@ class RaBitQIndex:
     def size_gb(self) -> float:
         return sum(
             p.stat().st_size for p in self.rabitq_dir.iterdir() if p.is_file()
+        ) / (1024**3)
+
+
+class RaBitQEngine:
+    """Top-k by 1-bit RaBitQ estimated inner product over rows [vec_range).
+
+    Same (scores, ids) contract as the exact scan, so the multi-node merge
+    and the hits artifact apply unchanged; the scores are estimates, so
+    validate the candidate set against an exact run. A range's packed codes
+    are loaded onto this node's devices on first use -- one node of an
+    N-node search holds 1/N of the codes.
+    """
+
+    SHARDABLE = True
+    WORKER_EMBED = False
+
+    def __init__(self, cfg: RaBitQIndex):
+        self.cfg = cfg
+        self.codes: RaBitQCodes | None = None
+        self.devices: list[str] = ["cpu"]
+
+    def build(self, fbin_dir: Path, index_dir: Path, shard: int, num_shards: int) -> None:
+        """Quantize this rank's row range (resumable; every rank returns once
+        meta.json exists, so the index is complete on return)."""
+        build_rabitq_index(
+            fbin_dir / "embeddings.fbin",
+            index_dir,
+            rank=shard,
+            num_ranks=num_shards,
+            centroid_sample_rows=self.cfg.sample_rows,
+        )
+
+    def load(self, fbin_dir: Path, index_dir: Path, devices: list[str], encoder_cfg=None) -> None:
+        """Only metadata is read here; the codes for a row range are brought
+        onto the devices by topk_hits."""
+        self.codes = RaBitQCodes.open(index_dir)
+        self.devices = list(devices)
+
+    @torch.no_grad()
+    def topk_hits(
+        self, query_vecs: np.ndarray, top_k: int, vec_range: tuple[int, int] | None = None
+    ) -> tuple[np.ndarray, np.ndarray]:
+        assert self.codes is not None
+        n_vecs = self.codes.n
+        start, end = (0, n_vecs) if vec_range is None else vec_range
+        if not (0 <= start <= end <= n_vecs):
+            raise ValueError(f"vec_range {vec_range} outside [0, {n_vecs}]")
+        n_q = len(query_vecs)
+        if end == start:
+            return np.empty((n_q, 0), np.float32), np.empty((n_q, 0), np.int64)
+        self.codes.load_rows(start, end, self.devices)
+        scores, ids = self.codes.search(
+            torch.as_tensor(np.ascontiguousarray(query_vecs, dtype=np.float32)), top_k
+        )
+        return scores.numpy(), ids.numpy()
+
+    def size_gb(self, fbin_dir: Path, index_dir: Path) -> float:
+        return sum(
+            p.stat().st_size for p in Path(index_dir).iterdir() if p.is_file()
         ) / (1024**3)

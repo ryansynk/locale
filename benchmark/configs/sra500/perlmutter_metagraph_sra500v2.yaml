@@ -9,6 +9,8 @@ model:
   name: metagraph
   executable: shifter metagraph
   k: 31
+  label: metagraph
+  search_label: default
 
 # Local bundle (locale-data list-first pipeline, built 2026-09-21; the source
 # of the HF sra500-v2 upload): 500 accessions disjoint from train/val, 500

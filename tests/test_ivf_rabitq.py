@@ -14,9 +14,10 @@ import faiss
 import numpy as np
 import pytest
 
-from src.config import DenseConfig
+from src.config import IVFRaBitQIndex, build_identity, search_fields
 from src.fbin import _create_fbin_memmap
 from src.ivf_rabitq import (
+    IVFRaBitQEngine,
     IVFRaBitQSearcher,
     build_ivf_shard,
     list_shards,
@@ -120,9 +121,25 @@ def test_partial_probe_scores_are_exact_and_sorted(data, merged):
     assert (np.diff(scores, axis=1)[np.isfinite(scores[:, 1:])] <= 1e-6).all()
 
 
-def test_config_ivf_ids():
-    cfg = DenseConfig(name="locale", checkpoint_path=None, use_ivf=True, ivf_nprobe=256, both_strands=True)
-    assert "ivf16384rabitq1_np256_rr300_qb8" in cfg.hits_id
-    assert cfg.experiment_id.endswith("_top100_bothstrands")
-    with pytest.raises(ValueError):
-        DenseConfig(name="locale", checkpoint_path=None, use_ivf=True, use_rabitq=True)
+def test_config_ivf_identities():
+    idx = IVFRaBitQIndex(nprobe=256)
+    assert build_identity(idx) == {"engine": "ivfrabitq", "nlist": 16384, "nb_bits": 1, "train_rows": 6_000_000}
+    assert search_fields(idx) == {
+        "top_k": 100, "nprobe": 256, "rerank": 300, "qb": 8, "quantizer": "flat", "fastscan": False,
+    }
+
+
+def test_engine_loads_shards_and_matches_searcher(data, merged):
+    fbin, x = data
+    engine = IVFRaBitQEngine(IVFRaBitQIndex(nlist=NLIST, nprobe=NLIST, rerank=N, top_k=10, fastscan=True))
+    assert engine.complete(merged.parent)
+    engine.load(fbin.parent, merged.parent, devices=["cpu"])
+    assert len(engine.index_files) == 2  # fastscan searches the shards side by side
+    q = _clustered_rows(5, D, seed=4)
+    scores, ids = engine.topk_hits(q, 10)
+    exact = q @ x.T
+    want = np.argsort(-exact, axis=1, kind="stable")[:, :10]
+    np.testing.assert_allclose(scores, np.take_along_axis(exact, want, axis=1), rtol=1e-5, atol=1e-6)
+    assert engine.size_gb(fbin.parent, merged.parent) > 0
+    with pytest.raises(NotImplementedError):
+        engine.topk_hits(q, 10, vec_range=(0, 10))

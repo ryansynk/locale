@@ -50,10 +50,10 @@ CPUS_PER_TASK="${CPUS_PER_TASK:-128}"
 export PYTHONUNBUFFERED=1
 
 # Reuse the paper checkpoint's finished sra50v2 index rather than rebuilding it.
-if [ -e indexes/sra50/locale/8vqiabk9 ] && [ ! -e "$INDEX_DIR/locale/8vqiabk9" ]; then
-    mkdir -p "$INDEX_DIR/locale"
-    ln -s ../../sra50/locale/8vqiabk9 "$INDEX_DIR/locale/8vqiabk9"
-    echo "[link] $INDEX_DIR/locale/8vqiabk9 -> indexes/sra50/locale/8vqiabk9"
+if [ -e indexes/sra50/locale@8vqiabk9 ] && [ ! -e "$INDEX_DIR/locale@8vqiabk9" ]; then
+    mkdir -p "$INDEX_DIR"
+    ln -s ../sra50/locale@8vqiabk9 "$INDEX_DIR/locale@8vqiabk9"
+    echo "[link] $INDEX_DIR/locale@8vqiabk9 -> indexes/sra50/locale@8vqiabk9"
 fi
 
 failed=()

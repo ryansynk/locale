@@ -2,18 +2,23 @@
 Synthetic DenseIndex search tests — no GPU or model download required.
 
 We bypass __init__ with __new__ so no DenseEncoder is created, then wire in
-a FakeEncoder that returns predetermined embeddings. _make_index defaults to
-the exhaustive reference protocol; the top-k tests flip `exhaustive` off.
+a FakeEncoder that returns predetermined embeddings and an engine over
+in-memory embeddings. _make_index defaults to the exhaustive reference
+protocol; the top-k tests build an ExactEngine instead.
 Using standard basis vectors makes the expected top-1 result deterministic: the
 query is e_2, so only acc1 (whose vectors include e_2) can score 1.0.
 """
 
 import torch
+import numpy as np
 import polars as pl
 import pytest
 from types import SimpleNamespace
 
+from src.config import ExactIndex, ExhaustiveIndex
 from src.dense_index import DenseIndex
+from src.exact import ExactEngine
+from src.exhaustive import ExhaustiveEngine
 
 
 def _basis(dim: int, i: int) -> torch.Tensor:
@@ -32,20 +37,25 @@ class _FakeEncoder:
         return self._vec.unsqueeze(0).expand(len(sequences), -1)
 
 
-def _make_index(query_vec: torch.Tensor, all_embeddings: torch.Tensor):
+def _make_index(
+    query_vec: torch.Tensor, all_embeddings: torch.Tensor, exhaustive: bool = True, top_k: int = 10
+):
     """Construct a DenseIndex with synthetic state, bypassing __init__."""
     index = DenseIndex.__new__(DenseIndex)
     index.no_search = False
-    index.k = 10
-    index.use_ann = False
-    index.use_rabitq = False
-    index.exhaustive = True
-    index.top_k = 10
+    index.exhaustive = exhaustive
+    index.top_k = top_k
     index.both_strands = False
-    index.all_embeddings = all_embeddings
+    index.engine = (
+        ExhaustiveEngine(ExhaustiveIndex()) if exhaustive else ExactEngine(ExactIndex(top_k=top_k))
+    )
+    index.engine.all_embeddings = all_embeddings
+    index.engine.fbin_path = None
+    index.engine.devices = ["cpu"]
     index.acc_names_flat = ["acc0", "acc1", "acc2"]
     index.acc_offsets = [0, 2, 4, 6]
-    index.model_cfg = SimpleNamespace(device="cpu", max_seq_len=50)
+    index.n_vectors = 6
+    index.encoder_cfg = SimpleNamespace(device="cpu", max_seq_len=50, query_embed_gpus=1)
     index.chunk_type = "stride"
     index.chunk_overlap = 0
     index.model = _FakeEncoder(query_vec)
@@ -147,10 +157,8 @@ class TestExactTopKSearch:
         )
 
     def test_hits_are_sorted_and_map_to_the_right_accession(self):
-        index = _make_index(_basis(_DIM, 2), _ALL_EMBEDDINGS)
-        index.exhaustive = False
-        index.top_k = 3
-        hits = index.exact_topk_hits(self._queries())
+        index = _make_index(_basis(_DIM, 2), _ALL_EMBEDDINGS, exhaustive=False, top_k=3)
+        hits = index.topk_hits(self._queries())
         assert hits.columns == ["query_id", "hits"]
         rows = hits["hits"][0].to_list()
         assert len(rows) == 3
@@ -159,10 +167,8 @@ class TestExactTopKSearch:
         assert scores == sorted(scores, reverse=True)
 
     def test_top_k_larger_than_index_returns_every_vector_once(self):
-        index = _make_index(_basis(_DIM, 0), _ALL_EMBEDDINGS)
-        index.exhaustive = False
-        index.top_k = 50
-        hits = index.exact_topk_hits(self._queries())
+        index = _make_index(_basis(_DIM, 0), _ALL_EMBEDDINGS, exhaustive=False, top_k=50)
+        hits = index.topk_hits(self._queries())
         ids = sorted(r["vector_id"] for r in hits["hits"][0].to_list())
         assert ids == list(range(6))  # no -1 padding leaks through
 
@@ -171,25 +177,24 @@ class TestExactTopKSearch:
     _DISTINCT = torch.tensor([0.1, 0.6, 0.3, 0.9, 0.2, 0.5])
 
     def test_block_streaming_matches_single_block(self):
-        index = _make_index(self._DISTINCT, _ALL_EMBEDDINGS)
-        index.exhaustive = False
-        index.top_k = 4
-        one = index.exact_topk_hits(self._queries(), block_rows=1_000_000)
-        many = index.exact_topk_hits(self._queries(), block_rows=1)
-        assert one["hits"].to_list() == many["hits"].to_list()
+        engine = ExactEngine(ExactIndex(top_k=4))
+        engine.all_embeddings = _ALL_EMBEDDINGS
+        q = self._DISTINCT.unsqueeze(0).numpy()
+        one = engine.topk_hits(q, 4, block_rows=1_000_000)
+        many = engine.topk_hits(q, 4, block_rows=1)
+        np.testing.assert_array_equal(one[1], many[1])
+        np.testing.assert_allclose(one[0], many[0])
 
     def test_sharded_ranges_merge_to_the_full_scan(self):
         from src.topk_regroup import merge_topk_hits
 
-        index = _make_index(self._DISTINCT, _ALL_EMBEDDINGS)
-        index.exhaustive = False
-        index.top_k = 4
-        full = index.exact_topk_hits(self._queries())
+        index = _make_index(self._DISTINCT, _ALL_EMBEDDINGS, exhaustive=False, top_k=4)
+        full = index.topk_hits(self._queries())
         assert [r["vector_id"] for r in full["hits"][0].to_list()] == [3, 1, 5, 2]
         parts = [
-            index.exact_topk_hits(self._queries(), vec_range=(0, 2)),
-            index.exact_topk_hits(self._queries(), vec_range=(2, 5)),
-            index.exact_topk_hits(self._queries(), vec_range=(5, 6)),
+            index.topk_hits(self._queries(), vec_range=(0, 2)),
+            index.topk_hits(self._queries(), vec_range=(2, 5)),
+            index.topk_hits(self._queries(), vec_range=(5, 6)),
         ]
         assert all(len(p["hits"][0]) <= 4 for p in parts)
         merged = merge_topk_hits(parts, index.top_k)
@@ -200,15 +205,12 @@ class TestExactTopKSearch:
         assert merged["hits"][0].to_list()[0]["vector_id"] == 3
 
     def test_empty_range_yields_empty_hits(self):
-        index = _make_index(_basis(_DIM, 3), _ALL_EMBEDDINGS)
-        index.exhaustive = False
-        hits = index.exact_topk_hits(self._queries(), vec_range=(4, 4))
+        index = _make_index(_basis(_DIM, 3), _ALL_EMBEDDINGS, exhaustive=False)
+        hits = index.topk_hits(self._queries(), vec_range=(4, 4))
         assert hits["hits"][0].to_list() == []
 
     def test_search_regroups_with_sentinel_for_misses(self):
-        index = _make_index(_basis(_DIM, 2), _ALL_EMBEDDINGS)
-        index.exhaustive = False
-        index.top_k = 1
+        index = _make_index(_basis(_DIM, 2), _ALL_EMBEDDINGS, exhaustive=False, top_k=1)
         result = index.search(self._queries())
         assert result.columns == ["query_id", "results"]
         by_acc = {r["accession"]: r["score"] for r in result["results"][0]}
@@ -219,8 +221,7 @@ class TestExactTopKSearch:
     def test_exact_search_top1_agrees_with_streaming_search(self):
         for slot in range(6):
             stream = _make_index(_basis(_DIM, slot), _ALL_EMBEDDINGS)
-            exact = _make_index(_basis(_DIM, slot), _ALL_EMBEDDINGS)
-            exact.exhaustive = False
+            exact = _make_index(_basis(_DIM, slot), _ALL_EMBEDDINGS, exhaustive=False)
 
             def top(df):
                 return max(df["results"][0], key=lambda r: r["score"])["accession"]
@@ -228,6 +229,11 @@ class TestExactTopKSearch:
             assert top(stream.search(self._queries())) == top(
                 exact.search(self._queries())
             )
+
+    def test_exhaustive_index_has_no_hits(self):
+        index = _make_index(_basis(_DIM, 2), _ALL_EMBEDDINGS)
+        with pytest.raises(NotImplementedError):
+            index.topk_hits(self._queries())
 
 
 class TestFileBackedBlockLoader:
@@ -238,26 +244,26 @@ class TestFileBackedBlockLoader:
         from src.fbin import _create_fbin_memmap
 
         path = tmp_path / "embeddings.fbin"
-        n, d = index.all_embeddings.shape
+        n, d = index.engine.all_embeddings.shape
         mm = _create_fbin_memmap(path, n, d)
-        mm[:] = index.all_embeddings.numpy()
+        mm[:] = index.engine.all_embeddings.numpy()
         mm.flush()
         del mm
-        index._fbin_path = path
+        index.engine.fbin_path = path
         return index
 
     def test_exact_topk_hits_match_in_memory(self, tmp_path):
-        queries = pl.DataFrame({"query_sequence": ["ACGT"], "query_id": ["q0"]})
-        mem = _make_index(_basis(_DIM, 2), _ALL_EMBEDDINGS)
-        mem.exhaustive = False
-        expected = mem.exact_topk_hits(queries, block_rows=4)
+        mem = ExactEngine(ExactIndex(top_k=4))
+        mem.all_embeddings = _ALL_EMBEDDINGS
+        q = _basis(_DIM, 2).unsqueeze(0).numpy()
+        expected = mem.topk_hits(q, 4, block_rows=4)
 
         disk = self._file_backed(
-            tmp_path, _make_index(_basis(_DIM, 2), _ALL_EMBEDDINGS)
+            tmp_path, _make_index(_basis(_DIM, 2), _ALL_EMBEDDINGS, exhaustive=False, top_k=4)
         )
-        disk.exhaustive = False
-        got = disk.exact_topk_hits(queries, block_rows=4)
-        assert got.to_dicts() == expected.to_dicts()
+        got = disk.engine.topk_hits(q, 4, block_rows=4)
+        np.testing.assert_array_equal(got[1], expected[1])
+        np.testing.assert_allclose(got[0], expected[0])
 
     def test_exhaustive_search_matches_in_memory(self, tmp_path):
         queries = pl.DataFrame({"query_sequence": ["ACGT"], "query_id": ["q0"]})

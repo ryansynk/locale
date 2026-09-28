@@ -1,8 +1,10 @@
 """Sweep IVF search settings on one node with the index loaded once.
 
-Works for both engines: faiss IVF-RaBitQ (use_ivf; --nprobes/--reranks/--qbs
-map to ivf_nprobe/ivf_rerank/ivf_qb) and cuVS GPU IVF-PQ (use_ivfpq;
---nprobes/--reranks map to ivfpq_nprobe/ivfpq_rerank, per shard).
+Works for both engines: faiss IVF-RaBitQ (index.engine: ivfrabitq;
+--nprobes/--reranks/--qbs map to index.nprobe/rerank/qb) and cuVS GPU IVF-PQ
+(index.engine: ivfpq; --nprobes/--reranks map to index.nprobe/rerank, per
+shard). Every setting gets its own search label, top<k>-np<nprobe>-rr<rerank>
+(-qb<qb> for IVF-RaBitQ).
 
 run_benchmark reloads the ~230 GB index per invocation, so a grid over
 (nprobe, rerank) would spend most of its time in read_index. This loads the
@@ -12,9 +14,9 @@ keeping the last as the timed one (the first also warms the page cache for
 the rerank preads). Per setting and rate it writes, exactly as run_benchmark
 would:
 
-    <results_dir>/<experiment_id>/raw_read_mut_<rate>.parquet   (avg_time =
+    <results_dir>/<encoder>/<index>/<search>/mut<rate>.parquet   (avg_time =
         embed + scan + rerank + regroup wall time of the timed repeat)
-    <topk_hits_dir>/<hits_id>/raw_read_mut_<rate>_topk<k>.parquet
+    <results_dir>/<encoder>/<index>/<search>/hits/mut<rate>.parquet
 
 and prints AUPRC / R-precision / Recall@7 (same definitions as
 print_results) with the stage timings.
@@ -34,8 +36,8 @@ import torch
 from jsonargparse import CLI
 
 from ivf_probe import accuracy
-from run_benchmark import _annotate_results, query_file_name
-from src.config import ExperimentConfig
+from run_benchmark import _annotate_results, hits_path, query_file_name, results_path
+from src.config import DONE_FILE, ExperimentConfig, IVFPQIndex, ensure_config, results_file_name, run_search_identity
 from src.dense_index import DenseIndex
 from src.topk_regroup import regroup_topk_hits
 
@@ -61,13 +63,15 @@ def main():
 
         torch.set_num_threads(args.threads)
         faiss.omp_set_num_threads(args.threads)
-    index_path = cfg.index_dir / cfg.model.index_suffix
+    index_path = cfg.model.index_path(cfg.index_dir)
+    engine_path = cfg.model.engine_path(cfg.index_dir)
+    ensure_config(engine_path, cfg.model.engine_identity(), (engine_path / DONE_FILE).exists())
     index = DenseIndex(cfg)
     t0 = time.time()
     index.load(index_path)
     print(f"index ready in {time.time() - t0:.0f}s", flush=True)
     accs = index.indexed_accessions()
-    gpu = cfg.model.use_ivfpq  # cuVS IVF-PQ engine; else faiss IVF-RaBitQ
+    gpu = isinstance(cfg.model.index, IVFPQIndex)  # cuVS IVF-PQ engine; else faiss IVF-RaBitQ
     if gpu:
         args.qbs = "0"  # no qb knob
     raw = pl.read_parquet(Path(cfg.dataset_dir) / "queries.parquet")
@@ -91,44 +95,31 @@ def main():
         for qb in [int(x) for x in args.qbs.split(",")]:
             for rerank in [int(x) for x in args.reranks.split(",")]:
                 for nprobe in [int(x) for x in args.nprobes.split(",")]:
-                    for _ in range(args.repeats):
-                        tm = {}
-                        t0 = time.time()
-                        if gpu:
-                            scores, ids = index.ivfpq.search(
-                                q, index.top_k, n_probes=nprobe, rerank=rerank, timings=tm,
-                                lut_dtype=cfg.model.ivfpq_lut,
-                            )
-                        else:
-                            scores, ids = index.ivf.search(
-                                q, index.top_k, nprobe=nprobe, rerank=rerank, qb=qb, timings=tm
-                            )
-                        hits = index._hits_from_chunk_topk(
-                            queries, ranges, torch.from_numpy(scores), torch.from_numpy(ids)
-                        )
-                        res = regroup_topk_hits(hits, accs)
-                        search_s = time.time() - t0
-                    total_s = embed_s + search_s
+                    label = f"top{index.top_k}-np{nprobe}-rr{rerank}" + ("" if gpu else f"-qb{qb}")
                     run_cfg = CLI(
                         ExperimentConfig,
                         as_positional=False,
                         args=base_args
-                        + ["--mutation_rate", str(rate)]
-                        + (
-                            ["--model.ivfpq_nprobe", str(nprobe), "--model.ivfpq_rerank", str(rerank)]
-                            if gpu
-                            else [
-                                "--model.ivf_nprobe", str(nprobe),
-                                "--model.ivf_rerank", str(rerank),
-                                "--model.ivf_qb", str(qb),
-                            ]
-                        ),
+                        + ["--mutation_rate", str(rate), "--model.search_label", label]
+                        + ["--model.index.nprobe", str(nprobe), "--model.index.rerank", str(rerank)]
+                        + ([] if gpu else ["--model.index.qb", str(qb)]),
                     )
                     index.cfg = run_cfg
-                    out = run_cfg.results_dir / run_cfg.model.experiment_id / f"raw_read_mut_{rate}.parquet"
-                    out.parent.mkdir(parents=True, exist_ok=True)
+                    index.engine.cfg = run_cfg.model.index  # the engine reads nprobe/rerank/qb from here
+                    for _ in range(args.repeats):
+                        tm = {}
+                        t0 = time.time()
+                        scores, ids = index.engine.topk_hits(q, index.top_k)
+                        tm = index.engine.last_timings
+                        hits = index._hits_from_chunk_topk(queries, ranges, scores, ids)
+                        res = regroup_topk_hits(hits, accs)
+                        search_s = time.time() - t0
+                    total_s = embed_s + search_s
+                    out_dir = results_path(run_cfg)
+                    ensure_config(out_dir, run_search_identity(run_cfg), any(out_dir.glob("mut*.parquet")) if out_dir.is_dir() else False)
+                    out = out_dir / results_file_name(rate)
                     _annotate_results(res, run_cfg, index, index_path, total_s).write_parquet(out)
-                    hp = run_cfg.topk_hits_dir / run_cfg.model.hits_id / f"raw_read_mut_{rate}_topk{index.top_k}.parquet"
+                    hp = hits_path(run_cfg)
                     hp.parent.mkdir(parents=True, exist_ok=True)
                     _annotate_results(hits, run_cfg, index, index_path, total_s).write_parquet(hp)
                     acc = accuracy(hits, gt, accs)

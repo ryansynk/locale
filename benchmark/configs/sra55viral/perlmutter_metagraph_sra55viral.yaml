@@ -8,6 +8,8 @@ model:
   name: metagraph
   executable: shifter metagraph
   k: 31
+  label: metagraph
+  search_label: default
 
 # Local bundle (locale-data list-first pipeline, 2026-09): 55 accessions,
 # 500 raw-read queries (Rq=5) drawn from 10 HBV genotype-D runs, per-rate

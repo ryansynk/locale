@@ -14,6 +14,8 @@ model:
   name: metagraph
   executable: shifter metagraph
   k: 31
+  label: metagraph
+  search_label: default
 
 # Same local bundle as perlmutter_locale_sra4571.yaml: dataset_name is not a
 # run_benchmark.DATASETS key, so nothing is downloaded over the bundle.

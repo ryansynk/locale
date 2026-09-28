@@ -3,22 +3,29 @@
 # from aligning reads to contigs, as in sra52viral).
 #
 # Same protocol as configs/sra50/perlmutter_locale_sra50v2.yaml: default top-k
-# regroup at k=100 with both-strand querying. experiment_id ends in
-# _exacttop100_bothstrands; raw hits land in results/sra55viral_topk_hits/ and
-# are reused by any later run at k <= 100.
+# regroup at k=100 with both-strand querying. results land in
+# results/sra55viral/<encoder_label>/exact/top100/ and the raw hits in its hits/
+# subdirectory, reused by any later run at k <= 100.
 #
 # Paper checkpoint (8vqiabk9/5859), encoder settings as in the sra4571 runs.
-# Layout: indexes/<dataset>/<index_suffix>, results/<dataset>/<experiment_id>.
+# Layout: indexes/<dataset>/<encoder_label>/[<index_label>/],
+# results/<dataset>/<encoder_label>/<index_label>/<search_label>/.
 model:
-  name: locale
-  checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/8vqiabk9/checkpoint5859.pth.tar
-  batch_size: 1000
-  device: cuda
-  pooling: mean
-  max_seq_len: 256
-  chunk_overlap: 150
-  top_k: 100
-  both_strands: true
+  encoder:
+    name: locale
+    checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/8vqiabk9/checkpoint5859.pth.tar
+    pooling: mean
+    max_seq_len: 256
+    chunk_overlap: 150
+    batch_size: 1000
+    device: cuda
+    both_strands: true
+  index:
+    engine: exact
+    top_k: 100
+  encoder_label: locale@8vqiabk9
+  index_label: exact
+  search_label: top100
 
 # Local bundle (locale-data list-first pipeline, 2026-09): 55 accessions,
 # 500 raw-read queries (Rq=5) drawn from 10 HBV genotype-D runs, per-rate

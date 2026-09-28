@@ -12,7 +12,7 @@
 
 # One-node GPU IVF-PQ build + timed search for a dataset whose index shards fit
 # on this node (sra50 / sra55viral / sra500). Step 1 builds the config's
-# ivfpq_num_shards shards, one srun task per GPU (skipped when present);
+# index.num_shards shards, one srun task per GPU (skipped when present);
 # step 2 runs run_benchmark --do_timing at every rate (5 searches, avg_time =
 # mean of runs 2-5, query embedding included) into results/<dataset>_timing/.
 #   sbatch -J ivfpq-sra50 slurm_scripts/perlmutter_ivfpq_build_search.sbatch configs/sra50/perlmutter_locale_sra50v2_ivfpq.yaml
@@ -21,7 +21,7 @@ set -euo pipefail
 cd /pscratch/sd/r/rsynk/locale/benchmark
 mkdir -p slurm_logs
 export PYTHONUNBUFFERED=1
-SHARDS=$(grep -E "^\s*ivfpq_num_shards:" "$CONFIG" | awk '{print $2}')
+SHARDS=$(grep -E "^\s*num_shards:" "$CONFIG" | awk '{print $2}')
 RESULTS=$(grep -E "^results_dir:" "$CONFIG" | awk '{print $2}')_timing
 read -r -a RATE_LIST <<<"${RATES:-0.0 0.05 0.1}"
 echo "=== build $SHARDS shard(s) ($(date))"

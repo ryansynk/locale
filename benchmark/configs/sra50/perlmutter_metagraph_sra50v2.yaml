@@ -5,6 +5,8 @@ model:
   name: metagraph
   executable: shifter metagraph
   k: 31
+  label: metagraph
+  search_label: default
 
 # Local bundle (locale-data list-first pipeline; the source of the HF
 # sra50-v2 upload). The name is deliberately NOT a run_benchmark.DATASETS key:

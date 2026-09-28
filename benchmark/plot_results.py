@@ -29,6 +29,7 @@ plt.rcParams.update(
 DEFAULT_SCORE = -2.0
 
 TITLE_NAMES = {
+    "esa": "ESA",
     "mmseqs": "MMseqs2",
     "llmed": "LLM-ED",
     "locale": "LOCALE",
@@ -36,23 +37,79 @@ TITLE_NAMES = {
     "dna2vec": "ESA",
 }
 
-# Paper-style display names. The leading token of the experiment id names the
-# method ("locale_<ckpt>_<step>_..." -> "LOCALE"), which pools every run of that
-# method into ONE group. The compressed / approximate LOCALE indexes are kept
-# apart, since pooling them with exact search would average an IVF-PQ run into
-# the LOCALE curve and hand the exact-search timing to the ANN point.
+# Paper-style display names. The encoder label's method name (the part before
+# "@": "locale@8vqiabk9" -> "LOCALE"; the index label for non-dense methods)
+# names the method, which pools every run of that method into ONE group. The
+# compressed / approximate LOCALE indexes are kept apart, since pooling them
+# with exact search would average an IVF-PQ run into the LOCALE curve and hand
+# the exact-search timing to the ANN point.
 MODEL_ORDER = ["LOCALE", "LOCALE+IVF-PQ", "LOCALE+RaBitQ", "MMseqs2", "LLM-ED", "ESA", "MetaGraph"]
 
+# What run_benchmark writes (see src/config.py for the label columns).
+RESULTS_SCHEMA = pl.Schema(
+    {
+        "query_id": pl.String,
+        "results": pl.List(pl.Struct({"accession": pl.String, "score": pl.Float64})),
+        "dataset": pl.String,
+        "encoder": pl.String,  # null for metagraph / mmseqs
+        "index": pl.String,
+        "search": pl.String,
+        "mutation_rate": pl.Float64,
+        "query_type": pl.String,
+        "checkpoint": pl.String,
+        "max_len": pl.Int64,
+        "checkpoint_step_num": pl.Int64,
+        "chunk_type": pl.String,
+        "avg_time": pl.Float64,
+        "index_size_gb": pl.Float64,
+    }
+)
 
-def _display_model(model: pl.Expr) -> pl.Expr:
-    base = model.str.split("_").list.get(0).replace(TITLE_NAMES)
+
+def model_key() -> pl.Expr:
+    """One string per run, "<encoder>/<index>/<search>" ("<index>/<search>" for
+    non-dense methods): the in-memory ``model`` column the tables group by."""
     return (
-        pl.when(model.str.contains("ivfpq"))
+        pl.when(pl.col("encoder").is_null())
+        .then(pl.concat_str([pl.col("index"), pl.col("search")], separator="/"))
+        .otherwise(pl.concat_str([pl.col("encoder"), pl.col("index"), pl.col("search")], separator="/"))
+        .alias("model")
+    )
+
+
+def _display_model() -> pl.Expr:
+    base = (
+        pl.when(pl.col("encoder").is_null())
+        .then(pl.col("index"))
+        .otherwise(pl.col("encoder").str.split("@").list.get(0).str.split("-").list.get(0))
+        .replace(TITLE_NAMES)
+    )
+    return (
+        pl.when(pl.col("index").str.starts_with("ivfpq"))
         .then(base + pl.lit("+IVF-PQ"))
-        .when(model.str.contains("rabitq"))
+        .when(pl.col("index").str.contains("rabitq"))
         .then(base + pl.lit("+RaBitQ"))
         .otherwise(base)
-    )
+    ).alias("model")
+
+
+def load_results(results_dirs: list[Path], exclude_models: list[str] = ()) -> pl.DataFrame:
+    """Every results parquet under the directories (hits/ and partials are not
+    results and are skipped), validated against RESULTS_SCHEMA, with the
+    ``model`` key added. Results written before run_benchmark recorded
+    index_size_gb lack that column; it is inserted as null."""
+    frames = []
+    for d in results_dirs:
+        for f in sorted(Path(d).rglob("*.parquet")):
+            if any(p == "hits" or p.startswith("partials_") for p in f.relative_to(d).parts):
+                continue
+            frames.append(pl.read_parquet(f, schema=RESULTS_SCHEMA, missing_columns="insert"))
+    if not frames:
+        raise SystemExit(f"No results parquets under {[str(d) for d in results_dirs]}")
+    data = pl.concat(frames).with_columns(model_key())
+    for pat in exclude_models:
+        data = data.filter(~pl.col("model").str.contains(pat))
+    return data
 
 
 def _drop_unscored(indices: np.ndarray, y_score: np.ndarray) -> np.ndarray:
@@ -151,7 +208,7 @@ def plot_r_precision_vs_noise_line(
     # want and exactly wrong for comparing variants of one model -- pass
     # short_model_names=False to keep the full ids apart.
     if short_model_names:
-        data = data.with_columns(_display_model(pl.col("model")))
+        data = data.with_columns(_display_model())
     data = data.with_columns(pl.col("mutation_rate") * 100)
 
     accession_order = sorted(accessions)  # canonical, stable ordering
@@ -303,7 +360,7 @@ def plot_recall_at_k_vs_noise_line(
     data = data.filter(~pl.col("model").is_in(["random", "oracle"]))
     # See plot_r_precision_vs_noise_line.
     if short_model_names:
-        data = data.with_columns(_display_model(pl.col("model")))
+        data = data.with_columns(_display_model())
     data = data.with_columns(pl.col("mutation_rate") * 100)
 
     accession_order = sorted(accessions)  # canonical, stable ordering
@@ -458,7 +515,7 @@ def plot_recall_at_k_vs_k_line(
     50-accession figure; at 500 accessions pass e.g. max_k=50.
     """
     data = data.filter(~pl.col("model").is_in(["random", "oracle"]))
-    data = data.with_columns(_display_model(pl.col("model")))
+    data = data.with_columns(_display_model())
     data = data.with_columns(pl.col("mutation_rate") * 100)
     data = data.filter(pl.col("mutation_rate") == mutation_rate)
 
@@ -609,7 +666,7 @@ def plot_r_precision_vs_time(
     mutation level. Untimed runs carry avg_time = -1 and are left out.
     """
     data = data.filter(~pl.col("model").is_in(["random", "oracle"]))
-    data = data.with_columns(_display_model(pl.col("model")))
+    data = data.with_columns(_display_model())
     data = data.with_columns(pl.col("mutation_rate") * 100)
 
     model_keys = ["model", "checkpoint", "max_len", "checkpoint_step_num", "chunk_type"]
@@ -864,8 +921,9 @@ def main(
     """extra_results_dirs: more directories of result parquets, e.g. a
     ``<dataset>_timing/`` tree whose --do_timing runs carry avg_time. A run
     present in several directories is kept once, preferring the timed copy.
-    exclude_models: substrings of experiment ids to leave out (e.g. "rabitq"
-    when only its 0% parquet exists and it would plot as a lone point).
+    exclude_models: substrings of run keys ("<encoder>/<index>/<search>") to
+    leave out (e.g. "rabitq" when only its 0% parquet exists and it would
+    plot as a lone point).
     """
     results_dirs = [Path(results_dir)] + [Path(d) for d in extra_results_dirs]
     raw_read_queries_path: Path = Path(raw_read_queries_path)
@@ -875,31 +933,7 @@ def main(
     plots_dir: Path = Path(plots_dir)
     if not plots_dir.is_dir():
         plots_dir.mkdir()
-    data = []
-    schema = pl.Schema(
-        {
-            "query_id": pl.String,
-            "results": pl.List(
-                pl.Struct({"accession": pl.String, "score": pl.Float64})
-            ),
-            "model": pl.String,
-            "mutation_rate": pl.Float64,
-            "query_type": pl.String,
-            "checkpoint": pl.String,
-            "max_len": pl.Int64,
-            "checkpoint_step_num": pl.Int64,
-            "chunk_type": pl.String,
-            "avg_time": pl.Float64,
-            "index_size_gb": pl.Float64,
-        }
-    )
-    for d in results_dirs:
-        for f in sorted(d.rglob("*.parquet")):
-            df = pl.read_parquet(f, schema=schema)
-            data.append(df)
-    data = pl.concat(data)
-    for pat in exclude_models:
-        data = data.filter(~pl.col("model").str.contains(pat))
+    data = load_results(results_dirs, exclude_models)
     # The same run can appear in results/<ds>/ (accuracy) and results/<ds>_timing/
     # (timed): keep one copy per (run, rate, query), the timed one, so the
     # bootstrap does not see every query twice.

@@ -1,5 +1,4 @@
 import os
-import re
 import shutil
 import sys
 import time
@@ -9,13 +8,17 @@ import polars as pl
 from huggingface_hub import snapshot_download
 from jsonargparse import CLI
 from src.config import (
-    DenseConfig,
+    DONE_FILE,
+    DenseMethod,
     ExperimentConfig,
     MetagraphConfig,
     MMseqs2Config,
+    ensure_config,
+    read_config,
+    results_file_name,
+    run_search_identity,
 )
 from src.dense_index import DenseIndex
-from src.rabitq import build_rabitq_index
 from src.download_accessions import download_accessions
 from src.metagraph_index import MetagraphIndex
 from src.mmseqs2_index import MMseqs2Index
@@ -69,7 +72,7 @@ def _wait_for_shards(
     elapsed = 0
     while elapsed < timeout:
         if all(
-            (index_path / f"shard_{r}" / ".done").exists() for r in range(num_nodes)
+            (index_path / f"shard_{r}" / DONE_FILE).exists() for r in range(num_nodes)
         ):
             return
         time.sleep(poll_interval)
@@ -88,28 +91,32 @@ def _wait_for_files(paths: list[Path], timeout: int = 7200, poll_interval: int =
     raise TimeoutError(f"Timed out after {timeout}s waiting for: {missing}")
 
 
+def _partials_dir(cfg: ExperimentConfig, queries: pl.DataFrame) -> Path:
+    """Where a multi-node search keeps per-rank partials until node 0 merges
+    them: under the run's results directory, keyed by the query draw, so an
+    interrupted run resumes instead of rescoring."""
+    return results_path(cfg) / (
+        f"partials_mut{cfg.mutation_rate:.2f}_n{len(queries)}_seed{cfg.random_seed}"
+    )
+
+
 def _multi_node_search(
     cfg: ExperimentConfig,
     index: DenseIndex,
     queries: pl.DataFrame,
-    index_path: Path,
     node_rank: int,
     num_nodes: int,
 ) -> pl.DataFrame | None:
-    """Shard the streaming dense search across nodes; node 0 merges partials.
+    """Shard the exhaustive dense search across nodes; node 0 merges partials.
 
     Every node scores a stride of the accessions and atomically writes a
     partial result; node 0 waits for all partials and reassembles each query's
     results in index order, identical to a single-node search. Returns the
-    merged results on node 0, None on every other rank. Partials are keyed by
-    the search parameters and reused when present, so an interrupted run
-    resumes instead of rescoring.
+    merged results on node 0, None on every other rank.
     """
     acc_names = index.indexed_accessions()
     acc_indices = list(range(node_rank, len(acc_names), num_nodes))
-    partials_dir = index_path / (
-        f"search_partials_mut{cfg.mutation_rate}_n{len(queries)}_seed{cfg.random_seed}"
-    )
+    partials_dir = _partials_dir(cfg, queries)
     partials_dir.mkdir(parents=True, exist_ok=True)
     partial_path = partials_dir / f"rank_{node_rank}_of_{num_nodes}.parquet"
 
@@ -150,34 +157,21 @@ def _multi_node_search(
     return results
 
 
-def _topk_engine_tag(cfg: ExperimentConfig) -> str:
-    assert isinstance(cfg.model, DenseConfig)
-    if cfg.model.use_rabitq:
-        return "rabitq1bit"
-    if cfg.model.use_ann:
-        return "cagra"
-    if cfg.model.use_ivf:
-        return "ivf"
-    if cfg.model.use_ivfpq:
-        return "ivfpq"
-    return "exact"
+def results_path(cfg: ExperimentConfig) -> Path:
+    return cfg.model.results_path(cfg.results_dir)
 
 
-def topk_hits_path(cfg: ExperimentConfig, k: int | None = None) -> Path:
-    """Where a run persists its raw top-k hits (see topk_hits_dir).
+def hits_path(cfg: ExperimentConfig) -> Path:
+    """Where a run persists its raw top-k hits: <results_path>/hits/mut<rate>.parquet
+    (K is in the search config.json)."""
+    return results_path(cfg) / "hits" / results_file_name(cfg.mutation_rate)
 
-    The directory is keyed by hits_id (encoder, engine, strands -- not k), the
-    file by mutation rate and k, so runs at different k share a directory and
-    find_cached_hits can serve a smaller k from a larger file.
-    """
-    assert isinstance(cfg.model, DenseConfig) and cfg.model.hits_id is not None
-    assert cfg.topk_hits_dir is not None
-    k = cfg.model.top_k if k is None else k
-    return (
-        cfg.topk_hits_dir
-        / cfg.model.hits_id
-        / f"raw_read_mut_{cfg.mutation_rate}_topk{k}.parquet"
-    )
+
+def _hits_key(search_identity: dict) -> dict:
+    """The part of a search identity a hits file must share to be reusable:
+    everything but k and the query draw (coverage is checked by query_id)."""
+    return {k: v for k, v in search_identity.items()
+            if k not in ("top_k", "num_queries", "random_seed")}
 
 
 def find_cached_hits(
@@ -185,22 +179,29 @@ def find_cached_hits(
 ) -> pl.DataFrame | None:
     """Persisted hits that answer this run without a scan, or None.
 
-    A hits file saved at K serves any run of the same hits_id at k <= K whose
+    A hits file saved at K under any search label of the same encoder and
+    index (sibling directories of this run's) serves a run at k <= K whose
     queries it covers: the top-k regroup ranking depends only on the first k
     hits, so the file is truncated per query and the rest is identical to a
     fresh scan. The largest qualifying K is used. Returns the hits frame
     (query_id, hits) in ``queries`` order.
     """
-    assert isinstance(cfg.model, DenseConfig)
-    k = cfg.model.top_k
-    hits_dir = topk_hits_path(cfg).parent
+    assert isinstance(cfg.model, DenseMethod)
+    k = cfg.model.index.top_k
+    want = run_search_identity(cfg)
+    own = results_path(cfg)
     candidates = []
-    for path in hits_dir.glob(f"raw_read_mut_{cfg.mutation_rate}_topk*.parquet"):
-        m = re.fullmatch(r".*_topk(\d+)\.parquet", path.name)
-        if m and int(m.group(1)) >= k:
-            candidates.append((int(m.group(1)), path))
+    for d in sorted(own.parent.iterdir()) if own.parent.is_dir() else []:
+        saved = read_config(d) if d.is_dir() else None
+        if saved is None or "top_k" not in saved:
+            continue
+        if _hits_key(saved) != _hits_key(want) or saved["top_k"] < k:
+            continue
+        path = d / "hits" / results_file_name(cfg.mutation_rate)
+        if path.exists():
+            candidates.append((saved["top_k"], d == own, path))
     wanted = queries.select("query_id")
-    for saved_k, path in sorted(candidates, reverse=True):
+    for saved_k, _, path in sorted(candidates, reverse=True):
         saved = pl.read_parquet(path, columns=["query_id", "hits"])
         if wanted.join(saved, on="query_id", how="anti").height:
             continue  # does not cover every requested query
@@ -215,32 +216,24 @@ def _multi_node_topk_hits(
     cfg: ExperimentConfig,
     index: DenseIndex,
     queries: pl.DataFrame,
-    index_path: Path,
     node_rank: int,
     num_nodes: int,
 ) -> pl.DataFrame | None:
     """Shard a vector-level top-k scan across nodes; node 0 merges the hits.
 
-    Unlike the streaming search, which deals out accessions, this splits the
+    Unlike the exhaustive search, which deals out accessions, this splits the
     index's *vector rows* into num_nodes contiguous, equal ranges (the scan is
     a flat matmul over rows, so this balances the read exactly). Every node
     writes its per-query top-k hits over its range; node 0 unions the partials
     and re-takes each query's global top-k, which equals a single-node scan
-    because each partial is complete over a disjoint range. Works for the
-    exact fp32 scan and the 1-bit RaBitQ scan alike (index.topk_hits picks
-    the engine; with RaBitQ each node loads only its range's codes). Returns
-    the merged hits frame on node 0, None elsewhere. Partials are keyed by
-    engine, top_k, strands and the search parameters and reused when present,
-    so a timed-out run resumes.
+    because each partial is complete over a disjoint range. Works for every
+    SHARDABLE engine (exact scan, RaBitQ codes: each node loads only its
+    range). Returns the merged hits frame on node 0, None elsewhere.
     """
     n_vecs = index.num_vectors()
     bounds = [n_vecs * r // num_nodes for r in range(num_nodes + 1)]
     vec_range = (bounds[node_rank], bounds[node_rank + 1])
-    strands = "_bothstrands" if index.both_strands else ""
-    partials_dir = index_path / (
-        f"{_topk_engine_tag(cfg)}_top{index.top_k}{strands}"
-        f"_partials_mut{cfg.mutation_rate}_n{len(queries)}_seed{cfg.random_seed}"
-    )
+    partials_dir = _partials_dir(cfg, queries)
     partials_dir.mkdir(parents=True, exist_ok=True)
     partial_path = partials_dir / f"rank_{node_rank}_of_{num_nodes}.parquet"
 
@@ -272,26 +265,28 @@ def _annotate_results(
     df: pl.DataFrame, cfg: ExperimentConfig, index, index_path: Path, avg_time: float
 ) -> pl.DataFrame:
     """Attach the run metadata columns print_results.py's schema expects."""
+    labels = cfg.model.labels()
+    encoder = getattr(cfg.model, "encoder", None)
+    ckpt, step = encoder.checkpoint() if encoder is not None else (None, None)
+    max_len = encoder.max_seq_len if encoder is not None else None
     df = df.with_columns(pl.lit(index.index_size_gb(index_path)).alias("index_size_gb"))
     df = df.with_columns(pl.lit(avg_time).alias("avg_time"))
-    df = df.with_columns(pl.lit(str(cfg.model)).alias("model"))
+    df = df.with_columns(pl.lit(cfg.dataset_name).alias("dataset"))
+    df = df.with_columns(pl.lit(labels["encoder"], dtype=pl.String).alias("encoder"))
+    df = df.with_columns(pl.lit(labels["index"], dtype=pl.String).alias("index"))
+    df = df.with_columns(pl.lit(labels["search"], dtype=pl.String).alias("search"))
     df = df.with_columns(pl.lit(cfg.mutation_rate).alias("mutation_rate"))
     df = df.with_columns(pl.lit("raw_read").alias("query_type"))  # legacy
-    df = df.with_columns(
-        pl.lit(cfg.model.checkpoint, dtype=pl.String).alias("checkpoint")
-    )
-    df = df.with_columns(pl.lit(cfg.model.max_len, dtype=pl.Int64).alias("max_len"))
-    df = df.with_columns(
-        pl.lit(cfg.model.checkpoint_step_num, dtype=pl.Int64).alias(
-            "checkpoint_step_num"
-        )
-    )
+    df = df.with_columns(pl.lit(ckpt, dtype=pl.String).alias("checkpoint"))
+    df = df.with_columns(pl.lit(max_len, dtype=pl.Int64).alias("max_len"))
+    df = df.with_columns(pl.lit(step, dtype=pl.Int64).alias("checkpoint_step_num"))
     df = df.with_columns(pl.lit("stride").alias("chunk_type"))  # legacy
     return df
 
 
 def main(cfg: ExperimentConfig):
-    index_path: Path = cfg.index_dir / cfg.model.index_suffix
+    method = cfg.model
+    index_path: Path = method.index_path(cfg.index_dir)
 
     # Download datasets and queries. A dataset_name not in DATASETS is a local
     # dataset: dataset_dir must already hold accs.txt and the per-rate query
@@ -334,11 +329,11 @@ def main(cfg: ExperimentConfig):
     # subsample queries if needed
     queries = queries.sample(min(cfg.num_queries, len(queries)), seed=cfg.random_seed)
 
-    if isinstance(cfg.model, DenseConfig):
+    if isinstance(method, DenseMethod):
         index = DenseIndex(cfg)
-    elif isinstance(cfg.model, MetagraphConfig):
+    elif isinstance(method, MetagraphConfig):
         index = MetagraphIndex(cfg)
-    elif isinstance(cfg.model, MMseqs2Config):
+    elif isinstance(method, MMseqs2Config):
         index = MMseqs2Index(cfg)
     else:
         raise ValueError("Unknown model config")
@@ -346,14 +341,19 @@ def main(cfg: ExperimentConfig):
     node_rank = int(os.environ.get("SLURM_NODEID", "0"))
     num_nodes = int(os.environ.get("SLURM_NNODES", "1"))
 
+    # The label's directory must have been built under this identity (or be
+    # new). Written before the build so every rank of a multi-node job, and
+    # every later run, can check it.
+    ensure_config(index_path, method.index_identity(), (index_path / DONE_FILE).exists())
+
     # Build index if not already built
-    if not (index_path / ".done").exists():
+    if not (index_path / DONE_FILE).exists():
         if num_nodes > 1:
             node_accessions = accession_paths[node_rank::num_nodes]
             shard_path = index_path / f"shard_{node_rank}"
             # A shard marked .done was fully built by a previous run at the
             # same node count; skipping it makes timed-out runs resumable.
-            if (shard_path / ".done").exists():
+            if (shard_path / DONE_FILE).exists():
                 print(f"[Node {node_rank}/{num_nodes}] Shard already built, skipping.")
             else:
                 print(
@@ -361,7 +361,7 @@ def main(cfg: ExperimentConfig):
                 )
                 index.build(node_accessions, shard_path)
                 index.save(shard_path)
-                (shard_path / ".done").touch()
+                (shard_path / DONE_FILE).touch()
 
             if cfg.build_only:
                 if node_rank == 0:
@@ -379,35 +379,44 @@ def main(cfg: ExperimentConfig):
                 # and a sharded search ran in one job, backbone sweep
                 # 2026-09-23.) The merged index appears when node 0 marks it.
                 print(f"[Node {node_rank}] Shard saved. Waiting for node 0 to merge...")
-                _wait_for_files([index_path / ".done"], timeout=8 * 3600)
+                _wait_for_files([index_path / DONE_FILE], timeout=8 * 3600)
             else:
                 print(
                     f"[Node 0] Waiting for {num_nodes - 1} other node(s) to finish..."
                 )
                 _wait_for_shards(index_path, num_nodes)
                 type(index).merge_shards(index_path, num_nodes)
-                (index_path / ".done").touch()
+                (index_path / DONE_FILE).touch()
         else:
             index.build(accession_paths, index_path)
             index.save(index_path)
-            (index_path / ".done").touch()
+            (index_path / DONE_FILE).touch()
+
+    # Dense engine artifact (codes / shards; a no-op for the exact scans).
+    # Every rank calls build: engines that shard their build across ranks
+    # coordinate inside it and return once the index is complete.
+    dense = isinstance(method, DenseMethod)
+    if dense:
+        engine_path = method.engine_path(cfg.index_dir)
+        ensure_config(engine_path, method.engine_identity(), (engine_path / DONE_FILE).exists())
+        if not (engine_path / DONE_FILE).exists():
+            index.engine.build(index_path, engine_path, node_rank, num_nodes)
+            if node_rank == 0:
+                (engine_path / DONE_FILE).touch()
 
     if cfg.no_search or cfg.build_only:
         print("[no_search]: Index built. Exiting.")
         sys.exit(0)
 
-    # Dense scoring protocols (DenseConfig; ESA/dna2vec and LLM-ED included):
-    # the default top-k regroup retrieves vector hits with the exact fp32 scan
-    # (or RaBitQ / CAGRA), the exhaustive reference scores every accession.
-    # The exhaustive scan shards accessions across nodes and the two vector
-    # scans shard vector rows; CAGRA and every non-dense method (metagraph,
-    # mmseqs, centroid) search on node 0 alone.
-    dense = isinstance(cfg.model, DenseConfig)
-    dense_exhaustive = dense and cfg.model.exhaustive
-    topk_engine = dense and not cfg.model.exhaustive
-    shardable_topk = topk_engine and not (
-        cfg.model.use_ann or cfg.model.use_ivf or cfg.model.use_ivfpq
-    )
+    # Dense scoring protocols (ESA/dna2vec and LLM-ED included): the default
+    # top-k regroup retrieves vector hits with the engine, the exhaustive
+    # reference scores every accession. The exhaustive scan shards
+    # accessions across nodes and SHARDABLE engines shard vector rows; the
+    # other engines and every non-dense method (metagraph, mmseqs) search on
+    # node 0 alone.
+    dense_exhaustive = dense and index.exhaustive
+    topk_engine = dense and not index.exhaustive
+    shardable_topk = topk_engine and index.engine.SHARDABLE
     multi_node_search = num_nodes > 1 and (dense_exhaustive or shardable_topk)
     if num_nodes > 1 and not multi_node_search and node_rank != 0:
         print(
@@ -415,25 +424,19 @@ def main(cfg: ExperimentConfig):
         )
         sys.exit(0)
 
-    if isinstance(cfg.model, DenseConfig) and cfg.model.use_rabitq and num_nodes > 1:
-        # Quantize the fbin into one shard per node (resumable; a no-op once
-        # meta.json exists). Every rank returns with the index complete, so
-        # load() below finds it and each node then searches its own row range.
-        build_rabitq_index(
-            index_path / "embeddings.fbin",
-            index_path / "rabitq",
-            rank=node_rank,
-            num_ranks=num_nodes,
-            centroid_sample_rows=cfg.model.rabitq_sample_rows,
-        )
+    out_dir = results_path(cfg)
+    ensure_config(
+        out_dir, run_search_identity(cfg), any(out_dir.glob("mut*.parquet")) if out_dir.is_dir() else False
+    )
 
     index.load(index_path)
 
     hits: pl.DataFrame | None = None
+    cached = None
     if topk_engine and not cfg.do_timing:
         # Compute-once, re-score-many: a scan yields each query's raw top_k
         # vector hits, which are persisted and regrouped into the standard
-        # results. A later run at a smaller k (same encoder/engine/strands)
+        # results. A later run at a smaller k (same encoder/index/strands)
         # finds them and skips the scan entirely.
         cached = find_cached_hits(cfg, queries)
         if cached is not None:
@@ -441,9 +444,7 @@ def main(cfg: ExperimentConfig):
                 sys.exit(0)
             hits = cached
         elif multi_node_search:
-            hits = _multi_node_topk_hits(
-                cfg, index, queries, index_path, node_rank, num_nodes
-            )
+            hits = _multi_node_topk_hits(cfg, index, queries, node_rank, num_nodes)
             if hits is None:
                 sys.exit(0)
         else:
@@ -453,9 +454,7 @@ def main(cfg: ExperimentConfig):
     elif multi_node_search:
         if cfg.do_timing:
             raise ValueError("do_timing is not supported with multi-node search")
-        results = _multi_node_search(
-            cfg, index, queries, index_path, node_rank, num_nodes
-        )
+        results = _multi_node_search(cfg, index, queries, node_rank, num_nodes)
         if results is None:
             sys.exit(0)
         avg_time = -1.0
@@ -476,23 +475,16 @@ def main(cfg: ExperimentConfig):
         avg_time = -1.0
 
     results = _annotate_results(results, cfg, index, index_path, avg_time)
-    output_path: Path = (
-        cfg.results_dir
-        / cfg.model.experiment_id
-        / f"raw_read_mut_{cfg.mutation_rate}.parquet"
-    )
+    output_path: Path = out_dir / results_file_name(cfg.mutation_rate)
     output_path.parent.mkdir(exist_ok=True, parents=True)
     results.write_parquet(output_path)
 
     if hits is not None and cached is None:
-        # Lives outside results_dir (see topk_hits_dir); a cached run leaves
-        # the larger file it read from in place.
-        hits_path = topk_hits_path(cfg)
-        hits_path.parent.mkdir(exist_ok=True, parents=True)
-        _annotate_results(hits, cfg, index, index_path, avg_time).write_parquet(
-            hits_path
-        )
-        print(f"Wrote top-{cfg.model.top_k} vector hits -> {hits_path}")
+        # A cached run leaves the larger file it read from in place.
+        hp = hits_path(cfg)
+        hp.parent.mkdir(exist_ok=True, parents=True)
+        _annotate_results(hits, cfg, index, index_path, avg_time).write_parquet(hp)
+        print(f"Wrote top-{index.top_k} vector hits -> {hp}")
 
 
 if __name__ == "__main__":

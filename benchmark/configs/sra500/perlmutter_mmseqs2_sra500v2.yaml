@@ -7,6 +7,8 @@ model:
   name: mmseqs
   executable: /pscratch/sd/r/rsynk/mmseqs/bin/mmseqs
   max_seqs: 300
+  label: mmseqs
+  search_label: default
 
 # Same local bundle as perlmutter_locale_sra500v2.yaml: dataset_name is not a
 # run_benchmark.DATASETS key, so nothing is downloaded over the bundle.

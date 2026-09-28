@@ -24,7 +24,7 @@ mkdir -p slurm_logs
 
 export PYTHONUNBUFFERED=1
 
-INDEX_PATH=indexes_sra4571/locale/8vqiabk9/5859/maxlen256_poolmean_chunkstride
+INDEX_PATH=indexes/sra4571/locale@8vqiabk9
 NUM_SHARDS=${1:-32}
 
 # Stripe the merged file across OSTs before it is created; a stripe-1 file

@@ -29,20 +29,22 @@ The following tools must be available on your `PATH`, or given as an absolute pa
 | `mmseqs` | `mmseqs2_index.py` |
 
 > **Metagraph on Perlmutter:** Metagraph must run inside a container. Add `--image=ghcr.io/ratschlab/metagraph:master` to your `salloc` command, and set `executable: shifter metagraph`.
->
-> **Metagraph on Nexus:** a native build is used directly; see `configs/nexus_metagraph.yaml`.
 
 ---
 
 ## Methods
 
+Configs live under `configs/<dataset>/` (`sra50`, `sra500`, `sra4571`,
+`sra55viral`) plus the checkpoint sweeps `configs/ablation_sweep/` and
+`configs/backbone_sweep/`. Per dataset:
+
 | Config | Method | Notes |
 |---|---|---|
-| `locale_config.yaml` | LOCALE | This repository |
-| `metagraph_config.yaml` | Metagraph | k-mer graph baseline |
-| `perlmutter_mmseqs2.yaml` | MMseqs2 | Sequence alignment baseline |
-| `nexus_locale.yaml` | LOCALE | Nexus paths |
-| `nexus_metagraph.yaml` | Metagraph | Nexus paths, native binary |
+| `perlmutter_locale_*.yaml` | LOCALE | This repository; `_ivfpq` / `_rabitq` / `_ivf` variants swap the index engine |
+| `perlmutter_esa_*.yaml` | ESA (dna2vec) | Embed-Search-Align encoder, same protocol |
+| `perlmutter_llmed_*.yaml` | LLM-ED | Same protocol |
+| `perlmutter_metagraph_*.yaml` | Metagraph | k-mer graph baseline |
+| `perlmutter_mmseqs2_*.yaml` | MMseqs2 | Sequence alignment baseline |
 
 ---
 
@@ -52,16 +54,15 @@ The following tools must be available on your `PATH`, or given as an absolute pa
 
 ```bash
 uv run python run_benchmark.py \
-  --config configs/nexus_locale.yaml \
-  --model.checkpoint_path /path/to/checkpoint.pth.tar \
-  --model.pooling mean \
-  --model.max_seq_len 256 \
+  --config configs/sra50/perlmutter_locale_sra50v2.yaml \
+  --model.encoder.checkpoint_path /path/to/checkpoint.pth.tar \
+  --model.encoder_label locale@myrun \
   --mutation_rate 0.0
 ```
 
 `--mutation_rate` selects a pre-mutated query file from the dataset bundle, `queries_mut<rate>.parquet` (0.00 / 0.05 / 0.10; written by `locale-data/benchmark/mutate_queries.py` with mutation-simulator). The benchmark itself never mutates sequences, so every run at a rate searches identical queries.
 
-Results are written to `<results_dir>/<experiment_id>/raw_read_mut_<mutation_rate>.parquet`, where `experiment_id` encodes the method, checkpoint, and chunking config.
+Results are written to `<results_dir>/<encoder_label>/<index_label>/<search_label>/mut<mutation_rate>.parquet` (see "Encoder + index" below).
 
 Use `--num_queries` to subsample (default 1000, capped at the dataset size) and `--no_search` to build the index and exit.
 
@@ -70,53 +71,67 @@ Use `--num_queries` to subsample (default 1000, capped at the dataset size) and 
 `run_benchmark.py` has built-in SLURM-aware sharding. When run with `srun` across multiple nodes, each node builds a shard of the index independently, then node 0 waits for all shards and merges them before running search.
 
 ```bash
-srun uv run python run_benchmark.py --config configs/nexus_locale.yaml ...
+srun uv run python run_benchmark.py --config configs/sra500/perlmutter_locale_sra500v2.yaml ...
 ```
 
-An index is rebuilt only when `<index_dir>/<index_suffix>/.done` is absent, so reruns reuse existing indexes.
+An index is rebuilt only when `<index_dir>/<encoder_label>/.done` is absent, so reruns reuse existing indexes.
+
+### Encoder + index
+
+A dense method is an encoder plus an index (`model.encoder` and
+`model.index` in the yaml; `src/config.py`). Encoders write
+`<index_dir>/<encoder_label>/embeddings.fbin` (+ `meta.parquet`); indexes read
+it and keep their own artifact under `<index_dir>/<encoder_label>/<index_label>/`.
+Results land in `<results_dir>/<encoder_label>/<index_label>/<search_label>/`
+(`mut<rate>.parquet`, raw vector hits in `hits/`). Labels are directory
+names chosen in the yaml; `config.json` in each directory is the truth
+(encoder identity, engine + `BUILD` fields, engine + `SEARCH` fields +
+strands + query draw) and is checked on load: a run whose config differs
+from what a label was built or searched under is refused. Non-dense methods
+(metagraph, mmseqs) have no encoder level: `<index_dir>/<label>/` and
+`<results_dir>/<label>/<search_label>/`. To add an index engine: one module
+with `build/load/topk_hits/size_gb` (see `src/engines.py`), one dataclass with
+`BUILD`/`SEARCH` in `src/config.py`, one line in `make_engine`.
 
 ### Scoring protocol (dense methods: LOCALE, ESA/dna2vec, LLM-ED, ...)
 
 All dense methods share `DenseIndex`, so these settings apply to every
-`DenseConfig` run. Index building is unaffected: every protocol reads the same
-`<index_dir>/<index_suffix>/` and the `.done` marker logic is unchanged.
+`DenseMethod` run. Index building is unaffected: every protocol reads the same
+`<index_dir>/<encoder_label>/` and the `.done` marker logic is unchanged.
 
-**Default: top-k regroup.** Each query's `model.top_k` (default 100) nearest
-index *vectors* are retrieved, grouped by accession, each accession is scored
-by its max hit and the accessions are ranked; accessions with no hit get the
-miss sentinel (-2.0) and rank below every scored one. The vector engine is
-the exact fp32 scan unless `model.use_rabitq` (1-bit RaBitQ codes) or
-`model.use_ann` (CAGRA graph) is set. `experiment_id` gets an engine suffix
-(`_exacttop<k>`, `_rabitq1bit_top<k>`, `_cagra_top<k>`) so the results never
-overwrite an exhaustive run's.
+**Default: top-k regroup.** Each query's `model.index.top_k` (default 100)
+nearest index *vectors* are retrieved, grouped by accession, each accession is
+scored by its max hit and the accessions are ranked; accessions with no hit
+get the miss sentinel (-2.0) and rank below every scored one. The vector
+engine is `model.index.engine`: `exact` (fp32 scan), `rabitq` (1-bit RaBitQ
+codes), `ivfpq` (cuVS GPU IVF-PQ) or `ivfrabitq` (faiss IVF + RaBitQ). Each
+index label has its own results subtree, so the results never overwrite an
+exhaustive run's.
 
 **Persisted hits and k-sweeps.** The raw hits are written to
-`<topk_hits_dir>/<hits_id>/raw_read_mut_<rate>_topk<k>.parquet`: one row per
-query with a score-descending list of `{accession, score, vector_id}` structs
-plus the run metadata columns. `hits_id` is the `experiment_id` without k, so
-every k of one encoder/engine/strands shares the directory, and a run whose
-`top_k` is at most a saved file's k (and whose queries it covers) loads and
+`<results_dir>/<encoder>/<index>/<search>/hits/mut<rate>.parquet`: one row
+per query with a score-descending list of `{accession, score, vector_id}`
+structs plus the run metadata columns; k is in the search `config.json`. A
+run whose `top_k` is at most a sibling search label's k (same encoder,
+index, strands and engine search settings; queries covered) loads and
 truncates that file instead of scanning. A k-sweep is therefore one scan at
-the largest k, then reruns of the same config at smaller k, each producing its
-own `results_dir/<experiment_id>/`. `topk_hits_dir` defaults to
-`<results_dir>_topk_hits`, deliberately outside `results_dir`, whose parquets
-`print_results.py` reads with a strict schema. Timing runs (`--do_timing`)
-always search and never persist. When several models share a first-token
-display name (`locale_...`), `print_results.py` keeps the full ids apart in
+the largest k, then reruns at smaller k under their own `search_label`.
+`print_results.py` skips `hits/` when it collects results. Timing runs
+(`--do_timing`) always search and never persist. When several runs share a
+display name (`LOCALE`), `print_results.py` keeps the full run keys apart in
 its tables instead of pooling them (`--full_model_names` overrides).
 
-**Reference: exhaustive.** `model.exhaustive: true` scores every accession by
-the max over all its vectors (the original full-dense scan). It keeps the bare
-`experiment_id`, which is what the existing baseline result directories were
-written under. No hits are persisted.
+**Reference: exhaustive.** `model.index.engine: exhaustive` scores every
+accession by the max over all its vectors (the original full-dense scan). No
+hits are persisted.
 
-**Both strands.** `model.both_strands: true` (off by default) also embeds each
-query's reverse complement, retrieves `top_k` hits for both, unions the two
-lists (deduplicated by vector, max score, cut back to `top_k`) and then
-regroups as above; the timing runs include the second embedding. Under
-`exhaustive` the accession keeps the better of its two strand scores. Appends
-`_bothstrands` to `experiment_id` and `hits_id`. Metagraph and MMseqs2 already
-see both strands and ignore the flag. Example:
+**Both strands.** `model.encoder.both_strands: true` (the default) also
+embeds each query's reverse complement, retrieves `top_k` hits for both,
+unions the two lists (deduplicated by vector, max score, cut back to `top_k`)
+and then regroups as above; the timing runs include the second embedding.
+Under `exhaustive` the accession keeps the better of its two strand scores.
+It is part of the search identity (`config.json`), not the index's. Metagraph
+and MMseqs2 already see both strands and have no such flag. Example:
 `configs/sra4571/perlmutter_locale_sra4571_bothstrands.yaml`.
 
 `model.exact_search: true` in older configs is accepted as a no-op (that
@@ -141,15 +156,17 @@ With the index built, a multi-node `srun` also shards the search. The default
 top-k protocol has each node scan an equal range of vector *rows* (exact fp32
 or RaBitQ) and node 0 merge the per-query top-k lists; the exhaustive
 protocol deals accessions out across nodes and node 0 reassembles the
-per-accession scores. CAGRA (`use_ann`) searches on node 0 alone. A run that
-finds cached hits skips the scan on every node.
+per-accession scores. Engines that hold the whole index on one node (IVF-PQ,
+IVF-RaBitQ) search on node 0 alone. A run that finds cached hits skips the
+scan on every node.
 
-With `model.use_rabitq: true` the vector-level path runs over 1-bit RaBitQ
-codes instead of fp32 rows. The codes are built once into `<index>/rabitq/`,
-one shard per node when the build itself runs under a multi-node `srun` (the
-centroid is estimated from `model.rabitq_sample_rows` sampled rows rather than
-a full pass), and at search time each node loads only its row range of packed
-codes onto its GPUs (~96 B/vector at 768 dims).
+With `model.index.engine: rabitq` the vector-level path runs over 1-bit
+RaBitQ codes instead of fp32 rows. The codes are built once into
+`<index_dir>/<encoder_label>/<index_label>/`, one shard per node when the
+build itself runs under a multi-node `srun` (the centroid is estimated from
+`model.index.sample_rows` sampled rows rather than a full pass), and at
+search time each node loads only its row range of packed codes onto its GPUs
+(~96 B/vector at 768 dims).
 
 ### Single-node IVF search (sra4571 scale)
 

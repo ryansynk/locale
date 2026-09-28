@@ -6,7 +6,7 @@
 # directory differ ONLY in checkpoint_path, so the columns are comparable.
 #
 # Protocol: default top-k regroup at k=100 with both-strand querying, same as
-# configs/perlmutter_locale_sra50v2.yaml. experiment_id encodes the run id, so
+# configs/perlmutter_locale_sra50v2.yaml. encoder_label names the run id, so
 # every rung gets its own results/ and indexes/ subtree.
 #
 # checkpoint_path is the Perlmutter mirror of the Nexus ladder checkpoint
@@ -16,15 +16,21 @@
 # --mutation_rate (0.0 / 0.05 / 0.1) is the eval-noise axis; the value below is
 # only the default.
 model:
-  name: locale
-  checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/7tr6j50g/checkpoint11718.pth.tar
-  batch_size: 1000
-  device: cuda
-  pooling: mean
-  max_seq_len: 256
-  chunk_overlap: 150
-  top_k: 100
-  both_strands: true
+  encoder:
+    name: locale
+    checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/7tr6j50g/checkpoint11718.pth.tar
+    pooling: mean
+    max_seq_len: 256
+    chunk_overlap: 150
+    batch_size: 1000
+    device: cuda
+    both_strands: true
+  index:
+    engine: exact
+    top_k: 100
+  encoder_label: locale@7tr6j50g
+  index_label: exact
+  search_label: top100
 
 # Local bundle, see configs/perlmutter_locale_sra50v2.yaml for why the name is
 # not a run_benchmark.DATASETS key.

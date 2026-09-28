@@ -1,8 +1,9 @@
 """The two search-protocol changes of 2026-09-22, on CPU with toy encoders.
 
 1. Top-k regroup is the default scoring path and the raw hits are persisted:
-   a later run at a smaller k must find them (find_cached_hits) and produce
-   the same results and recall as a fresh search at that k.
+   a later run at a smaller k (its own search label, same encoder/index)
+   must find them (find_cached_hits) and produce the same results and recall
+   as a fresh search at that k.
 2. Both-strand querying for dense methods: on a synthetic set where half the
    queries are reverse-complemented, both-strand recall must be >= (and here
    strictly >) forward-only recall.
@@ -22,8 +23,18 @@ import torch.nn.functional as F
 
 import run_benchmark
 from plot_results import recall_at_k_per_query
-from src.config import DenseConfig, ExperimentConfig
+from src.config import (
+    DenseMethod,
+    EncoderConfig,
+    ExactIndex,
+    ExhaustiveIndex,
+    ExperimentConfig,
+    ensure_config,
+    run_search_identity,
+)
 from src.dense_index import DenseIndex, reverse_complement
+from src.exact import ExactEngine
+from src.exhaustive import ExhaustiveEngine
 from src.topk_regroup import MISS_SCORE, regroup_topk_hits
 
 # --------------------------------------------------------------------------- #
@@ -31,9 +42,16 @@ from src.topk_regroup import MISS_SCORE, regroup_topk_hits
 # --------------------------------------------------------------------------- #
 
 
-def _cfg(tmp_path: Path, **model_kwargs) -> ExperimentConfig:
+def _cfg(tmp_path: Path, top_k: int = 100, both_strands: bool = False) -> ExperimentConfig:
+    strands = "" if both_strands else "-fwd"
     return ExperimentConfig(
-        model=DenseConfig(name="dna2vec", device="cpu", **model_kwargs),
+        model=DenseMethod(
+            encoder=EncoderConfig(name="dna2vec", device="cpu", both_strands=both_strands),
+            index=ExactIndex(top_k=top_k),
+            encoder_label="esa",
+            index_label="exact",
+            search_label=f"top{top_k}{strands}",
+        ),
         dataset_name="synthetic",
         dataset_dir=None,
         index_dir=tmp_path / "index",
@@ -103,17 +121,21 @@ def _synthetic_index(
 
     index = DenseIndex.__new__(DenseIndex)
     index.no_search = False
-    index.k = 10
-    index.use_ann = False
-    index.use_rabitq = False
     index.exhaustive = flags.get("exhaustive", False)
     index.top_k = flags.get("top_k", 5)
     index.both_strands = flags.get("both_strands", False)
-    index.all_embeddings = torch.cat(rows)
+    index.engine = (
+        ExhaustiveEngine(ExhaustiveIndex())
+        if index.exhaustive
+        else ExactEngine(ExactIndex(top_k=index.top_k))
+    )
+    index.engine.all_embeddings = torch.cat(rows)
+    index.engine.fbin_path = None
+    index.engine.devices = ["cpu"]
     index.acc_names_flat = accs
     index.acc_offsets = offsets
     index.n_vectors = offsets[-1]
-    index.model_cfg = SimpleNamespace(device="cpu", max_seq_len=window)
+    index.encoder_cfg = SimpleNamespace(device="cpu", max_seq_len=window, query_embed_gpus=1)
     index.chunk_type = "stride"
     index.chunk_overlap = window - stride
     index.model = enc
@@ -147,38 +169,27 @@ def _reads(
 
 
 class TestConfig:
-    def test_topk_regroup_is_the_default_and_gets_its_own_id(self):
-        m = DenseConfig(name="dna2vec")
-        assert not m.exhaustive and m.top_k == 100
-        assert m.experiment_id.endswith("_exacttop100")
-        assert m.hits_id == m.experiment_id.replace("_exacttop100", "_exact")
+    def test_top_k_and_strands_are_search_identity_not_index_identity(self):
+        m = _cfg(Path("/tmp/x"), top_k=50).model
+        assert m.index_identity() == {
+            "name": "dna2vec", "checkpoint": None, "step": None,
+            "pooling": "mean", "max_seq_len": 256, "chunk_overlap": 150,
+        }
+        assert m.engine_identity() == {"engine": "exact"}
+        assert m.search_identity() == {"engine": "exact", "top_k": 50, "both_strands": False}
 
-    def test_exhaustive_keeps_the_bare_baseline_id(self):
-        m = DenseConfig(name="dna2vec", exhaustive=True)
-        assert m.experiment_id == "dna2vec_maxlen1024_poolmax_chunkstride"
-        assert m.hits_id is None
+    def test_labels_place_the_artifacts(self, tmp_path):
+        cfg = _cfg(tmp_path, top_k=50, both_strands=True)
+        m = cfg.model
+        assert m.index_path(cfg.index_dir) == tmp_path / "index" / "esa"
+        assert m.engine_path(cfg.index_dir) == tmp_path / "index" / "esa" / "exact"
+        assert m.results_path(cfg.results_dir) == tmp_path / "results" / "esa" / "exact" / "top50"
+        assert run_benchmark.hits_path(cfg) == m.results_path(cfg.results_dir) / "hits" / "mut0.00.parquet"
 
-    def test_both_strands_suffix_and_engine_suffixes(self):
-        m = DenseConfig(name="dna2vec", both_strands=True, top_k=50)
-        assert m.experiment_id.endswith("_exacttop50_bothstrands")
-        assert m.hits_id.endswith("_exact_bothstrands")
-        assert DenseConfig(name="dna2vec", use_rabitq=True).experiment_id.endswith(
-            "_rabitq1bit_top100"
-        )
-        assert DenseConfig(name="dna2vec", use_ann=True).experiment_id.endswith(
-            "_cagra_top100"
-        )
-
-    def test_legacy_exact_search_configs_still_parse_to_the_same_id(self):
-        # configs/*_exact_topk1000.yaml: exact_search: true, top_k: 1000
-        m = DenseConfig(name="dna2vec", exact_search=True, top_k=1000)
-        assert m.experiment_id.endswith("_exacttop1000")
-
-    def test_invalid_combinations_raise(self):
-        with pytest.raises(ValueError):
-            DenseConfig(name="dna2vec", exhaustive=True, use_rabitq=True)
-        with pytest.raises(ValueError):
-            DenseConfig(name="dna2vec", use_ann=True, use_rabitq=True)
+    def test_exhaustive_has_no_search_fields(self):
+        m = DenseMethod(encoder=EncoderConfig(name="dna2vec"), index=ExhaustiveIndex())
+        assert m.search_identity() == {"engine": "exhaustive", "both_strands": True}
+        assert m.engine_identity() == {"engine": "exhaustive"}
 
 
 # --------------------------------------------------------------------------- #
@@ -208,7 +219,7 @@ class TestBothStrandEmbedding:
     def _index(self, both: bool, max_len: int):
         idx = DenseIndex.__new__(DenseIndex)
         idx.both_strands = both
-        idx.model_cfg = SimpleNamespace(device="cpu", max_seq_len=max_len)
+        idx.encoder_cfg = SimpleNamespace(device="cpu", max_seq_len=max_len, query_embed_gpus=1)
         idx.model = self._Recorder()
         return idx
 
@@ -248,8 +259,10 @@ class TestBothStrandEmbedding:
 
 
 def _persist(cfg, hits: pl.DataFrame, tmp_path: Path) -> Path:
-    """What the runner does after a scan: annotate and write the hits file."""
-    path = run_benchmark.topk_hits_path(cfg)
+    """What the runner does after a scan: stamp the search directory, annotate
+    and write the hits file."""
+    ensure_config(run_benchmark.results_path(cfg), run_search_identity(cfg), False)
+    path = run_benchmark.hits_path(cfg)
     path.parent.mkdir(parents=True, exist_ok=True)
     run_benchmark._annotate_results(
         hits, cfg, SimpleNamespace(index_size_gb=lambda p: 0.0), tmp_path, -1.0
@@ -271,7 +284,6 @@ class TestCachedHitsReproduceFreshSearch:
 
         # A run at k: finds the file, truncates, regroups...
         cfg = _cfg(tmp_path, top_k=k)
-        assert cfg.model.hits_id == big_cfg.model.hits_id
         cached = run_benchmark.find_cached_hits(cfg, queries)
         assert cached is not None
         assert cached["query_id"].to_list() == queries["query_id"].to_list()
@@ -279,12 +291,23 @@ class TestCachedHitsReproduceFreshSearch:
         from_cache = regroup_topk_hits(cached, accs)
 
         # ...and must equal what a fresh scan at k gives, results and recall.
+        # Except at an exact score tie across the k-th/(k+1)-th hit: which of
+        # the tied vectors a top-k kernel keeps is unspecified (CPU and CUDA
+        # topk differ), so those queries are compared up to the tie.
         index.top_k = k
         fresh = index.search(queries)
-        assert from_cache.equals(fresh)
+        big = pl.read_parquet(run_benchmark.hits_path(big_cfg))
+        tied = {
+            qid
+            for qid, rows in zip(big["query_id"], big["hits"])
+            if len(rows) > k and rows[k - 1]["score"] == rows[k]["score"]
+        }
+        untied = ~pl.col("query_id").is_in(list(tied))
+        assert from_cache.filter(untied).equals(fresh.filter(untied))
+        assert len(tied) < len(queries) // 2
         for at in (1, 5):
-            assert _mean_recall(from_cache, accs, truth, at) == pytest.approx(
-                _mean_recall(fresh, accs, truth, at)
+            assert _mean_recall(from_cache.filter(untied), accs, truth, at) == pytest.approx(
+                _mean_recall(fresh.filter(untied), accs, truth, at)
             )
 
     def test_larger_k_or_missing_queries_are_not_served(self, tmp_path):

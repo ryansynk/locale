@@ -18,10 +18,12 @@ import numpy as np
 import polars as pl
 import pytest
 import torch
+from src.config import RaBitQIndex
 from src.dense_index import DenseIndex
 from src.fbin import _create_fbin_memmap, _load_fbin_mmap
 from src.rabitq import (
-    RaBitQIndex,
+    RaBitQCodes,
+    RaBitQEngine,
     build_rabitq_index,
     estimate_centroid,
     quantize_rows,
@@ -57,7 +59,7 @@ def built(fbin) -> Path:
     return rabitq_dir
 
 
-def _reference_estimates(index: RaBitQIndex, q: np.ndarray) -> np.ndarray:
+def _reference_estimates(index: RaBitQCodes, q: np.ndarray) -> np.ndarray:
     """RaBitQ estimator in numpy from the on-disk codes; q is (n_q, d)."""
     codes, norms, dots = index.read_rows(0, index.n)
     pm1 = (
@@ -120,7 +122,7 @@ class TestCodes:
 
 class TestSearch:
     def test_scores_match_reference_estimator(self, built):
-        index = RaBitQIndex.load(built, devices=["cpu"])
+        index = RaBitQCodes.load(built, devices=["cpu"])
         q = _unit_rows(5, D, seed=11)
         scores, ids = index.search(torch.from_numpy(q), k=N)  # every row
         ref = _reference_estimates(index, q)
@@ -131,7 +133,7 @@ class TestSearch:
             assert len(set(ids[i].tolist())) == N
 
     def test_estimate_tracks_true_inner_product(self, built, fbin):
-        index = RaBitQIndex.load(built, devices=["cpu"])
+        index = RaBitQCodes.load(built, devices=["cpu"])
         x = np.asarray(_load_fbin_mmap(fbin))
         q = _unit_rows(1, D, seed=5)
         est = _reference_estimates(index, q)[0].astype(np.float64)
@@ -147,18 +149,18 @@ class TestSearch:
         assert np.corrcoef(est, true)[0, 1] > 0.7
 
     def test_query_finds_its_own_vector(self, built, fbin):
-        index = RaBitQIndex.load(built, devices=["cpu"])
+        index = RaBitQCodes.load(built, devices=["cpu"])
         x = np.asarray(_load_fbin_mmap(fbin))
         for row in (0, 1234, N - 1):
             _, ids = index.search(torch.from_numpy(x[row : row + 1].copy()), k=1)
             assert ids[0, 0].item() == row
 
     def test_row_ranges_merge_to_full(self, built):
-        full = RaBitQIndex.load(built, devices=["cpu"])
+        full = RaBitQCodes.load(built, devices=["cpu"])
         q = torch.from_numpy(_unit_rows(3, D, seed=2))
         k = 20
         fs, fi = full.search(q, k)
-        parts = RaBitQIndex.open(built)
+        parts = RaBitQCodes.open(built)
         cand_s, cand_i = [], []
         for lo, hi in [(0, 1500), (1500, 1501), (1501, N)]:
             parts.load_rows(lo, hi, devices=["cpu"])
@@ -174,7 +176,7 @@ class TestSearch:
             np.testing.assert_allclose(ms[qi].numpy(), fs[qi].numpy(), atol=2e-2)
 
     def test_empty_range(self, built):
-        index = RaBitQIndex.open(built)
+        index = RaBitQCodes.open(built)
         index.load_rows(10, 10, devices=["cpu"])
         s, i = index.search(torch.from_numpy(_unit_rows(2, D, seed=0)), k=5)
         assert s.shape == (2, 0) and i.shape == (2, 0)
@@ -212,8 +214,8 @@ class TestShardedBuild:
         b = shard_bounds(N, 3)
         assert [(s["start"], s["end"]) for s in meta["shards"]] == list(pairwise(b))
 
-        one = RaBitQIndex.open(built)
-        three = RaBitQIndex.open(out)
+        one = RaBitQCodes.open(built)
+        three = RaBitQCodes.open(out)
         for a, c in zip(one.read_rows(0, N), three.read_rows(0, N)):
             assert np.array_equal(a, c)
         assert np.array_equal(one._centroid_np, three._centroid_np)
@@ -223,7 +225,7 @@ class TestShardedBuild:
         codes = built / "codes_rank_0.u8"
         before = codes.stat().st_mtime_ns
         mm = _load_fbin_mmap(fbin)
-        index = RaBitQIndex.open(built)
+        index = RaBitQCodes.open(built)
         quantize_rows(
             mm, built, 0, 0, N, index._centroid_np, index._rotation_np, devices=["cpu"]
         )
@@ -256,8 +258,8 @@ class TestShardedBuild:
         (legacy / "meta.json").write_text(
             json.dumps({"n": N, "d": D, "bytes_per_vec": D // 8})
         )
-        a = RaBitQIndex.load(legacy, devices=["cpu"])
-        b = RaBitQIndex.load(built, devices=["cpu"])
+        a = RaBitQCodes.load(legacy, devices=["cpu"])
+        b = RaBitQCodes.load(built, devices=["cpu"])
         q = torch.from_numpy(_unit_rows(2, D, seed=9))
         sa, ia = a.search(q, 10)
         sb, ib = b.search(q, 10)
@@ -278,19 +280,15 @@ def _dense_index(built: Path, fbin: Path, query_rows: list[int]) -> DenseIndex:
     x = np.asarray(_load_fbin_mmap(fbin))
     index = DenseIndex.__new__(DenseIndex)
     index.no_search = False
-    index.k = 10
-    index.use_ann = False
-    index.use_rabitq = True
     index.exhaustive = False
     index.top_k = 10
     index.both_strands = False
-    index.rabitq_sample_rows = N
-    index.rabitq_index = RaBitQIndex.open(built)
-    index.all_embeddings = None
+    index.engine = RaBitQEngine(RaBitQIndex(top_k=10, sample_rows=N))
+    index.engine.load(fbin.parent, built, devices=["cpu"])
     index.acc_names_flat = ["acc0", "acc1", "acc2", "acc3"]
     index.acc_offsets = [0, 1000, 2000, 3000, N]
     index.n_vectors = N
-    index.model_cfg = SimpleNamespace(device="cpu", max_seq_len=50)
+    index.encoder_cfg = SimpleNamespace(device="cpu", max_seq_len=50, query_embed_gpus=1)
     index.chunk_type = "stride"
     index.chunk_overlap = 0
     index.model = _RowEncoder(x[query_rows].copy())
@@ -332,6 +330,7 @@ class TestDenseIndexRaBitQ:
         index = _dense_index(built, fbin, [1500])
         index.top_k = 1
         res = index.search(self._queries(1))
+        assert index.engine.size_gb(fbin.parent, built) > 0
         by_acc = {r["accession"]: r["score"] for r in res["results"][0]}
         assert set(by_acc) == {"acc0", "acc1", "acc2", "acc3"}
         assert by_acc["acc1"] > 0.5

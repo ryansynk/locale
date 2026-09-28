@@ -36,6 +36,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
+from .config import IVFRaBitQIndex
 from .fbin import FBIN_HEADER_BYTES, _load_fbin_mmap, read_fbin_rows
 
 TRAIN_BLOCK_ROWS = 8
@@ -594,3 +595,78 @@ class IVFRaBitQSearcher:
             timings["rerank_s"] = timings.get("rerank_s", 0.0) + time.time() - t1
             timings["rerank_rows"] = timings.get("rerank_rows", 0) + len(np.unique(ids))
         return scores, out_ids
+
+
+class IVFRaBitQEngine:
+    """Top-k by IVF-RaBitQ candidate scan + exact fp32 rerank; holds the whole
+    index, so no vec_range. Built multi-node by build_ivf.py (one shard per
+    rank); the first non-FastScan load on a node with enough RAM folds the
+    shards into one file, FastScan searches them side by side (merge_from
+    bug, see merge_ivf_shards)."""
+
+    SHARDABLE = False
+    WORKER_EMBED = False
+
+    def __init__(self, cfg: IVFRaBitQIndex):
+        self.cfg = cfg
+        self.searcher: IVFRaBitQSearcher | None = None
+        self.index_files: list[Path] = []
+        self.last_timings: dict = {}
+
+    def build(self, fbin_dir: Path, index_dir: Path, shard: int, num_shards: int) -> None:
+        build_ivf_shard(
+            fbin_dir / "embeddings.fbin",
+            index_dir,
+            self.cfg.nlist,
+            rank=shard,
+            num_ranks=num_shards,
+            nb_bits=self.cfg.nb_bits,
+            train_rows=self.cfg.train_rows,
+        )
+
+    def complete(self, index_dir: Path) -> bool:
+        try:
+            return bool(list_shards(index_dir, self.cfg.nlist, self.cfg.nb_bits)) or merged_path(
+                index_dir, self.cfg.nlist, self.cfg.nb_bits
+            ).exists()
+        except FileNotFoundError:
+            return False
+
+    def load(self, fbin_dir: Path, index_dir: Path, devices: list[str], encoder_cfg=None) -> None:
+        m = self.cfg
+        merged = merged_path(index_dir, m.nlist, m.nb_bits)
+        shards = list_shards(index_dir, m.nlist, m.nb_bits)
+        if m.fastscan:
+            files = shards or [merged]
+        else:
+            if not merged.exists():
+                if not shards:
+                    raise FileNotFoundError(
+                        f"no IVF index at {merged} and no shards to merge; "
+                        "build it with build_ivf.py"
+                    )
+                merge_ivf_shards(index_dir, m.nlist, m.nb_bits, len(shards))
+            files = [merged]
+        self.index_files = files
+        self.searcher = IVFRaBitQSearcher(
+            files, fbin_dir / "embeddings.fbin", quantizer=m.quantizer, fastscan=m.fastscan
+        )
+
+    def topk_hits(
+        self, query_vecs: np.ndarray, top_k: int, vec_range: tuple[int, int] | None = None
+    ) -> tuple[np.ndarray, np.ndarray]:
+        if vec_range is not None:
+            raise NotImplementedError("IVF search cannot be row-sharded")
+        assert self.searcher is not None
+        self.last_timings = {}
+        return self.searcher.search(
+            query_vecs,
+            top_k,
+            nprobe=self.cfg.nprobe,
+            rerank=self.cfg.rerank,
+            qb=self.cfg.qb,
+            timings=self.last_timings,
+        )
+
+    def size_gb(self, fbin_dir: Path, index_dir: Path) -> float:
+        return sum(f.stat().st_size for f in self.index_files) / (1024**3)

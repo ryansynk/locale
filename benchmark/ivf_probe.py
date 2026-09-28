@@ -1,7 +1,8 @@
 """Can IVF find the exact top-k hits of noised queries? (sra4571 feasibility probe)
 
 For each mutation rate, takes the exact top-1000 hits already saved under
-results/<ds>_topk_hits/<...>_exact_bothstrands/, trains spherical k-means
+the config's results directory (<results_dir>/<encoder>/exact/<search>/hits/),
+trains spherical k-means
 centroids on a row sample, and asks for every hit which probe rank its cell
 gets in the query's centroid ordering (min over the two strands). From that:
 
@@ -28,7 +29,7 @@ from jsonargparse import CLI
 from sklearn.metrics import average_precision_score
 
 from run_benchmark import query_file_name
-from src.config import ExperimentConfig
+from src.config import ExperimentConfig, results_file_name
 from src.dense_index import DenseIndex
 from src.ivf_rabitq import assign_rows, probe_ranks, read_rows_by_id, sample_rows, spherical_kmeans
 from src.topk_regroup import regroup_topk_hits
@@ -74,9 +75,9 @@ def main():
     args = ap.parse_args()
 
     cfg = CLI(ExperimentConfig, as_positional=False, args=["--config", args.config])
-    index_path = cfg.index_dir / cfg.model.index_suffix
+    index_path = cfg.model.index_path(cfg.index_dir)
     fbin = index_path / "embeddings.fbin"
-    ivf_dir = index_path / "ivf"
+    ivf_dir = index_path / "ivf_probe"
     ivf_dir.mkdir(exist_ok=True)
     out_path = Path(args.out or ivf_dir / "probe_results.json")
 
@@ -97,7 +98,7 @@ def main():
     starts = meta["start_row"].to_numpy()
     acc_offsets = np.append(starts, starts[-1] + meta["num_rows"][-1])
 
-    hits_dir = cfg.topk_hits_dir / (cfg.model.hits_id)
+    hits_dir = cfg.model.results_path(cfg.results_dir) / "hits"
     raw = pl.read_parquet(Path(cfg.dataset_dir) / "queries.parquet")
     gt = {
         r["query_id"]: set(r["contig_accession"])
@@ -106,7 +107,7 @@ def main():
 
     per_rate = {}
     for rate in [float(r) for r in args.rates.split(",")]:
-        hits = pl.read_parquet(hits_dir / f"raw_read_mut_{rate}_topk1000.parquet", columns=["query_id", "hits"])
+        hits = pl.read_parquet(hits_dir / results_file_name(rate), columns=["query_id", "hits"])
         queries = pl.read_parquet(Path(cfg.dataset_dir) / query_file_name(rate))
         queries = queries.sample(min(cfg.num_queries, len(queries)), seed=cfg.random_seed)
         queries = queries.join(hits.select("query_id"), on="query_id", how="semi")

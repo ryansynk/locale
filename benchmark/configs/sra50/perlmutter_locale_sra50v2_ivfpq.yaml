@@ -9,29 +9,35 @@
 #
 # Default top-k regroup protocol at k=100 with both-strand querying: q and its
 # reverse complement are embedded, the two top-100 hit lists unioned, hits
-# regrouped to accessions by max. experiment_id ends in
-# _exacttop100_bothstrands; raw hits land in results/sra50_topk_hits/ and are
-# reused by any later run at k <= 100.
+# regrouped to accessions by max. results land in
+# results/sra50/<encoder_label>/exact/top100/ and the raw hits in its hits/
+# subdirectory, reused by any later run at k <= 100.
 #
 # Paper checkpoint (8vqiabk9/5859), encoder settings as in the sra4571 runs.
-# Layout: indexes/<dataset>/<index_suffix>, results/<dataset>/<experiment_id>.
+# Layout: indexes/<dataset>/<encoder_label>/[<index_label>/],
+# results/<dataset>/<encoder_label>/<index_label>/<search_label>/.
 model:
-  name: locale
-  checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/8vqiabk9/checkpoint5859.pth.tar
-  batch_size: 1000
-  device: cuda
-  pooling: mean
-  max_seq_len: 256
-  chunk_overlap: 150
-  top_k: 100
-  both_strands: true
-  use_ivfpq: true
-  ivfpq_pq_dim: 128
-  ivfpq_pq_bits: 8
-  ivfpq_lists_per_shard: 1360
-  ivfpq_num_shards: 1
-  ivfpq_nprobe: 23
-  ivfpq_rerank: 10
+  encoder:
+    name: locale
+    checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/8vqiabk9/checkpoint5859.pth.tar
+    pooling: mean
+    max_seq_len: 256
+    chunk_overlap: 150
+    batch_size: 1000
+    device: cuda
+    both_strands: true
+  index:
+    engine: ivfpq
+    top_k: 100
+    pq_dim: 128
+    pq_bits: 8
+    lists_per_shard: 1360
+    num_shards: 1
+    nprobe: 23
+    rerank: 10
+  encoder_label: locale@8vqiabk9
+  index_label: ivfpq-pq128x8-L1360x1
+  search_label: top100-np23-rr10
 
 # Local bundle (locale-data list-first pipeline; the source of the HF
 # sra50-v2 upload). The name is deliberately NOT a run_benchmark.DATASETS key:

@@ -2,7 +2,7 @@
 
 Every encoder exposes the same `encode(sequences) -> Tensor` interface and ends in
 `nn.functional.normalize(..., dim=1)`, so inner product is cosine for all of them.
-`DenseEncoder` dispatches on `DenseConfig.name`.
+`DenseEncoder` dispatches on `EncoderConfig.name`.
 
 Split out of dense_index.py so an index can pick an encoder without importing the
 dense index (and with it cuvs). The dependency runs one way: dense_index
@@ -22,7 +22,7 @@ from lae.modeling.backbones import DEFAULT_BACKBONE, get_tokenizer
 from lae.modeling.model import LOCALE
 from lae.utils.patch import patch_with_flash_lib
 
-from .config import PAPER_CHECKPOINT, DenseConfig
+from .config import PAPER_CHECKPOINT, EncoderConfig
 
 
 def batched(iterable, n):
@@ -36,7 +36,7 @@ def batched(iterable, n):
 
 
 class DenseEncoder:
-    def __init__(self, cfg: DenseConfig):
+    def __init__(self, cfg: EncoderConfig):
         if cfg.name == "locale":
             self._encoder = LOCALEEncoder(cfg)
         elif cfg.name == "dna2vec":
@@ -52,16 +52,16 @@ class DenseEncoder:
 
 class LOCALEEncoder:
     # def __init__(self, model_name, batch_size, pooling, checkpoint_path, device="cuda"):
-    def __init__(self, cfg: DenseConfig):
+    def __init__(self, cfg: EncoderConfig):
         transformers_logging.set_verbosity_error()
 
         device = cfg.device
         assert cfg.name == "locale"
         if cfg.checkpoint_path is None:
             # Unset checkpoint_path means the checkpoint published with the
-            # paper. DenseConfig has already pinned the matching ckpt_id and
-            # step, so the index lands where a local copy of the same
-            # checkpoint would. Cached after the first call.
+            # paper. EncoderConfig.identity() pins the matching ckpt_id and
+            # step, so the index matches one built from a local copy of the
+            # same checkpoint. Cached after the first call.
             checkpoint_path = Path(
                 hf_hub_download(
                     repo_id=PAPER_CHECKPOINT["repo_id"],
@@ -128,7 +128,7 @@ class LOCALEEncoder:
 
 class DNA2VecEncoder:
     # def __init__(self, model_name, batch_size, pooling, checkpoint_path, device="cuda"):
-    def __init__(self, cfg: DenseConfig):
+    def __init__(self, cfg: EncoderConfig):
         transformers_logging.set_verbosity_error()
 
         device = cfg.device
@@ -177,7 +177,7 @@ class DNA2VecEncoder:
 
 class LLMEDEncoder:
     # def __init__(self, model_name, batch_size, pooling, checkpoint_path, device="cuda"):
-    def __init__(self, cfg: DenseConfig):
+    def __init__(self, cfg: EncoderConfig):
         transformers_logging.set_verbosity_error()
 
         device = cfg.device

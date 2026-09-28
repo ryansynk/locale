@@ -1,21 +1,27 @@
 # Both-strand variant of perlmutter_locale_sra4571.yaml under the default
 # top-k regroup protocol: each query and its reverse complement are embedded,
 # the two top-100 hit lists are unioned and regrouped to accessions by max
-# hit. Same index (index_suffix unchanged); results land in
-# results_sra4571/<id>_exacttop100_bothstrands/ and the raw hits in
-# results_sra4571_topk_hits/<id>_exact_bothstrands/raw_read_mut_<rate>_topk100.parquet,
-# where a later run at a smaller top_k finds them and skips the scan.
-# Drop both_strands for the forward-only run (…_exacttop100/).
+# hit. Same index (encoder label unchanged); results land in
+# results/sra4571/locale@8vqiabk9/exact/top100/ and the raw hits in its
+# hits/mut<rate>.parquet, where a later run at a smaller top_k finds them and
+# skips the scan. The forward-only run is perlmutter_locale_sra4571.yaml
+# (search_label top100-fwd).
 model:
-  name: locale
-  checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/8vqiabk9/checkpoint5859.pth.tar
-  batch_size: 1000
-  device: cuda
-  pooling: mean
-  max_seq_len: 256
-  chunk_overlap: 150
-  top_k: 100
-  both_strands: true
+  encoder:
+    name: locale
+    checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/8vqiabk9/checkpoint5859.pth.tar
+    pooling: mean
+    max_seq_len: 256
+    chunk_overlap: 150
+    batch_size: 1000
+    device: cuda
+    both_strands: true
+  index:
+    engine: exact
+    top_k: 100
+  encoder_label: locale@8vqiabk9
+  index_label: exact
+  search_label: top100
 
 dataset_name: sra4571
 dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra4571/bundle

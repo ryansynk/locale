@@ -21,9 +21,9 @@
 # avg_time = mean of runs 2-5 -- into results/sra4571_timing/, beside
 # metagraph_k31{,_p64}. MODE=sweep: ivf_sweep.py over NPROBES x RERANKS with
 # the shards loaded once (results -> results/sra4571/, hits ->
-# results/sra4571_topk_hits/).
+# their hits/ subdirectories).
 #   sbatch slurm_scripts/perlmutter_sra4571_ivfpq_search.sbatch
-#   EXTRA="--model.ivfpq_nprobe 68 --model.ivfpq_rerank 10" sbatch ...
+#   EXTRA="--model.index.nprobe 68 --model.index.rerank 10 --model.search_label top100-np68-rr10" sbatch ...
 #   MODE=sweep NPROBES=136,272,544 RERANKS=0,10 sbatch ...
 CONFIG="${CONFIG:-configs/sra4571/perlmutter_locale_sra4571_ivfpq_L16k.yaml}"
 set -euo pipefail

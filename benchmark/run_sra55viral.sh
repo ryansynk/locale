@@ -91,16 +91,12 @@ check_dense_index() {
     uv run python - "$cfg" "$n_accs" <<'PY'
 import sys
 import polars as pl
-import yaml
-from pathlib import Path
-from src.config import DenseConfig, ExperimentConfig
+from jsonargparse import CLI
+from src.config import ExperimentConfig
 
 cfg_path, n_accs = sys.argv[1], int(sys.argv[2])
-raw = yaml.safe_load(open(cfg_path))
-model = DenseConfig(**raw.pop("model"))
-raw = {k: (Path(v) if k.endswith("_dir") else v) for k, v in raw.items()}
-cfg = ExperimentConfig(model=model, **raw)
-meta = cfg.index_dir / model.index_suffix / "meta.parquet"
+cfg = CLI(ExperimentConfig, as_positional=False, args=["--config", cfg_path])
+meta = cfg.model.index_path(cfg.index_dir) / "meta.parquet"
 if not meta.exists():
     sys.exit(f"[FAIL] no {meta}")
 n = pl.read_parquet(meta)["srr_id"].n_unique()

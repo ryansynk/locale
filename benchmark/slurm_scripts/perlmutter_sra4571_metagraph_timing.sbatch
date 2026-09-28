@@ -16,7 +16,7 @@
 # run_benchmark --do_timing: 5 searches of the 1000 queries, avg_time = mean
 # of runs 2-5 (run 1 pages the mmap'd index in from Lustre). Same protocol as
 # the dense timing runs. PARALLEL=N sets server_parallel (N concurrent requests,
-# server -p N, experiment_id metagraph_k31_p<N>); default 1 = the baseline protocol. A background sampler logs CPU utilization so the
+# server -p N, results under metagraph/p<N>/); default 1 = the baseline protocol (metagraph/default/). A background sampler logs CPU utilization so the
 # number of cores metagraph actually uses is on record.
 set -euo pipefail
 cd /pscratch/sd/r/rsynk/locale/benchmark
@@ -27,7 +27,7 @@ read -r -a RATE_LIST <<<"${RATES:-0.0 0.05 0.1}"
 for rate in "${RATE_LIST[@]}"; do
     echo "=== metagraph timing @ $rate ($(date)) ==="
     uv run python run_benchmark.py --config configs/sra4571/perlmutter_metagraph_sra4571.yaml \
-        --mutation_rate "$rate" --do_timing true --results_dir results/sra4571_timing --model.server_parallel ${PARALLEL:-1}
+        --mutation_rate "$rate" --do_timing true --results_dir results/sra4571_timing --model.server_parallel ${PARALLEL:-1} --model.search_label "$([ "${PARALLEL:-1}" -gt 1 ] && echo p${PARALLEL} || echo default)"
 done
 uv run python - <<'PY'
 import polars as pl

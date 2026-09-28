@@ -24,28 +24,6 @@ import plot_results as pr
 # the LaTeX round-trip that makes that slow.
 plt.rcParams["text.usetex"] = False
 
-# Kept in sync with plot_results.main() by hand; polars validates it on read, so
-# a drift shows up as a loud schema error rather than silently wrong numbers.
-# The one sanctioned gap: results written before run_benchmark recorded
-# index_size_gb (pre-2026-05) lack that column, so reads insert missing columns
-# as null and the systems table shows a blank size for those runs.
-SCHEMA = pl.Schema(
-    {
-        "query_id": pl.String,
-        "results": pl.List(pl.Struct({"accession": pl.String, "score": pl.Float64})),
-        "model": pl.String,
-        "mutation_rate": pl.Float64,
-        "query_type": pl.String,
-        "checkpoint": pl.String,
-        "max_len": pl.Int64,
-        "checkpoint_step_num": pl.Int64,
-        "chunk_type": pl.String,
-        "avg_time": pl.Float64,
-        "index_size_gb": pl.Float64,
-    }
-)
-
-
 def main(
     results_dir: str,
     raw_read_queries_path: Path_fr,
@@ -60,31 +38,27 @@ def main(
             tables instead of the paper's first-token display names ("LOCALE").
             The default (None) decides from the data: full ids whenever the
             short names would pool distinct models -- e.g. the full-dense
-            baseline and exact top-k runs at several k all start with "locale" and would otherwise be averaged into one row.
+            baseline and exact top-k runs at several k are all "LOCALE" and would otherwise be averaged into one row.
             The AUPRC table always uses full ids.
     """
     results_dir = Path(results_dir)
     with open(accessions) as f:
         accs = f.read().splitlines()
 
-    files = sorted(results_dir.rglob("*.parquet"))
-    if not files:
-        raise SystemExit(f"No .parquet files under {results_dir}")
-    data = pl.concat(
-        [pl.read_parquet(f, schema=SCHEMA, missing_columns="insert") for f in files]
-    )
+    data = pr.load_results([results_dir])
 
     oracle = pr.raw_read_oracle_results(pl.read_parquet(Path(raw_read_queries_path)))
     oracle = oracle.join(data.select("mutation_rate").unique(), how="cross")
 
     rates = sorted(data["mutation_rate"].unique().to_list())
     models = sorted(data["model"].unique().to_list())
-    print(f"Loaded {len(files)} parquet(s), {len(data)} rows")
+    print(f"Loaded {len(data)} rows")
     print(f"models        : {models}")
     print(f"mutation rates: {rates}")
 
     if full_model_names is None:
-        full_model_names = len({m.split("_")[0] for m in models}) < len(models)
+        n_display = data.select(pr._display_model()).n_unique()
+        full_model_names = n_display < len(models)
         if full_model_names:
             print(
                 "Several models share a first-token display name; keeping full "

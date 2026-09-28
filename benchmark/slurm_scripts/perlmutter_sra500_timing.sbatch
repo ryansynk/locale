@@ -19,7 +19,7 @@
 # are the existing .done ones under indexes/sra500/; the RaBitQ codes are
 # built into <locale index>/rabitq/ on first load and kept.
 #
-# Results go to results/sra500_timing/<experiment_id>/raw_read_mut_0.0.parquet
+# Results go to results/sra500_timing/<encoder>/<index>/<search>/mut0.00.parquet
 # (a separate dir so the accuracy results in results/sra500/, produced by the
 # 4-node sharded scans, are not overwritten). avg_time and index_size_gb are
 # the columns to read off.

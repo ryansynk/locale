@@ -20,8 +20,8 @@
 # exact top-1000 regroup over both strands. Each node scans an equal range of the fbin's vector
 # rows for every query's top-1000 nearest vectors; node 0 unions the partials,
 # re-takes the global top-1000, regroups to accessions and writes
-#   results/sra4571/<experiment_id>_exacttop1000_bothstrands/raw_read_mut_<rate>.parquet
-# The raw hits are persisted under results/sra4571_topk_hits/<hits_id>/ and
+#   results/sra4571/locale@8vqiabk9/exact/top1000/mut<rate>.parquet
+# The raw hits are persisted under results/sra4571/locale@8vqiabk9/exact/top1000/hits/ and
 # serve any later both-strands run of the same encoder at k <= 1000 without a
 # rescan, which is what makes the later ANN-vs-exact comparison cheap.
 #
@@ -29,7 +29,7 @@
 # configs/sra4571/perlmutter_locale_sra4571.yaml (default protocol, k=100 -- note it
 # is NOT the streaming per-accession baseline unless it sets exhaustive: true)
 # or configs/sra4571/perlmutter_locale_sra4571_bothstrands.yaml. Both-strand hits live
-# in a separate hits_id, so a both-strands run does not reuse single-strand hits.
+# in the search config.json, so a both-strands run does not reuse single-strand hits.
 #
 # The three rates write distinct result and hits files and can run
 # concurrently. Partials are keyed by (mutation_rate, num_queries, seed) and

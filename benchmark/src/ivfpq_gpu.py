@@ -24,7 +24,7 @@ a prefetch thread. Shards are small enough (~17.5 GB at 16 shards) to build
 on 40 GB cards, but load as ~20.6 GB each (cuVS list layout), so four per
 80 GB card leave ~2 GB free. Files::
 
-    <index>/ivfpq/pq{dim}x{bits}_L{lists}/shard_{i}_of_{S}.cuvs  (+ .json)
+    <index_dir>/shard_{i}_of_{S}.cuvs  (+ .json)   under the index label's directory
 """
 
 import atexit
@@ -39,6 +39,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
+from .config import IVFPQIndex
 from .fbin import _load_fbin_mmap, read_fbin_rows
 from .ivf_rabitq import read_rows_by_id
 
@@ -47,10 +48,6 @@ TRAIN_ROWS_PER_LIST = 256
 # card; finer shards get fewer rows per list instead of more memory.
 MAX_TRAIN_ROWS = 4_194_304
 BUILD_BLOCK_ROWS = 2_000_000
-
-
-def ivfpq_dir(index_path: Path, pq_dim: int, pq_bits: int, lists_per_shard: int) -> Path:
-    return index_path / "ivfpq" / f"pq{pq_dim}x{pq_bits}_L{lists_per_shard}"
 
 
 def shard_file(d: Path, shard: int, num_shards: int) -> Path:
@@ -377,3 +374,77 @@ class IVFPQGPUSearcher:
         D, I = D[:, :top_k], I[:, :top_k]
         I = np.where(np.isfinite(D), I, -1)
         return D, I
+
+
+class IVFPQEngine:
+    """All shards resident on this node's GPUs; no vec_range (the whole index
+    is here). Query embedding runs inside the GPU worker processes
+    (WORKER_EMBED): the parent stays off CUDA because the cards are ~97% full
+    of index, so ``load`` takes the EncoderConfig and ``embed`` serves the
+    chunks from the workers' encoder replicas.
+    """
+
+    SHARDABLE = False
+    WORKER_EMBED = True
+
+    def __init__(self, cfg: IVFPQIndex):
+        self.cfg = cfg
+        self.searcher: IVFPQGPUSearcher | None = None
+        self.last_timings: dict = {}
+
+    def build(self, fbin_dir: Path, index_dir: Path, shard: int, num_shards: int) -> None:
+        """Train and fill one shard (resumable). num_shards must be the
+        config's: the shard count is in the file names and the row split."""
+        if num_shards != self.cfg.num_shards:
+            raise ValueError(
+                f"{num_shards} builder(s) for {self.cfg.num_shards} shards: launch "
+                "build_ivfpq.py with one task per shard"
+            )
+        build_ivfpq_shard(
+            fbin_dir / "embeddings.fbin",
+            index_dir,
+            shard,
+            num_shards,
+            pq_dim=self.cfg.pq_dim,
+            pq_bits=self.cfg.pq_bits,
+            lists_per_shard=self.cfg.lists_per_shard,
+        )
+
+    def complete(self, index_dir: Path) -> bool:
+        return all(
+            shard_file(index_dir, s, self.cfg.num_shards).with_suffix(".json").exists()
+            for s in range(self.cfg.num_shards)
+        )
+
+    def load(self, fbin_dir: Path, index_dir: Path, devices: list[str], encoder_cfg=None) -> None:
+        files = list_shard_files(index_dir, self.cfg.num_shards)
+        self.shard_files = files
+        self.searcher = IVFPQGPUSearcher(
+            files, fbin_dir / "embeddings.fbin", encoder_cfg=encoder_cfg
+        )
+
+    def embed(self, chunks: list[str]) -> np.ndarray:
+        assert self.searcher is not None
+        return self.searcher.embed(chunks)
+
+    def topk_hits(
+        self, query_vecs: np.ndarray, top_k: int, vec_range: tuple[int, int] | None = None
+    ) -> tuple[np.ndarray, np.ndarray]:
+        if vec_range is not None:
+            raise NotImplementedError("IVF-PQ search cannot be row-sharded")
+        assert self.searcher is not None
+        self.last_timings = {}
+        return self.searcher.search(
+            query_vecs,
+            top_k,
+            n_probes=self.cfg.nprobe,
+            rerank=self.cfg.rerank,
+            lut_dtype=self.cfg.lut,
+            timings=self.last_timings,
+        )
+
+    def size_gb(self, fbin_dir: Path, index_dir: Path) -> float:
+        # The in-memory index (codes + ids + centroids); the rerank reads
+        # the fbin from disk and is not counted, like a DB's raw store.
+        files = list_shard_files(index_dir, self.cfg.num_shards)
+        return sum(f.stat().st_size for f in files) / (1024**3)

@@ -2,15 +2,21 @@
 # the published method (LOCALE uses mean). Same protocol as the LOCALE config:
 # top-k regroup at k=100, both strands. Inherits both from DenseIndex.
 model:
-  name: dna2vec
-  checkpoint_path: null
-  batch_size: 1000
-  device: cuda
-  pooling: max
-  max_seq_len: 256
-  chunk_overlap: 150
-  top_k: 100
-  both_strands: true
+  encoder:
+    name: dna2vec
+    checkpoint_path: null
+    pooling: max
+    max_seq_len: 256
+    chunk_overlap: 150
+    batch_size: 1000
+    device: cuda
+    both_strands: true
+  index:
+    engine: exact
+    top_k: 100
+  encoder_label: esa
+  index_label: exact
+  search_label: top100
 
 # Local bundle (locale-data list-first pipeline, 2026-09): 55 accessions,
 # 500 raw-read queries (Rq=5) drawn from 10 HBV genotype-D runs, per-rate
