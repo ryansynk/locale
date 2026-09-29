@@ -25,12 +25,12 @@ read -r -a RATE_LIST <<<"${RATES:-0.0}"
 for rate in "${RATE_LIST[@]}"; do
     echo "=== metagraph timing @ $rate ($(date)) ==="
     uv run python run_benchmark.py --config configs/sra500/perlmutter_metagraph_sra500v2.yaml \
-        --mutation_rate "$rate" --do_timing true --results_dir results/sra500_timing --model.server_parallel ${PARALLEL:-1} --model.search_label "$([ "${PARALLEL:-1}" -gt 1 ] && echo p${PARALLEL} || echo default)"
+        --mutation_rate "$rate" --do_timing true --model.server_parallel ${PARALLEL:-1} --model.search_label "$([ "${PARALLEL:-1}" -gt 1 ] && echo p${PARALLEL} || echo default)"
 done
 uv run python - <<'PY'
 import polars as pl
 from pathlib import Path
-for f in sorted(Path("results/sra500_timing/metagraph_k31").rglob("*.parquet")):
+for f in sorted(Path("results/sra500/metagraph_k31").rglob("*.timing.parquet")):
     df = pl.read_parquet(f)
     print(f"{f.parts[-2]:40s} {f.name:28s} avg_time {df['avg_time'][0]:8.2f} s  index {df['index_size_gb'][0]:8.2f} GB")
 PY

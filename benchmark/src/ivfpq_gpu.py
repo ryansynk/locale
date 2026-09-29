@@ -18,8 +18,8 @@ a warm metagraph server. This keeps the whole index in the HBM of one
   candidates from the fp32 fbin (pread). Lustre gives ~15-60 K random rows/s,
   so only a shallow rerank fits a metagraph-parity budget.
 
-Build: one process per GPU (``SLURM_PROCID`` = shard, ``SLURM_NTASKS`` =
-shards), each trains on a sample of its own rows and extends in blocks read by
+Build: one process per GPU (run_benchmark --stage engine --shard <i>
+--num_shards <S>), each trains on a sample of its own rows and extends in blocks read by
 a prefetch thread. Shards are small enough (~17.5 GB at 16 shards) to build
 on 40 GB cards, but load as ~20.6 GB each (cuVS list layout), so four per
 80 GB card leave ~2 GB free. Files::
@@ -397,8 +397,8 @@ class IVFPQEngine:
         config's: the shard count is in the file names and the row split."""
         if num_shards != self.cfg.num_shards:
             raise ValueError(
-                f"{num_shards} builder(s) for {self.cfg.num_shards} shards: launch "
-                "build_ivfpq.py with one task per shard"
+                f"{num_shards} builder(s) for {self.cfg.num_shards} shards: run "
+                "--stage engine once per shard with --num_shards equal to index.num_shards"
             )
         build_ivfpq_shard(
             fbin_dir / "embeddings.fbin",

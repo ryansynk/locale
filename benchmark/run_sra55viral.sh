@@ -18,11 +18,10 @@
 # directory at once.
 #
 # Dense methods (locale, esa, llmed) run as one process per node across the
-# whole allocation: run_benchmark.py reads SLURM_NODEID / SLURM_NNODES, builds
+# whole allocation: run_benchmark.py gets --shard / --num_shards from SLURM_NODEID / SLURM_NNODES, builds
 # one index shard (or scans one range of vector rows) per node, and rank 0
 # merges. metagraph and mmseqs2 are single-node methods (the sharded build
-# path merges dense indexes only), so they run on one node with the node-count
-# variables forced to 1. Plain `python run_benchmark.py` inside a multi-node
+# path merges dense indexes only), so they run on one node with --num_shards 1. Plain `python run_benchmark.py` inside a multi-node
 # allocation would be a lone rank 0 waiting forever for peers: always srun.
 #
 # Only the clean queries are run: the divergence under test is the real
@@ -113,14 +112,12 @@ run_step() {
     if [[ "$SINGLE_NODE_METHODS" == *" $method "* ]]; then
         # One node, and tell run_benchmark it is alone so it neither shards
         # the build nor waits for peers.
-        # /usr/bin/env by absolute path: ~/.local/bin/env shadows it on PATH
-        # here and is not executable (exit 13 from execve, 2026-09-23).
         srun --unbuffered -N1 -n1 --cpus-per-task="$CPUS_PER_TASK" \
-            /usr/bin/env SLURM_NNODES=1 SLURM_NODEID=0 \
-            uv run python run_benchmark.py --config "$cfg" --mutation_rate "$rate"
+            uv run python run_benchmark.py --config "$cfg" --mutation_rate "$rate" --num_shards 1
     else
         srun --unbuffered --ntasks-per-node=1 \
             --gpus-per-node="$GPUS_PER_NODE" --cpus-per-task="$CPUS_PER_TASK" \
+            bash -c 'exec "$@" --shard "$SLURM_NODEID" --num_shards "$SLURM_NNODES"' _ \
             uv run python run_benchmark.py --config "$cfg" --mutation_rate "$rate"
     fi
 }

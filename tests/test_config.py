@@ -152,3 +152,27 @@ def test_live_yaml_parses_and_places_itself(yaml_path, monkeypatch, tmp_path):
         assert m.engine_path(cfg.index_dir).parent == m.index_path(cfg.index_dir)
     else:
         assert labels["encoder"] is None
+
+
+def test_merge_stage_refuses_until_every_shard_is_done(tmp_path):
+    model = DenseMethod(encoder=EncoderConfig(name="dna2vec"))
+    kw = dict(model=model, dataset_name="x", dataset_dir=str(tmp_path), index_dir=tmp_path,
+              results_dir=tmp_path / "r", stage="merge", num_shards=2)
+    shard0 = model.index_path(tmp_path) / "shard_0"
+    shard0.mkdir(parents=True)
+    (shard0 / ".done").touch()
+    with pytest.raises(ValueError, match=r"shards not complete: \[1\]"):
+        ExperimentConfig(**kw)
+    shard1 = model.index_path(tmp_path) / "shard_1"
+    shard1.mkdir()
+    (shard1 / ".done").touch()
+    assert ExperimentConfig(**kw).stage == "merge"
+
+
+def test_shard_must_be_below_num_shards(tmp_path):
+    with pytest.raises(ValueError, match="shard 2"):
+        ExperimentConfig(
+            model=DenseMethod(encoder=EncoderConfig(name="dna2vec")), dataset_name="x",
+            dataset_dir=str(tmp_path), index_dir=tmp_path, results_dir=tmp_path / "r",
+            shard=2, num_shards=2,
+        )

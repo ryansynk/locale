@@ -8,7 +8,7 @@
 #   cd /pscratch/sd/r/rsynk/locale/benchmark && ./run_backbone_sweep.sh
 #
 # Each srun step launches one run_benchmark.py process per node in the
-# allocation. run_benchmark.py reads SLURM_NODEID / SLURM_NNODES, builds one
+# allocation. run_benchmark.py gets --shard / --num_shards from SLURM_NODEID / SLURM_NNODES, builds one
 # index shard (or scans one range of vector rows) per node, and rank 0 merges.
 # Plain `python run_benchmark.py` inside a multi-node allocation would run a
 # single rank-0 process that waits forever for peers, so always go through srun.
@@ -57,6 +57,7 @@ for backbone in "${BACKBONES[@]}"; do
             if ! srun --unbuffered --ntasks-per-node=1 \
                       --gpus-per-node="$GPUS_PER_NODE" \
                       --cpus-per-task="$CPUS_PER_TASK" \
+                      bash -c 'exec "$@" --shard "$SLURM_NODEID" --num_shards "$SLURM_NNODES"' _ \
                       uv run python run_benchmark.py \
                         --config "$cfg" --mutation_rate "$rate"; then
                 echo "[FAIL] $cfg @ $rate" >&2

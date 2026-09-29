@@ -17,8 +17,7 @@ model:
   label: metagraph
   search_label: default
 
-# Same local bundle as perlmutter_locale_sra4571.yaml: dataset_name is not a
-# run_benchmark.DATASETS key, so nothing is downloaded over the bundle.
+# Same local bundle as perlmutter_locale_sra4571.yaml.
 # logan_accessions/ links the contigs (laid out by perlmutter_sra4571.sbatch).
 dataset_name: sra4571
 dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra4571/bundle

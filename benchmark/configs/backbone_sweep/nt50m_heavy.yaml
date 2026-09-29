@@ -32,9 +32,8 @@ model:
   index_label: exact
   search_label: top100
 
-# Local bundle, see configs/perlmutter_locale_sra50v2.yaml for why the name is
-# not a run_benchmark.DATASETS key.
-dataset_name: sra50v2_local
+# Local bundle, see configs/sra50/perlmutter_locale_sra50v2.yaml.
+dataset_name: sra50v2
 dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra50/bundle
 index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes/sra50_backbone_sweep
 results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results/sra50_backbone_sweep

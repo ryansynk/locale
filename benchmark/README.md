@@ -6,14 +6,14 @@ Benchmarks the ability to retrieve relevant SRA accessions given query sequences
 
 ## Datasets
 
-Accessions and queries are pulled from the Hugging Face Hub on first run, selected by `dataset_name`:
+`dataset_dir` must already hold `accs.txt` and the per-rate query files (`queries_mut<rate>.parquet`); `run_benchmark.py` downloads neither. Fetch a published bundle with `python fetch_dataset.py <name> <dataset_dir>`:
 
 | `dataset_name` | Repo | Accessions | Queries |
 |---|---|---|---|
 | `sra50` | `rsynk/locale-benchmark-sra50` | 47 | 500 |
 | `sra500` | `rsynk/locale-benchmark-sra500` | 500 | 500 |
 
-`snapshot_download` materialises the repo into `dataset_dir` (or the default HF cache when unset), yielding `accs.txt`, `queries.parquet`, and `logan_accessions/`. Contigs listed in `accs.txt` are fetched from the public `logan-pub` S3 bucket on first run and cached thereafter.
+Contigs listed in `accs.txt` are fetched from the public `logan-pub` S3 bucket on first run and cached thereafter.
 
 > `sra50` holds 47 accessions, not 50: three of the original draw were never synced from SRA into the Logan release. No queries target them, so recall is unaffected. See the dataset card for details.
 
@@ -68,10 +68,11 @@ Use `--num_queries` to subsample (default 1000, capped at the dataset size) and 
 
 ### Multi-node index building (dense methods only)
 
-`run_benchmark.py` has built-in SLURM-aware sharding. When run with `srun` across multiple nodes, each node builds a shard of the index independently, then node 0 waits for all shards and merges them before running search.
+`run_benchmark.py` shards by `--shard` / `--num_shards`, which the launcher passes (it reads no scheduler variables). With `--num_shards N`, process `r` builds `shard_r/` of the index; under `--stage all` (default) shard 0 waits for all shards and merges them, then the search runs. `--stage embed` exits once this shard is built, `--stage merge` (CPU) joins the shards and refuses unless all `N` are `.done`, `--stage engine` builds one shard of the engine artifact (IVF-PQ: one process per GPU), and `--stage search` searches built indexes.
 
 ```bash
-srun uv run python run_benchmark.py --config configs/sra500/perlmutter_locale_sra500v2.yaml ...
+srun bash -c 'exec "$@" --shard "$SLURM_NODEID" --num_shards "$SLURM_NNODES"' _ \
+  uv run python run_benchmark.py --config configs/sra500/perlmutter_locale_sra500v2.yaml ...
 ```
 
 An index is rebuilt only when `<index_dir>/<encoder_label>/.done` is absent, so reruns reuse existing indexes.
@@ -117,7 +118,7 @@ index, strands and engine search settings; queries covered) loads and
 truncates that file instead of scanning. A k-sweep is therefore one scan at
 the largest k, then reruns at smaller k under their own `search_label`.
 `print_results.py` skips `hits/` when it collects results. Timing runs
-(`--do_timing`) always search and never persist. When several runs share a
+(`--do_timing`) always search, never persist hits, and write `mut<rate>.timing.parquet` beside the accuracy results. When several runs share a
 display name (`LOCALE`), `print_results.py` keeps the full run keys apart in
 its tables instead of pooling them (`--full_model_names` overrides).
 

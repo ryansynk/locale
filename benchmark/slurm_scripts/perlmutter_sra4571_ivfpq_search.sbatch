@@ -18,8 +18,8 @@
 #
 # MODE=timing (default): run_benchmark --do_timing per rate for the config
 # as given -- 5 full searches (embed + scan + optional rerank + regroup),
-# avg_time = mean of runs 2-5 -- into results/sra4571_timing/, beside
-# metagraph_k31{,_p64}. MODE=sweep: ivf_sweep.py over NPROBES x RERANKS with
+# avg_time = mean of runs 2-5 -- as mut<rate>.timing.parquet beside the
+# accuracy results. MODE=sweep: ivf_sweep.py over NPROBES x RERANKS with
 # the shards loaded once (results -> results/sra4571/, hits ->
 # their hits/ subdirectories).
 #   sbatch slurm_scripts/perlmutter_sra4571_ivfpq_search.sbatch
@@ -34,7 +34,7 @@ read -r -a RATE_LIST <<<"${RATES:-0.0 0.05 0.1}"
 if [ "${MODE:-timing}" = timing ]; then
     for rate in "${RATE_LIST[@]}"; do
         uv run python run_benchmark.py --config "$CONFIG" --mutation_rate "$rate" \
-            --do_timing true --results_dir results/sra4571_timing ${EXTRA:-}
+            --do_timing true ${EXTRA:-}
     done
 else
     uv run python ivf_sweep.py --config "$CONFIG" \

@@ -39,5 +39,5 @@ class BaseIndex(ABC):
         """
         raise NotImplementedError(
             "multi-node build is not supported for this index type; "
-            "launch it with SLURM_NNODES=1"
+            "run it with --num_shards 1"
         )

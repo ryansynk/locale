@@ -18,8 +18,8 @@
 # loaded once (results -> results/sra4571/<encoder>/<index>/<search>/, hits ->
 # its hits/ subdirectory). With MODE=timing it instead runs
 # run_benchmark --do_timing per rate for the config as given (5 searches,
-# mean of runs 2-5, query embedding on this node's CPUs included) into
-# results/sra4571_timing/, beside the metagraph timing.
+# mean of runs 2-5, query embedding on this node's CPUs included) as
+# mut<rate>.timing.parquet beside the accuracy results.
 #   sbatch slurm_scripts/perlmutter_sra4571_ivf_search.sbatch
 #   MODE=timing sbatch slurm_scripts/perlmutter_sra4571_ivf_search.sbatch
 CONFIG="${CONFIG:-configs/sra4571/perlmutter_locale_sra4571_ivf.yaml}"
@@ -31,7 +31,7 @@ read -r -a RATE_LIST <<<"${RATES:-0.0 0.05 0.1}"
 if [ "${MODE:-sweep}" = timing ]; then
     for rate in "${RATE_LIST[@]}"; do
         uv run python run_benchmark.py --config "$CONFIG" --mutation_rate "$rate" \
-            --do_timing true --results_dir results/sra4571_timing ${EXTRA:-}
+            --do_timing true ${EXTRA:-}
     done
 else
     uv run python ivf_sweep.py --config "$CONFIG" \

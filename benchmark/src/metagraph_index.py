@@ -130,10 +130,10 @@ class MetagraphIndex(BaseIndex):
         if not bash_script_path.is_file():
             print(f"Error: Bash script not found at {bash_script_path}", file=sys.stderr)
             sys.exit(1)
-        # os.cpu_count() reports the whole node, not the cgroup, so under a
-        # partial SLURM allocation it oversubscribes -- build_metagraph.sh
-        # divides this by 8 to size annotate's parallelism.
-        num_threads = int(os.environ.get("SLURM_CPUS_PER_TASK") or 0) or os.cpu_count()
+        # os.cpu_count() reports the whole node, not the CPUs this process may
+        # run on, so under a partial allocation it oversubscribes --
+        # build_metagraph.sh divides this by 8 to size annotate's parallelism.
+        num_threads = len(os.sched_getaffinity(0))
 
         manifest_path = index_path / MANIFEST_FILE
         with open(manifest_path, "w") as f:
@@ -280,12 +280,35 @@ class MetagraphIndex(BaseIndex):
 
 
 def node_memory_gb() -> int:
-    """RAM budget handed to build_metagraph.sh: the SLURM per-node limit when
-    set, else physical RAM. The script keeps metagraph's caps below it."""
-    slurm_mb = os.environ.get("SLURM_MEM_PER_NODE")
-    if slurm_mb:
-        return max(1, int(slurm_mb) // 1024)
-    return max(1, os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") // (1024**3))
+    """RAM budget handed to build_metagraph.sh: the tightest cgroup memory
+    limit on this process's cgroup path (a batch allocation's limit), else
+    physical RAM. The script keeps metagraph's caps below it."""
+    limit = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    try:
+        cgroups = Path("/proc/self/cgroup").read_text().splitlines()
+    except OSError:
+        cgroups = []
+    for line in cgroups:
+        _, controllers, path = line.split(":", 2)
+        if controllers == "":  # v2
+            root, names = Path("/sys/fs/cgroup"), ("memory.max",)
+        elif "memory" in controllers.split(","):  # v1
+            root, names = Path("/sys/fs/cgroup/memory"), ("memory.limit_in_bytes",)
+        else:
+            continue
+        d = root / path.lstrip("/")
+        while True:
+            for name in names:
+                try:
+                    v = (d / name).read_text().strip()
+                except OSError:
+                    continue
+                if v.isdigit():
+                    limit = min(limit, int(v))
+            if d == root:
+                break
+            d = d.parent
+    return max(1, limit // (1024**3))
 
 
 def wait_for_server(

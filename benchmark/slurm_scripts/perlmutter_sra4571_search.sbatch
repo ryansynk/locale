@@ -54,6 +54,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # --unbuffered: srun line-buffers task output, and tqdm's \r updates carry
 # no newline, so without it the progress bars only appear at exit.
 srun --unbuffered --ntasks-per-node=1 --gpus-per-node=4 --cpus-per-task=128 \
+  bash -c 'exec "$@" --shard "$SLURM_NODEID" --num_shards "$SLURM_NNODES"' _ \
   uv run python run_benchmark.py \
     --config "$CONFIG" \
     --mutation_rate "$MUT_RATE"

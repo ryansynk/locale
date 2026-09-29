@@ -68,6 +68,7 @@ for row in "${ROWS[@]}"; do
         if ! srun --unbuffered --ntasks-per-node=1 \
                   --gpus-per-node="$GPUS_PER_NODE" \
                   --cpus-per-task="$CPUS_PER_TASK" \
+                  bash -c 'exec "$@" --shard "$SLURM_NODEID" --num_shards "$SLURM_NNODES"' _ \
                   uv run python run_benchmark.py \
                     --config "$cfg" --mutation_rate "$rate"; then
             echo "[FAIL] $cfg @ $rate" >&2

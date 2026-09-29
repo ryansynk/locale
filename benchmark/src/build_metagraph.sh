@@ -14,7 +14,7 @@ K=${2:?"Error: Missing k value (Argument 2)"}
 NUM_THREADS=${3:?"Error: Missing number of threads (Argument 3)"}
 CONTIG_MANIFEST=${4:?"Error: Missing contig manifest file path (Argument 4)"}
 OUTPUT_DIR=${5:?"Error: Missing output directory path (Argument 5)"}
-# RAM available to this build in GB (the node's, or the SLURM per-node limit).
+# RAM available to this build in GB (the node's, or the job's cgroup limit).
 MEM_GB=${6:-400}
 
 # Validate that the manifest actually exists

@@ -3,8 +3,7 @@
 # locale-data/benchmark/build_sra_bundle.sh sra4571 4571 5000 (list frozen at
 # locale-data/accessions/sra4571.txt).
 #
-# "sra4571" is not an HF dataset: any dataset_name outside
-# run_benchmark.DATASETS is treated as local, and dataset_dir must already hold
+# "sra4571" is not an HF dataset: dataset_dir must already hold
 # accs.txt + queries_mut<rate>.parquet (the finalize bundle layout) plus
 # logan_accessions/<ACC>/<ACC>.contigs.fa. finalize does not write
 # logan_accessions/; perlmutter_sra4571.sbatch links it per accession from

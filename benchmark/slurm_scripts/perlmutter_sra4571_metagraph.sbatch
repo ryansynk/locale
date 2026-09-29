@@ -52,9 +52,10 @@ echo "logan_accessions: $n_found contigs for $n_accs accessions"
 
 for rate in "${RATE_LIST[@]}"; do
     echo "=== metagraph @ mutation_rate $rate  ($(date)) ==="
-    # One task per node; run_benchmark reads SLURM_NODEID / SLURM_NNODES to
+    # One task per node; --shard / --num_shards (SLURM_NODEID / SLURM_NNODES) tell run_benchmark how to
     # pick its shard. --unbuffered so metagraph's progress lines appear live.
     srun --unbuffered --ntasks-per-node=1 --cpus-per-task="$SLURM_CPUS_PER_TASK" \
+      bash -c 'exec "$@" --shard "$SLURM_NODEID" --num_shards "$SLURM_NNODES"' _ \
       uv run python run_benchmark.py --config "$CONFIG" --mutation_rate "$rate"
 done
 

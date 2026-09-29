@@ -43,9 +43,8 @@ class MMseqs2Index(BaseIndex):
 
     def _threads_args(self) -> list[str]:
         # mmseqs defaults to every hardware thread, which oversubscribes a
-        # partial SLURM allocation; honour the allocation when there is one.
-        n = os.environ.get("SLURM_CPUS_PER_TASK")
-        return ["--threads", n] if n else []
+        # partial allocation; use the CPUs this process may run on.
+        return ["--threads", str(len(os.sched_getaffinity(0)))]
 
     def _set_paths(self, index_path: Path):
         self.index_path = index_path.resolve()

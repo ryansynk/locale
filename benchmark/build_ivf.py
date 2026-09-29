@@ -9,11 +9,11 @@ index (needs RAM for the whole index -- a 512 GB CPU node for sra4571), or
 here with --merge. FastScan search (index.fastscan) loads the shards side by
 side and never merges. The last rank to finish marks the directory .done.
 
-    srun -N8 uv run python build_ivf.py --config <dense config with index.engine: ivfrabitq>
+    # one process per node, r = its rank, R = the node count:
+    uv run python build_ivf.py --config <dense config with index.engine: ivfrabitq> --shard r --num_shards R
     python build_ivf.py --config ... --merge true      # CPU node, after the build
 """
 
-import os
 import time
 
 from jsonargparse import CLI
@@ -30,8 +30,8 @@ def main(cfg: ExperimentConfig, merge: bool = False):
     )
     fbin_dir = m.index_path(cfg.index_dir)
     engine_dir = m.engine_path(cfg.index_dir)
-    rank = int(os.environ.get("SLURM_NODEID", "0"))
-    num_ranks = int(os.environ.get("SLURM_NNODES", "1"))
+    rank = cfg.shard
+    num_ranks = cfg.num_shards
     if merge:
         shards = sorted(engine_dir.glob(f"ivf{m.index.nlist}_rabitq{m.index.nb_bits}_shard_*_of_*.faiss"))
         num_ranks = int(shards[0].stem.rsplit("_of_", 1)[1])

@@ -14,12 +14,12 @@
 # Step 1 of 3: 32-node embed of the sra4571 dense locale index.
 # Reference: the 5092-accession 100studies embed (job 58208345) took 2h40m on
 # 32 nodes (~85 node-hours); 4571 accessions is ~90% of that, so expect
-# ~2.5h. --build_only makes every node exit once its shard is .done, so the
+# ~2.5h. --stage embed makes every node exit once its shard is .done, so the
 # GPU allocation is not held for the serial merge. Then:
 #   sbatch perlmutter_sra4571_merge.sbatch         (CPU, ~3h)
 #   sbatch perlmutter_sra4571_search.sbatch 0.00   (GPU)
 #
-# One task per node: run_benchmark shards accessions by SLURM_NODEID and each
+# One task per node: run_benchmark shards accessions by --shard (SLURM_NODEID) and each
 # task fans out over its node's 4 GPUs internally. Shard striping depends on
 # the node count: shard_* under indexes_sra4571 must be empty on the first run
 # at a new -N, and a resubmission after a timeout must reuse the SAME -N so
@@ -62,4 +62,5 @@ echo "logan_accessions: rglob finds $n_found contigs for $n_accs accessions"
 
 export PYTHONUNBUFFERED=1
 
-srun uv run python run_benchmark.py --config configs/sra4571/perlmutter_locale_sra4571.yaml --build_only true
+srun bash -c 'exec "$@" --shard "$SLURM_NODEID" --num_shards "$SLURM_NNODES"' _ \
+  uv run python run_benchmark.py --config configs/sra4571/perlmutter_locale_sra4571.yaml --stage embed

@@ -12,7 +12,7 @@
 #SBATCH -e slurm_logs/sra4571_ivfpq_build_%j.err
 
 # Build the 16 cuVS IVF-PQ shards of the sra4571 fbin: one task per GPU
-# (SLURM_PROCID = shard), each pread-streams its 1/16 of the rows (~395 GB),
+# (--shard = SLURM_PROCID), each pread-streams its 1/16 of the rows (~395 GB),
 # trains 4096 lists + 128x8 PQ codebooks on a 1M-row sample of its range and
 # extends in 2M-row blocks, then saves
 # indexes/sra4571/.../ivfpq/pq128x8_L4096/shard_<i>_of_16.cuvs (~17.5 GB).
@@ -23,4 +23,5 @@ cd /pscratch/sd/r/rsynk/locale/benchmark
 mkdir -p slurm_logs
 export PYTHONUNBUFFERED=1
 srun --unbuffered --ntasks-per-node=4 --gpus-per-task=1 --cpus-per-task=32 \
-  uv run python build_ivfpq.py --config "$CONFIG"
+  bash -c 'exec "$@" --shard "$SLURM_PROCID" --num_shards "$SLURM_NTASKS"' _ \
+  uv run python run_benchmark.py --config "$CONFIG" --stage engine

@@ -1,11 +1,9 @@
-import os
 import shutil
 import sys
 import time
 from pathlib import Path
 
 import polars as pl
-from huggingface_hub import snapshot_download
 from jsonargparse import CLI
 from src.config import (
     DONE_FILE,
@@ -19,29 +17,11 @@ from src.config import (
     run_search_identity,
 )
 from src.dense_index import DenseIndex
+from src.engines import make_engine
 from src.download_accessions import download_accessions
 from src.metagraph_index import MetagraphIndex
 from src.mmseqs2_index import MMseqs2Index
 from src.topk_regroup import merge_topk_hits, regroup_topk_hits
-
-DATASETS = {
-    "sra50": "rsynk/locale-benchmark-sra50",
-    "sra500": "rsynk/locale-benchmark-sra500",
-    # Cross-genotype HBV retrieval: query with genotype-D reads, retrieve
-    # genotype-B accessions (~11% divergent). Unlike sra50/sra500, ground truth
-    # comes from SRA genotype metadata rather than from aligning reads to
-    # contigs - the point being that no aligner decides the correct answer.
-    # 52 accessions = 47 sra50 distractors + 5 genotype-B targets.
-    "sra52viral": "rsynk/locale-benchmark-sra52-viral",
-    # 2026-09 rebuild (locale-data list-first pipeline): fresh seeded draws
-    # disjoint from the training/validation runs, source run required in the
-    # relevant set, both strands aligned (`strand` column). sra4571 stays
-    # local (see configs/sra4571/perlmutter_locale_sra4571.yaml).
-    "sra50v2": "rsynk/locale-benchmark-sra50-v2",
-    "sra500v2": "rsynk/locale-benchmark-sra500-v2",
-    "sra55viral": "rsynk/locale-benchmark-sra55viral",
-}
-
 
 def verify_download(accession_ids: list[str], accession_paths: list[Path]):
     # Check all accessions in manifest were found
@@ -287,27 +267,74 @@ def _annotate_results(
 def main(cfg: ExperimentConfig):
     method = cfg.model
     index_path: Path = method.index_path(cfg.index_dir)
+    node_rank = cfg.shard
+    num_nodes = cfg.num_shards
+    dense = isinstance(method, DenseMethod)
 
-    # Download datasets and queries. A dataset_name not in DATASETS is a local
-    # dataset: dataset_dir must already hold accs.txt and the per-rate query
-    # files (the bundle layout finalize_query_dataset.py + mutate_queries.py
-    # write).
-    queries_file = query_file_name(cfg.mutation_rate)
-    if cfg.dataset_name in DATASETS:
-        local_path = snapshot_download(
-            DATASETS[cfg.dataset_name],
-            repo_type="dataset",
-            local_dir=cfg.dataset_dir,
-            allow_patterns=["accs.txt", queries_file, "*.json"],
-        )
+    if isinstance(method, DenseMethod):
+        index_cls = DenseIndex
+    elif isinstance(method, MetagraphConfig):
+        index_cls = MetagraphIndex
+    elif isinstance(method, MMseqs2Config):
+        index_cls = MMseqs2Index
     else:
-        local_path = cfg.dataset_dir
-        for required in ("accs.txt", queries_file):
-            if not (Path(local_path) / required).exists():
-                raise FileNotFoundError(
-                    f"Local dataset '{cfg.dataset_name}': {required} not found in "
-                    f"{local_path} (local datasets are not downloaded)"
-                )
+        raise ValueError("Unknown model config")
+
+    # The label's directory must have been built under this identity (or be
+    # new). Written before the build so every rank of a multi-node job, and
+    # every later run, can check it.
+    ensure_config(index_path, method.index_identity(), (index_path / DONE_FILE).exists())
+
+    if cfg.stage == "merge":
+        # ExperimentConfig refused already unless every shard is .done. A
+        # completed dense merge deletes its progress file, so merging again
+        # would restart the copy from scratch -- skip when already done.
+        if (index_path / DONE_FILE).exists():
+            print(f"Index already merged and marked .done: {index_path}")
+            return
+        index_cls.merge_shards(index_path, num_nodes)
+        (index_path / DONE_FILE).touch()
+        print(f"Index marked .done: {index_path}")
+        return
+
+    if cfg.stage == "engine":
+        # One shard of the engine artifact; the process that finds every
+        # shard present marks the directory .done.
+        if not dense:
+            raise ValueError("stage engine needs a dense method (model.index)")
+        if not (index_path / DONE_FILE).exists():
+            raise FileNotFoundError(f"{index_path} is not .done: run stage embed (and merge) first")
+        engine_path = method.engine_path(cfg.index_dir)
+        ensure_config(engine_path, method.engine_identity(), (engine_path / DONE_FILE).exists())
+        if (engine_path / DONE_FILE).exists():
+            print(f"Engine already built and marked .done: {engine_path}")
+            return
+        engine = make_engine(method.index)
+        t0 = time.time()
+        engine.build(index_path, engine_path, node_rank, num_nodes)
+        print(f"[shard {node_rank}/{num_nodes}] built in {time.time() - t0:.0f}s")
+        complete = engine.complete(engine_path) if hasattr(engine, "complete") else node_rank == 0
+        if complete:
+            (engine_path / DONE_FILE).touch()
+            print(f"all {num_nodes} shards present: {engine_path} marked {DONE_FILE}")
+        return
+
+    if cfg.stage == "search":
+        needed = [index_path] + ([method.engine_path(cfg.index_dir)] if dense else [])
+        if missing := [str(p) for p in needed if not (p / DONE_FILE).exists()]:
+            raise FileNotFoundError(f"stage search needs built indexes; not .done: {missing}")
+
+    # dataset_dir must already hold accs.txt and the per-rate query files (the
+    # bundle layout finalize_query_dataset.py + mutate_queries.py write, or a
+    # published bundle fetched with fetch_dataset.py).
+    queries_file = query_file_name(cfg.mutation_rate)
+    local_path = cfg.dataset_dir
+    for required in ("accs.txt", queries_file):
+        if not (Path(local_path) / required).exists():
+            raise FileNotFoundError(
+                f"Dataset '{cfg.dataset_name}': {required} not found in "
+                f"{local_path} (fetch a published bundle with fetch_dataset.py)"
+            )
     accession_ids_path: Path = Path(local_path).resolve() / "accs.txt"
     with open(accession_ids_path) as f:
         accession_ids = f.read().splitlines()
@@ -329,22 +356,7 @@ def main(cfg: ExperimentConfig):
     # subsample queries if needed
     queries = queries.sample(min(cfg.num_queries, len(queries)), seed=cfg.random_seed)
 
-    if isinstance(method, DenseMethod):
-        index = DenseIndex(cfg)
-    elif isinstance(method, MetagraphConfig):
-        index = MetagraphIndex(cfg)
-    elif isinstance(method, MMseqs2Config):
-        index = MMseqs2Index(cfg)
-    else:
-        raise ValueError("Unknown model config")
-
-    node_rank = int(os.environ.get("SLURM_NODEID", "0"))
-    num_nodes = int(os.environ.get("SLURM_NNODES", "1"))
-
-    # The label's directory must have been built under this identity (or be
-    # new). Written before the build so every rank of a multi-node job, and
-    # every later run, can check it.
-    ensure_config(index_path, method.index_identity(), (index_path / DONE_FILE).exists())
+    index = index_cls(cfg)
 
     # Build index if not already built
     if not (index_path / DONE_FILE).exists():
@@ -363,13 +375,8 @@ def main(cfg: ExperimentConfig):
                 index.save(shard_path)
                 (shard_path / DONE_FILE).touch()
 
-            if cfg.build_only:
-                if node_rank == 0:
-                    print(
-                        "[build_only]: Shard 0 saved. Run finish_merge.py to merge. Exiting."
-                    )
-                else:
-                    print(f"[Node {node_rank}] Shard saved. Exiting.")
+            if cfg.stage == "embed":
+                print(f"[Node {node_rank}] Shard saved. Run stage merge to merge. Exiting.")
                 sys.exit(0)
 
             if node_rank != 0:
@@ -392,10 +399,13 @@ def main(cfg: ExperimentConfig):
             index.save(index_path)
             (index_path / DONE_FILE).touch()
 
+    if cfg.stage == "embed":
+        print("[stage embed]: Index built. Exiting.")
+        sys.exit(0)
+
     # Dense engine artifact (codes / shards; a no-op for the exact scans).
     # Every rank calls build: engines that shard their build across ranks
     # coordinate inside it and return once the index is complete.
-    dense = isinstance(method, DenseMethod)
     if dense:
         engine_path = method.engine_path(cfg.index_dir)
         ensure_config(engine_path, method.engine_identity(), (engine_path / DONE_FILE).exists())
@@ -404,7 +414,7 @@ def main(cfg: ExperimentConfig):
             if node_rank == 0:
                 (engine_path / DONE_FILE).touch()
 
-    if cfg.no_search or cfg.build_only:
+    if cfg.no_search:
         print("[no_search]: Index built. Exiting.")
         sys.exit(0)
 
@@ -475,7 +485,11 @@ def main(cfg: ExperimentConfig):
         avg_time = -1.0
 
     results = _annotate_results(results, cfg, index, index_path, avg_time)
-    output_path: Path = out_dir / results_file_name(cfg.mutation_rate)
+    # A timed run sits beside the accuracy run it times (timing is not identity).
+    if cfg.do_timing:
+        output_path: Path = out_dir / f"mut{cfg.mutation_rate:.2f}.timing.parquet"
+    else:
+        output_path: Path = out_dir / results_file_name(cfg.mutation_rate)
     output_path.parent.mkdir(exist_ok=True, parents=True)
     results.write_parquet(output_path)
 

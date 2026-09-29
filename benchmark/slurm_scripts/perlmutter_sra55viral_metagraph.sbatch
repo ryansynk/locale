@@ -24,7 +24,6 @@ export PYTHONUNBUFFERED=1
 # The 55 contigs are already under the bundle's logan_accessions/ (fetched by
 # run_sra55viral.sh); run_benchmark would re-download only if they were gone.
 srun --unbuffered -N1 -n1 --cpus-per-task=128 \
-  /usr/bin/env SLURM_NNODES=1 SLURM_NODEID=0 \
   uv run python run_benchmark.py \
     --config configs/sra55viral/perlmutter_metagraph_sra55viral.yaml \
-    --mutation_rate 0.0
+    --mutation_rate 0.0 --num_shards 1

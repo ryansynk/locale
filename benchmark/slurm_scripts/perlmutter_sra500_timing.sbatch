@@ -19,10 +19,9 @@
 # are the existing .done ones under indexes/sra500/; the RaBitQ codes are
 # built into <locale index>/rabitq/ on first load and kept.
 #
-# Results go to results/sra500_timing/<encoder>/<index>/<search>/mut0.00.parquet
-# (a separate dir so the accuracy results in results/sra500/, produced by the
-# 4-node sharded scans, are not overwritten). avg_time and index_size_gb are
-# the columns to read off.
+# Results go to results/sra500/<encoder>/<index>/<search>/mut0.00.timing.parquet,
+# beside the accuracy results of the 4-node sharded scans. avg_time and
+# index_size_gb are the columns to read off.
 #
 #   sbatch slurm_scripts/perlmutter_sra500_timing.sbatch
 #   METHODS="locale rabitq" sbatch slurm_scripts/perlmutter_sra500_timing.sbatch
@@ -44,18 +43,17 @@ read -r -a METHOD_LIST <<<"${METHODS:-locale rabitq esa llmed}"
 for m in "${METHOD_LIST[@]}"; do
     cfg="${CONFIGS[$m]:?unknown method $m}"
     echo "=== timing $m  ($(date)) ==="
-    # SLURM_NNODES=1: do_timing is single-node only (no sharded search).
+    # --num_shards 1: do_timing is single-node only (no sharded search).
     srun --unbuffered -N1 -n1 --gpus-per-node=4 --cpus-per-task="$SLURM_CPUS_PER_TASK" \
-      /usr/bin/env SLURM_NNODES=1 SLURM_NODEID=0 \
       uv run python run_benchmark.py --config "$cfg" --mutation_rate 0.0 \
-        --do_timing true --results_dir results/sra500_timing
+        --num_shards 1 --do_timing true
     echo "=== done $m  ($(date)) ==="
 done
 
 uv run python - <<'PY'
 import polars as pl
 from pathlib import Path
-for f in sorted(Path("results/sra500_timing").rglob("*.parquet")):
+for f in sorted(Path("results/sra500").rglob("*.timing.parquet")):
     df = pl.read_parquet(f)
     print(f"{f.parts[-2]:75s} avg_time {df['avg_time'][0]:8.2f} s   index {df['index_size_gb'][0]:8.2f} GB")
 PY

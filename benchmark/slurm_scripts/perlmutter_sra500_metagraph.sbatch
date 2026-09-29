@@ -44,12 +44,9 @@ echo "logan_accessions: $n_found contigs for $n_accs accessions"
 
 for rate in "${RATE_LIST[@]}"; do
     echo "=== metagraph @ mutation_rate $rate  ($(date)) ==="
-    # /usr/bin/env by absolute path: ~/.local/bin/env shadows it on PATH and
-    # is not executable. SLURM_NNODES=1 keeps run_benchmark on the
-    # single-node build path.
+    # --num_shards 1 keeps run_benchmark on the single-node build path.
     srun --unbuffered -N1 -n1 --cpus-per-task="$SLURM_CPUS_PER_TASK" \
-      /usr/bin/env SLURM_NNODES=1 SLURM_NODEID=0 \
-      uv run python run_benchmark.py --config "$CONFIG" --mutation_rate "$rate"
+      uv run python run_benchmark.py --config "$CONFIG" --mutation_rate "$rate" --num_shards 1
 done
 
 uv run python print_results.py results/sra500 "$BUNDLE/queries_mut0.00.parquet" "$BUNDLE/accs.txt" || true

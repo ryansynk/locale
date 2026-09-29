@@ -12,7 +12,7 @@ is checked before anything is reused)::
     <results_dir>/<encoder_label>/<index_label>/<search_label>/
                                                 config.json (engine + SEARCH fields + strands,
                                                 num_queries, seed), mut<rate>.parquet,
-                                                hits/mut<rate>.parquet
+                                                mut<rate>.timing.parquet, hits/mut<rate>.parquet
     <results_dir>/<label>/<search_label>/       metagraph / mmseqs results
 
 Each index dataclass declares which of its fields change the artifact on disk
@@ -342,7 +342,9 @@ MethodConfig = Union[DenseMethod, MetagraphConfig, MMseqs2Config]
 class ExperimentConfig:
     model: MethodConfig
     dataset_name: str
-    dataset_dir: str | None
+    # Must already hold accs.txt and queries_mut<rate>.parquet (fetch_dataset.py
+    # downloads a published bundle; nothing is downloaded here).
+    dataset_dir: str
     index_dir: Path
     results_dir: Path
     mutation_rate: float = 0.0
@@ -351,16 +353,39 @@ class ExperimentConfig:
     num_queries: int = 1000
     random_seed: int = 1337
     no_search: bool = False
-    # Multi-node build: every node (node 0 included) exits as soon as its shard
-    # is .done, skipping the serial merge so GPU nodes are not held for it.
-    # Run finish_merge.py (CPU) afterwards, then search with the index .done.
-    build_only: bool = False
+    # This process's shard of a multi-process run and the shard count, passed
+    # by the launcher (e.g. the node rank and node count of the allocation).
+    # A build splits accessions shard::num_shards into shard_<shard>/; the
+    # exhaustive and SHARDABLE top-k searches split across shards too.
+    shard: int = 0
+    num_shards: int = 1
+    # all: build what is missing, then search (every shard runs to the end).
+    # embed: build this shard's embeddings (or the whole index when
+    #   num_shards is 1) and exit, so GPU nodes are not held for the merge.
+    # merge: join every shard_<r>/ into the index and mark it .done (CPU;
+    #   refuses unless all num_shards shards are .done).
+    # engine: build shard `shard` of the engine artifact over the merged fbin
+    #   (IVF-PQ: one process per GPU, num_shards = model.index.num_shards).
+    # search: search an index that is already .done.
+    stage: Literal["all", "embed", "merge", "engine", "search"] = "all"
     # Smoke-test knob: cap how many accessions enter the index so an end-to-end
     # run finishes in minutes. Leave unset for real runs — a truncated index is
     # still marked .done, so always pair this with a throwaway index_dir.
     max_accessions: int | None = None
 
     def __post_init__(self):
+        if not 0 <= self.shard < self.num_shards:
+            raise ValueError(f"shard {self.shard} is not in [0, num_shards={self.num_shards})")
+        if self.stage == "merge":
+            index_path = self.model.index_path(self.index_dir)
+            missing = [
+                r for r in range(self.num_shards)
+                if not (index_path / f"shard_{r}" / DONE_FILE).exists()
+            ]
+            if missing and not (index_path / DONE_FILE).exists():
+                raise ValueError(
+                    f"Refusing to merge {index_path}: shards not complete: {missing}"
+                )
         self.results_dir.mkdir(exist_ok=True, parents=True)
 
 

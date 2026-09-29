@@ -31,4 +31,5 @@ NUM_SHARDS=${1:-32}
 # capped the first 100studies merge at ~160 MB/s and would cap search reads.
 lfs setstripe -c 32 -S 16M "$INDEX_PATH" || true
 
-uv run python finish_merge.py "$INDEX_PATH" "$NUM_SHARDS"
+uv run python run_benchmark.py --config configs/sra4571/perlmutter_locale_sra4571.yaml \
+  --stage merge --num_shards "$NUM_SHARDS"

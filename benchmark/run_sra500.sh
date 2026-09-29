@@ -18,11 +18,11 @@
 #   RATES="0.0" ./run_sra500.sh esa     # index build + clean-query eval only
 #
 # Dense methods (locale, esa, llmed) run as one process per node across the
-# whole allocation: run_benchmark.py reads SLURM_NODEID / SLURM_NNODES, builds
+# whole allocation: run_benchmark.py gets --shard / --num_shards from SLURM_NODEID / SLURM_NNODES, builds
 # one index shard per node, rank 0 merges, then every node scans its range of
 # vector rows and rank 0 merges the hits. metagraph is a single-node method
 # (the sharded build path merges dense indexes only), so it runs on one node
-# with the node-count variables forced to 1. Plain `python run_benchmark.py`
+# with --num_shards 1. Plain `python run_benchmark.py`
 # inside a multi-node allocation would be a lone rank 0 waiting forever for
 # peers: always srun.
 #
@@ -99,14 +99,13 @@ run_step() {
     local method="$1" cfg="$2" rate="$3"
     if [[ "$SINGLE_NODE_METHODS" == *" $method "* ]]; then
         # One node, told it is alone so it neither shards the build nor waits
-        # for peers. /usr/bin/env by absolute path: ~/.local/bin/env shadows
-        # it on PATH here and is not executable.
+        # for peers.
         srun --unbuffered -N1 -n1 --cpus-per-task="$CPUS_PER_TASK" \
-            /usr/bin/env SLURM_NNODES=1 SLURM_NODEID=0 \
-            uv run python run_benchmark.py --config "$cfg" --mutation_rate "$rate"
+            uv run python run_benchmark.py --config "$cfg" --mutation_rate "$rate" --num_shards 1
     else
         srun --unbuffered --ntasks-per-node=1 \
             --gpus-per-node="$GPUS_PER_NODE" --cpus-per-task="$CPUS_PER_TASK" \
+            bash -c 'exec "$@" --shard "$SLURM_NODEID" --num_shards "$SLURM_NNODES"' _ \
             uv run python run_benchmark.py --config "$cfg" --mutation_rate "$rate"
     fi
 }
