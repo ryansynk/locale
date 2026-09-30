@@ -1,0 +1,5 @@
+# The repo root .gitignore has a bare `data` rule (line ~209), which matches any
+# directory named data at any depth -- including this probe's data/, whose
+# manifest.yaml and fetch_elements.py are deliverables. Re-include it here.
+# data/cache/ stays ignored via data/.gitignore.
+!data/

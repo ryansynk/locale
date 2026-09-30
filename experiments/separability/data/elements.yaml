@@ -1,0 +1,180 @@
+# Element definitions for the separability probe (hand-authored input).
+#
+# fetch_elements.py consumes this and writes data/manifest.yaml, which is the
+# same structure plus every accession actually retrieved. This file is the
+# *intent*; manifest.yaml is the *provenance record*.
+#
+# Vocabulary
+#   carrier     sequences that MUST pool into one feature column
+#   confusable  functionally different homologs that MUST NOT pool with them
+#
+# gene_key controls what counts as "the same gene" for the same-gene scope in
+# sweep.py:
+#   symbol  the /gene qualifier (clbB, cdtA, irp1) -- for elements that span
+#           several distinct genes, where a clbB query must not be scored
+#           against clbA
+#   group   the whole group is one gene family -- for the beta-lactamases, where
+#           every carrier is a blaCTX-M allele but the /gene qualifier is
+#           inconsistent (some records carry the full product name instead)
+#
+# A group's members are CDS features pulled out of GenBank records. A CDS joins
+# a group when its /gene or /product matches one of the group's patterns AND the
+# record's source organism is in the group's `genera`. The genus gate is not
+# cosmetic: Salmonella carries a cdtB that is part of typhoid toxin, a different
+# holotoxin from the cdtABC of the Campylobacter/E. coli lineage, so "cdtB" is a
+# carrier in one genus and a confusable in another. Name alone cannot label it.
+
+elements:
+
+  # ---------------------------------------------------------------------- #
+  - name: pks_clb
+    title: "pks / clb island (colibactin)"
+    # ~54 kb NRPS-PKS hybrid island, horizontally mobile, the motivating case.
+    # SLEN capped below a chromosome so searches return islands, plasmids and
+    # contigs rather than 5 Mb genomes we would have to stream.
+    slen: "1000:150000"
+    retmax: 220
+    # 150 kb island records: efetch them a few at a time or NCBI truncates.
+    batch: 3
+    groups:
+      - label: carrier
+        name: clb
+        gene_key: symbol
+        terms:
+          - 'colibactin AND Escherichia[Organism] AND {slen}[SLEN]'
+          - 'colibactin AND Klebsiella[Organism] AND {slen}[SLEN]'
+          - 'colibactin AND Citrobacter[Organism] AND {slen}[SLEN]'
+          - 'clbB[Gene] AND {slen}[SLEN]'
+          - 'clbN[Gene] AND {slen}[SLEN]'
+          # Whole-island records. Without these, most carrier accessions
+          # deposit a single clb gene, and the element scope then measures
+          # which gene a submitter happened to annotate rather than anything
+          # about the embedding.
+          - 'clbB[Gene] AND clbN[Gene] AND 20000:80000[SLEN]'
+          - 'clbB[Gene] AND clbN[Gene] AND Klebsiella[Organism] AND 20000:80000[SLEN]'
+          - 'clbA[Gene] AND clbQ[Gene] AND 20000:80000[SLEN]'
+        patterns: ['^clb[A-S]$', 'colibactin']
+        genera: [Escherichia, Klebsiella, Citrobacter]
+      - label: confusable
+        name: ybt
+        gene_key: symbol
+        # Yersiniabactin: the adjacent NRPS-PKS hybrid. Frequently sits in the
+        # same HPI-bearing strain as pks, which is exactly why it is the
+        # confusable that matters.
+        terms:
+          - '(irp1[Gene] OR irp2[Gene] OR ybtS[Gene] OR ybtE[Gene] OR ybtU[Gene]) AND {slen}[SLEN]'
+          - 'yersiniabactin AND {slen}[SLEN]'
+          - 'irp1[Gene] AND irp2[Gene] AND 20000:80000[SLEN]'
+        # Biosynthetic machinery only: irp1/irp2 (= HMWP1/HMWP2, the NRPS-PKS
+        # megasynthases) and the ybtE/S/U tailoring enzymes. Deliberately NOT
+        # the ybtP/Q/X transporters or the FyuA receptor -- those are in the
+        # locus but are not functionally analogous to a clb megasynthase, and
+        # including them padded the confusable set with easy cases, which
+        # lowers mean confusable capture and flatters every method.
+        patterns: ['^irp[12]$', '^ybt[ESU]$', 'HMWP',
+                   'yersiniabactin (polyketide|non-ribosomal)']
+        genera: [Escherichia, Klebsiella, Citrobacter, Yersinia, Enterobacter, Serratia]
+      - label: confusable
+        name: ent
+        gene_key: symbol
+        # Enterobactin: a second, more distant NRPS. entF is a bona fide NRPS
+        # elongation module, so this tests homologous-machinery confusion
+        # without the genomic adjacency.
+        terms:
+          - '(entF[Gene] OR entE[Gene] OR entB[Gene]) AND {slen}[SLEN]'
+        patterns: ['^ent[BEF]$', 'enterobactin synth']
+        genera: [Escherichia, Klebsiella, Citrobacter, Salmonella, Enterobacter, Shigella]
+
+  # ---------------------------------------------------------------------- #
+  - name: cdt_abc
+    title: "cdtABC (cytolethal distending toxin)"
+    slen: "500:60000"
+    retmax: 220
+    batch: 6
+    groups:
+      - label: carrier
+        name: cdt
+        gene_key: symbol
+        terms:
+          - 'cdtB[Gene] AND Campylobacter[Organism] AND {slen}[SLEN]'
+          - 'cdtB[Gene] AND Escherichia[Organism] AND {slen}[SLEN]'
+          - 'cdtB[Gene] AND Haemophilus[Organism] AND {slen}[SLEN]'
+          - 'cdtB[Gene] AND Shigella[Organism] AND {slen}[SLEN]'
+          - 'cytolethal distending toxin AND Helicobacter[Organism] AND {slen}[SLEN]'
+          - 'cytolethal distending toxin AND Aggregatibacter[Organism] AND {slen}[SLEN]'
+          # Complete cdtABC operons, for the same reason as the pks island.
+          - 'cdtA[Gene] AND cdtB[Gene] AND cdtC[Gene] AND 2000:60000[SLEN]'
+          - 'cdtA[Gene] AND cdtB[Gene] AND cdtC[Gene] AND Campylobacter[Organism] AND 2000:60000[SLEN]'
+        patterns: ['^cdt[ABC]$', 'cytolethal distending toxin']
+        genera: [Campylobacter, Escherichia, Haemophilus, Shigella, Helicobacter, Aggregatibacter]
+      - label: confusable
+        name: typhoid_cdtB
+        gene_key: symbol
+        # Salmonella's cdtB is a real CdtB homolog, but it is the nuclease
+        # subunit of typhoid toxin (with pltA/pltB), not of a cdtABC operon.
+        # This is the "distant cdt-like gene" case and the hardest confusable
+        # in the probe -- it shares a name and a fold with the carriers.
+        terms:
+          - 'cdtB[Gene] AND Salmonella[Organism] AND {slen}[SLEN]'
+          - 'typhoid toxin AND Salmonella[Organism] AND {slen}[SLEN]'
+          - 'cdtB[Gene] AND pltA[Gene] AND pltB[Gene] AND Salmonella[Organism] AND 2000:60000[SLEN]'
+        patterns: ['^cdtB$', '^plt[AB]$', 'typhoid.?like toxin', 'typhoid toxin']
+        genera: [Salmonella]
+      - label: confusable
+        name: other_toxins
+        gene_key: symbol
+        # Unrelated secreted toxin families from the same hosts.
+        terms:
+          - '(hlyA[Gene] OR cnf1[Gene]) AND Escherichia[Organism] AND {slen}[SLEN]'
+          - '(stx1A[Gene] OR stx2A[Gene]) AND {slen}[SLEN]'
+          - '(eltA[Gene] OR eltB[Gene]) AND Escherichia[Organism] AND {slen}[SLEN]'
+        # No astA: the symbol is used both for the EAST1 heat-stable
+        # enterotoxin and for arginine N-succinyltransferase, and it matched 21
+        # copies of the metabolic enzyme -- a housekeeping protein is not a
+        # "functionally different homolog" of a genotoxin, it is a free win.
+        patterns: ['^hlyA$', '^cnf1$', '^stx[12][AB]$', '^elt[AB]$',
+                   'shiga toxin', 'hemolysin A', 'cytotoxic necrotizing factor',
+                   'heat-labile enterotoxin']
+        genera: [Escherichia, Shigella]
+
+  # ---------------------------------------------------------------------- #
+  - name: bla_ctxm
+    title: "blaCTX-M (extended-spectrum beta-lactamase)"
+    # Crisp ground truth and large catalogued allelic diversity: the positive
+    # control for the whole probe. If LOCALE cannot separate CTX-M from TEM/SHV/
+    # OXA, nothing else in this report means anything.
+    slen: "500:3000"
+    retmax: 260
+    groups:
+      - label: carrier
+        name: ctxm
+        gene_key: group
+        terms:
+          - 'blaCTX-M[Gene] AND {slen}[SLEN]'
+          - 'CTX-M beta-lactamase AND {slen}[SLEN]'
+        # NOT '^bla$': the generic /gene value "bla" with product "class A
+        # beta-lactamase" is any class A enzyme, and it let four TEM-like
+        # sequences into the CTX-M carrier set, where they sat at cosine >0.99
+        # from real TEMs and destroyed the confusable boundary. Require an
+        # explicit CTX-M mention -- this element is the probe's positive
+        # control and its ground truth has to be crisp.
+        patterns: ['CTX-M']
+        genera: []          # empty = accept any organism
+      - label: confusable
+        name: tem
+        gene_key: group
+        terms: ['blaTEM[Gene] AND {slen}[SLEN]']
+        patterns: ['TEM-', '^blaTEM']
+        genera: []
+      - label: confusable
+        name: shv
+        gene_key: group
+        terms: ['blaSHV[Gene] AND {slen}[SLEN]']
+        patterns: ['SHV-', '^blaSHV']
+        genera: []
+      - label: confusable
+        name: oxa
+        gene_key: group
+        terms: ['blaOXA[Gene] AND {slen}[SLEN]']
+        patterns: ['OXA-', '^blaOXA']
+        genera: []
