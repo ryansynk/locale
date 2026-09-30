@@ -1,5 +1,6 @@
 """RandomSampleIndex: per-accession subsample sizes, determinism, and the
-build -> load -> topk_hits round trip it shares with the epsilon net."""
+build -> load -> topk_hits round trip it shares with the epsilon net (the
+kept rows are written as their own fbin and scanned by ExactEngine)."""
 
 import numpy as np
 import polars as pl
@@ -76,4 +77,6 @@ def test_round_trip_topk(fbin_dir):
     assert np.isin(hits, ids).all()  # only kept rows come back
     assert np.allclose((X[hits] * q[:, None, :]).sum(-1), scores, atol=1e-5)
     assert np.all(np.diff(scores, axis=1) <= 1e-6)
-    assert eng.size_gb(d, d / "rt") == pytest.approx(len(ids) * 16 * 4 / 1e9)
+    net_bytes = (d / "rt" / "embeddings.fbin").stat().st_size
+    assert net_bytes == 8 + len(ids) * 16 * 4  # header + kept rows only
+    assert eng.size_gb(d, d / "rt") > net_bytes / 1024**3
