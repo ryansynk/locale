@@ -826,12 +826,14 @@ def plot_r_precision_vs_time(
         plt.close(fig)
 
 
-def print_auprc(
+def compute_auprc(
     data: pl.DataFrame,
     ground_truth: pl.DataFrame,
     accessions: list[str],
     bootstrap_samples: int,
-):
+) -> pl.DataFrame:
+    """One row per run and mutation rate: mean per-query average precision
+    (``auprc``) and its bootstrap 95% half-width (``margin``)."""
     accession_order = sorted(accessions)  # canonical, stable ordering
     acc_to_idx = {acc: i for i, acc in enumerate(accession_order)}
     n_acc = len(accession_order)
@@ -897,11 +899,21 @@ def print_auprc(
                 "mutation_rate": name[5],
                 "query_type": name[6],
                 "auprc": mean_estimate,
+                "margin": margin,
                 "range": f"{mean_estimate:.3f} +- {margin:.3f}",
             }
         )
 
-    auprc_df = pl.from_dicts(auprc_rows)
+    return pl.from_dicts(auprc_rows)
+
+
+def print_auprc(
+    data: pl.DataFrame,
+    ground_truth: pl.DataFrame,
+    accessions: list[str],
+    bootstrap_samples: int,
+):
+    auprc_df = compute_auprc(data, ground_truth, accessions, bootstrap_samples)
     pl.Config.set_tbl_rows(len(auprc_df))
     print("=========== AUPRC DATA =============")
     print(
