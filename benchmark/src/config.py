@@ -219,6 +219,27 @@ class EpsilonNetIndex:
     top_k: int = 100
 
 
+@dataclass
+class RandomSampleIndex:
+    """Baseline for EpsilonNetIndex (src/random_sample.py): keep a uniform
+    random subset of each accession's vectors, max(1, round(n / compression_ratio))
+    of its n rows, and scan the kept rows exactly. compression_ratio 3.09 keeps
+    the same 32% of sra50 as epsilon 0.40."""
+
+    BUILD: ClassVar[tuple[str, ...]] = ("compression_ratio", "seed")
+    SEARCH: ClassVar[tuple[str, ...]] = ("top_k",)
+    engine: Literal["randomsample"] = "randomsample"
+    compression_ratio: float = 3.0
+    seed: int = 0
+    top_k: int = 100
+
+    def __post_init__(self):
+        if self.compression_ratio < 1:
+            raise ValueError(
+                f"compression_ratio must be >= 1, got {self.compression_ratio}"
+            )
+
+
 IndexConfig = Union[
     ExactIndex,
     ExhaustiveIndex,
@@ -226,6 +247,7 @@ IndexConfig = Union[
     IVFPQIndex,
     IVFRaBitQIndex,
     EpsilonNetIndex,
+    RandomSampleIndex,
 ]
 INDEX_TYPES: tuple[type, ...] = (
     ExactIndex,
@@ -234,6 +256,7 @@ INDEX_TYPES: tuple[type, ...] = (
     IVFPQIndex,
     IVFRaBitQIndex,
     EpsilonNetIndex,
+    RandomSampleIndex,
 )
 
 

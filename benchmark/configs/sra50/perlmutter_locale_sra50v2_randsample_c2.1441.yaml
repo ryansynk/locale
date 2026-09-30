@@ -1,0 +1,31 @@
+# LOCALE on sra50v2, random-subsample baseline for the epsilon-net sweep
+# (src/random_sample.py): each accession keeps a uniform random
+# round(n / compression_ratio) of its n vectors (min 1), searched by an exact
+# top-k scan over the kept rows -- the same engine as the epsilon net, only
+# the row choice differs. compression_ratio 2.1441 matches epsnet-e0.30
+# (5,013,174 of 10,748,876 vectors kept). Reuses indexes/sra50/locale@8vqiabk9/.
+#   bash slurm_scripts/epsnet_sweep.sh configs/sra50/perlmutter_locale_sra50v2_randsample_c*.yaml
+model:
+  encoder:
+    name: locale
+    checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/8vqiabk9/checkpoint5859.pth.tar
+    pooling: mean
+    max_seq_len: 256
+    chunk_overlap: 150
+    batch_size: 1000
+    device: cuda
+    both_strands: true
+  index:
+    engine: randomsample
+    compression_ratio: 2.1441
+    seed: 0
+    top_k: 100
+  encoder_label: locale@8vqiabk9
+  index_label: randsample-c2.1441
+  search_label: top100
+
+dataset_name: sra50v2
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra50/bundle
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes/sra50
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results/sra50
+mutation_rate: 0.0

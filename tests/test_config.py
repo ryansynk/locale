@@ -13,6 +13,7 @@ from src.config import (
     EncoderConfig,
     ExactIndex,
     ExperimentConfig,
+    INDEX_TYPES,
     IVFPQIndex,
     MetagraphConfig,
     MMseqs2Config,
@@ -77,7 +78,7 @@ class TestEncoderConfig:
 
 class TestIndexConfigs:
     def test_build_and_search_fields_partition_the_knobs(self):
-        for cls in (ExactIndex, RaBitQIndex, IVFPQIndex):
+        for cls in INDEX_TYPES:
             names = {f.name for f in dataclasses.fields(cls) if f.name != "engine"}
             assert set(cls.BUILD) | set(cls.SEARCH) == names, cls
             assert not set(cls.BUILD) & set(cls.SEARCH), cls

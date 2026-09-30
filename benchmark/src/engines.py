@@ -21,6 +21,7 @@ from .config import (
     IVFRaBitQIndex,
     RaBitQIndex,
     EpsilonNetIndex,
+    RandomSampleIndex,
 )
 
 
@@ -49,4 +50,8 @@ def make_engine(index_cfg):
         from .epsilonnet import EpsilonNetEngine
 
         return EpsilonNetEngine(index_cfg)
+    if isinstance(index_cfg, RandomSampleIndex):
+        from .random_sample import RandomSampleEngine
+
+        return RandomSampleEngine(index_cfg)
     raise TypeError(f"no engine for index config {type(index_cfg).__name__}")
