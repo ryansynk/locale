@@ -26,7 +26,9 @@ from .fbin import _load_fbin_mmap
 
 
 class ExhaustiveEngine:
-    SHARDABLE = False  # run_benchmark shards the exhaustive scan by accession, not by row
+    SHARDABLE = (
+        False  # run_benchmark shards the exhaustive scan by accession, not by row
+    )
     WORKER_EMBED = False
 
     def __init__(self, cfg: ExhaustiveIndex):
@@ -35,10 +37,14 @@ class ExhaustiveEngine:
         self.fbin_path: Path | None = None
         self.devices: list[str] = ["cpu"]
 
-    def build(self, fbin_dir: Path, index_dir: Path, shard: int, num_shards: int) -> None:
+    def build(
+        self, fbin_dir: Path, index_dir: Path, shard: int, num_shards: int
+    ) -> None:
         pass
 
-    def load(self, fbin_dir: Path, index_dir: Path, devices: list[str], encoder_cfg=None) -> None:
+    def load(
+        self, fbin_dir: Path, index_dir: Path, devices: list[str], encoder_cfg=None
+    ) -> None:
         mmap = _load_fbin_mmap(fbin_dir / "embeddings.fbin")
         self._mmap = mmap
         self.all_embeddings = torch.from_numpy(mmap)
@@ -78,7 +84,9 @@ class ExhaustiveEngine:
                 positions = tqdm(
                     positions, desc=f"Scoring accessions ({len(devices)} device(s))"
                 )
-            with block_loader(self.fbin_path, self.all_embeddings, block_rows, dev) as load_block:
+            with block_loader(
+                self.fbin_path, self.all_embeddings, block_rows, dev
+            ) as load_block:
                 for pos in positions:
                     i = acc_indices[pos]
                     s, e = acc_offsets[i], acc_offsets[i + 1]

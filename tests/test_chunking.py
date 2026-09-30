@@ -1,5 +1,4 @@
 import pytest
-
 from src.dense_index import batched, chunk_sequence
 
 

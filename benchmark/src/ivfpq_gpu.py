@@ -58,11 +58,15 @@ def list_shard_files(d: Path, num_shards: int) -> list[Path]:
     files = [shard_file(d, s, num_shards) for s in range(num_shards)]
     missing = [f for f in files if not f.with_suffix(".json").exists()]
     if missing:
-        raise FileNotFoundError(f"{len(missing)} of {num_shards} IVF-PQ shards missing in {d}")
+        raise FileNotFoundError(
+            f"{len(missing)} of {num_shards} IVF-PQ shards missing in {d}"
+        )
     return files
 
 
-def _sample_range(fd: int, start: int, end: int, n_rows: int, d: int, seed: int, block: int = 8) -> np.ndarray:
+def _sample_range(
+    fd: int, start: int, end: int, n_rows: int, d: int, seed: int, block: int = 8
+) -> np.ndarray:
     """n_rows rows of [start, end) as seeded random 8-row blocks (threaded preads)."""
     n_blocks = (end - start) // block
     want = min(n_blocks, -(-n_rows // block))
@@ -122,7 +126,10 @@ def build_ivfpq_shard(
     )
     index = ivf_pq.build(params, torch.from_numpy(train).to(device))
     del train
-    print(f"[shard {shard}] trained {lists_per_shard} lists in {time.time() - t0:.0f}s", flush=True)
+    print(
+        f"[shard {shard}] trained {lists_per_shard} lists in {time.time() - t0:.0f}s",
+        flush=True,
+    )
 
     bufs = [np.empty((block_rows, d), dtype=np.float32) for _ in range(2)]
     blocks = list(range(start, end, block_rows))
@@ -134,7 +141,13 @@ def build_ivfpq_shard(
     t0 = time.time()
     with ThreadPoolExecutor(max_workers=1) as reader:
         fut = reader.submit(_read, 0)
-        for i, bs in enumerate(tqdm(blocks, desc=f"[shard {shard}] extend {end - start:,} rows", mininterval=30)):
+        for i, bs in enumerate(
+            tqdm(
+                blocks,
+                desc=f"[shard {shard}] extend {end - start:,} rows",
+                mininterval=30,
+            )
+        ):
             x = torch.from_numpy(fut.result()).to(device)
             fut = reader.submit(_read, i + 1) if i + 1 < len(blocks) else None
             ids = torch.arange(bs, bs + len(x), dtype=torch.int64, device=device)
@@ -142,12 +155,26 @@ def build_ivfpq_shard(
             del x, ids
     os.close(fd)
     torch.cuda.synchronize()
-    print(f"[shard {shard}] extended {end - start:,} rows in {time.time() - t0:.0f}s", flush=True)
+    print(
+        f"[shard {shard}] extended {end - start:,} rows in {time.time() - t0:.0f}s",
+        flush=True,
+    )
     tmp = out.with_suffix(".cuvs.tmp")
     ivf_pq.save(str(tmp), index, include_dataset=True)
     tmp.rename(out)
-    marker.write_text(json.dumps({"shard": shard, "num_shards": num_shards, "start": start, "end": end,
-                                  "pq_dim": pq_dim, "pq_bits": pq_bits, "n_lists": lists_per_shard}))
+    marker.write_text(
+        json.dumps(
+            {
+                "shard": shard,
+                "num_shards": num_shards,
+                "start": start,
+                "end": end,
+                "pq_dim": pq_dim,
+                "pq_bits": pq_bits,
+                "n_lists": lists_per_shard,
+            }
+        )
+    )
     return out
 
 
@@ -177,7 +204,14 @@ def _gpu_worker(conn, shard_files: list[str], encoder_cfg) -> None:
             encoder = DenseEncoder(encoder_cfg)
         torch.cuda.synchronize()
         free, total = torch.cuda.mem_get_info(0)
-        conn.send(("ready", len(indexes), int(indexes[0].n_lists) if indexes else 0, (total - free) / 2**30))
+        conn.send(
+            (
+                "ready",
+                len(indexes),
+                int(indexes[0].n_lists) if indexes else 0,
+                (total - free) / 2**30,
+            )
+        )
     except Exception as e:  # report instead of dying silently
         conn.send(("error", repr(e)))
         return
@@ -204,7 +238,9 @@ def _gpu_worker(conn, shard_files: list[str], encoder_cfg) -> None:
                 sp = ivf_pq.SearchParams(
                     n_probes=n_probes,
                     lut_dtype=np.float16 if lut == "float16" else np.float32,
-                    internal_distance_dtype=np.float16 if dist == "float16" else np.float32,
+                    internal_distance_dtype=np.float16
+                    if dist == "float16"
+                    else np.float32,
                     coarse_search_dtype=np.float16,
                     max_internal_batch_size=batch,
                 )
@@ -263,7 +299,9 @@ class IVFPQGPUSearcher:
                 os.environ["CUDA_VISIBLE_DEVICES"] = visible[g]
                 parent, child = ctx.Pipe()
                 files = [str(f) for f in self.shard_files[g::n_gpus]]
-                p = ctx.Process(target=_gpu_worker, args=(child, files, encoder_cfg), daemon=True)
+                p = ctx.Process(
+                    target=_gpu_worker, args=(child, files, encoder_cfg), daemon=True
+                )
                 p.start()
                 self.conns.append(parent)
                 self.procs.append(p)
@@ -275,7 +313,9 @@ class IVFPQGPUSearcher:
         for g, c in enumerate(self.conns):
             msg = c.recv()
             if msg[0] != "ready":
-                raise RuntimeError(f"IVF-PQ worker for GPU {visible[g]} failed: {msg[1]}")
+                raise RuntimeError(
+                    f"IVF-PQ worker for GPU {visible[g]} failed: {msg[1]}"
+                )
             _, n_shards, n_lists, used = msg
             self.lists_per_shard = n_lists
             print(f"  GPU {visible[g]}: {n_shards} shards, {used:.1f} GiB used")
@@ -370,7 +410,9 @@ class IVFPQGPUSearcher:
             I = np.take_along_axis(I, order, axis=1)
             if timings is not None:
                 timings["rerank_s"] = timings.get("rerank_s", 0.0) + time.time() - t1
-                timings["rerank_rows"] = timings.get("rerank_rows", 0) + int(valid.sum())
+                timings["rerank_rows"] = timings.get("rerank_rows", 0) + int(
+                    valid.sum()
+                )
         D, I = D[:, :top_k], I[:, :top_k]
         I = np.where(np.isfinite(D), I, -1)
         return D, I
@@ -392,7 +434,9 @@ class IVFPQEngine:
         self.searcher: IVFPQGPUSearcher | None = None
         self.last_timings: dict = {}
 
-    def build(self, fbin_dir: Path, index_dir: Path, shard: int, num_shards: int) -> None:
+    def build(
+        self, fbin_dir: Path, index_dir: Path, shard: int, num_shards: int
+    ) -> None:
         """Train and fill one shard (resumable). num_shards must be the
         config's: the shard count is in the file names and the row split."""
         if num_shards != self.cfg.num_shards:
@@ -416,7 +460,9 @@ class IVFPQEngine:
             for s in range(self.cfg.num_shards)
         )
 
-    def load(self, fbin_dir: Path, index_dir: Path, devices: list[str], encoder_cfg=None) -> None:
+    def load(
+        self, fbin_dir: Path, index_dir: Path, devices: list[str], encoder_cfg=None
+    ) -> None:
         files = list_shard_files(index_dir, self.cfg.num_shards)
         self.shard_files = files
         self.searcher = IVFPQGPUSearcher(
@@ -428,7 +474,10 @@ class IVFPQEngine:
         return self.searcher.embed(chunks)
 
     def topk_hits(
-        self, query_vecs: np.ndarray, top_k: int, vec_range: tuple[int, int] | None = None
+        self,
+        query_vecs: np.ndarray,
+        top_k: int,
+        vec_range: tuple[int, int] | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         if vec_range is not None:
             raise NotImplementedError("IVF-PQ search cannot be row-sharded")

@@ -20,7 +20,7 @@ from transformers.utils import logging as transformers_logging
 from lae.config import AugmentConfig, TrainConfig
 from lae.modeling.backbones import get_tokenizer
 from lae.modeling.model import LOCALE
-from lae.training.batcher import Batcher, Augmenter
+from lae.training.batcher import Augmenter, Batcher
 from wandb import Run
 
 

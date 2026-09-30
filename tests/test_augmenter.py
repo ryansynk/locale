@@ -1,5 +1,5 @@
-import torch
 import pytest
+import torch
 
 from lae.training.batcher import Augmenter, beta_parameters
 

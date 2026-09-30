@@ -13,7 +13,6 @@ from pathlib import Path
 import faiss
 import numpy as np
 import pytest
-
 from src.config import IVFRaBitQIndex, build_identity, search_fields
 from src.fbin import _create_fbin_memmap
 from src.ivf_rabitq import (
@@ -33,7 +32,9 @@ N, D, NLIST = 6000, 64, 16
 def _clustered_rows(n: int, d: int, seed: int) -> np.ndarray:
     rng = np.random.default_rng(seed)
     centers = rng.standard_normal((40, d)).astype(np.float32)
-    x = centers[rng.integers(0, 40, n)] + 0.5 * rng.standard_normal((n, d)).astype(np.float32)
+    x = centers[rng.integers(0, 40, n)] + 0.5 * rng.standard_normal((n, d)).astype(
+        np.float32
+    )
     return x / np.linalg.norm(x, axis=1, keepdims=True)
 
 
@@ -53,7 +54,9 @@ def merged(data) -> Path:
     fbin, _ = data
     ivf_dir = fbin.parent / "ivf"
     for rank in range(2):
-        build_ivf_shard(fbin, ivf_dir, NLIST, rank=rank, num_ranks=2, train_rows=N, block_rows=500)
+        build_ivf_shard(
+            fbin, ivf_dir, NLIST, rank=rank, num_ranks=2, train_rows=N, block_rows=500
+        )
     return merge_ivf_shards(ivf_dir, NLIST, 1, 2)
 
 
@@ -70,13 +73,19 @@ def test_merged_index_holds_every_row_once(merged):
     assert index.ntotal == N
     inv = index.invlists
     ids = np.concatenate(
-        [faiss.rev_swig_ptr(inv.get_ids(l), inv.list_size(l)).copy() for l in range(NLIST) if inv.list_size(l)]
+        [
+            faiss.rev_swig_ptr(inv.get_ids(l), inv.list_size(l)).copy()
+            for l in range(NLIST)
+            if inv.list_size(l)
+        ]
     )
     np.testing.assert_array_equal(np.sort(ids), np.arange(N))
     assert merged == merged_path(merged.parent, NLIST, 1)
 
 
-@pytest.mark.parametrize("quantizer,fastscan", [("flat", False), ("flat", True), ("hnsw", True)])
+@pytest.mark.parametrize(
+    "quantizer,fastscan", [("flat", False), ("flat", True), ("hnsw", True)]
+)
 def test_sharded_search_matches_merged(data, merged, quantizer, fastscan):
     """Searching the two shards side by side = searching the merged index."""
     fbin, _ = data
@@ -97,7 +106,9 @@ def test_read_rows_by_id_matches_fbin(data):
     np.testing.assert_array_equal(read_rows_by_id(fbin, ids, threads=3), x[ids])
 
 
-@pytest.mark.parametrize("quantizer,fastscan", [("flat", False), ("flat", True), ("hnsw", False)])
+@pytest.mark.parametrize(
+    "quantizer,fastscan", [("flat", False), ("flat", True), ("hnsw", False)]
+)
 def test_full_probe_full_rerank_is_exact(data, merged, quantizer, fastscan):
     fbin, x = data
     q = _clustered_rows(20, D, seed=1)
@@ -106,9 +117,13 @@ def test_full_probe_full_rerank_is_exact(data, merged, quantizer, fastscan):
     scores, ids = s.search(q, k, nprobe=NLIST, rerank=N, io_threads=4)
     exact = q @ x.T
     want = np.argsort(-exact, axis=1, kind="stable")[:, :k]
-    np.testing.assert_allclose(scores, np.take_along_axis(exact, want, axis=1), rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(
+        scores, np.take_along_axis(exact, want, axis=1), rtol=1e-5, atol=1e-6
+    )
     # ids may differ only between exactly tied scores
-    np.testing.assert_allclose(np.take_along_axis(exact, ids, axis=1), scores, rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(
+        np.take_along_axis(exact, ids, axis=1), scores, rtol=1e-5, atol=1e-6
+    )
 
 
 def test_partial_probe_scores_are_exact_and_sorted(data, merged):
@@ -117,21 +132,37 @@ def test_partial_probe_scores_are_exact_and_sorted(data, merged):
     s = IVFRaBitQSearcher(merged, fbin)
     scores, ids = s.search(q, 10, nprobe=2, rerank=50, io_threads=4)
     ok = ids >= 0
-    np.testing.assert_allclose(scores[ok], np.einsum("ij,ij->i", x[ids[ok]], np.repeat(q, 10, 0).reshape(20, 10, D)[ok]), rtol=1e-5)
+    np.testing.assert_allclose(
+        scores[ok],
+        np.einsum("ij,ij->i", x[ids[ok]], np.repeat(q, 10, 0).reshape(20, 10, D)[ok]),
+        rtol=1e-5,
+    )
     assert (np.diff(scores, axis=1)[np.isfinite(scores[:, 1:])] <= 1e-6).all()
 
 
 def test_config_ivf_identities():
     idx = IVFRaBitQIndex(nprobe=256)
-    assert build_identity(idx) == {"engine": "ivfrabitq", "nlist": 16384, "nb_bits": 1, "train_rows": 6_000_000}
+    assert build_identity(idx) == {
+        "engine": "ivfrabitq",
+        "nlist": 16384,
+        "nb_bits": 1,
+        "train_rows": 6_000_000,
+    }
     assert search_fields(idx) == {
-        "top_k": 100, "nprobe": 256, "rerank": 300, "qb": 8, "quantizer": "flat", "fastscan": False,
+        "top_k": 100,
+        "nprobe": 256,
+        "rerank": 300,
+        "qb": 8,
+        "quantizer": "flat",
+        "fastscan": False,
     }
 
 
 def test_engine_loads_shards_and_matches_searcher(data, merged):
     fbin, x = data
-    engine = IVFRaBitQEngine(IVFRaBitQIndex(nlist=NLIST, nprobe=NLIST, rerank=N, top_k=10, fastscan=True))
+    engine = IVFRaBitQEngine(
+        IVFRaBitQIndex(nlist=NLIST, nprobe=NLIST, rerank=N, top_k=10, fastscan=True)
+    )
     assert engine.complete(merged.parent)
     engine.load(fbin.parent, merged.parent, devices=["cpu"])
     assert len(engine.index_files) == 2  # fastscan searches the shards side by side
@@ -139,7 +170,9 @@ def test_engine_loads_shards_and_matches_searcher(data, merged):
     scores, ids = engine.topk_hits(q, 10)
     exact = q @ x.T
     want = np.argsort(-exact, axis=1, kind="stable")[:, :10]
-    np.testing.assert_allclose(scores, np.take_along_axis(exact, want, axis=1), rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(
+        scores, np.take_along_axis(exact, want, axis=1), rtol=1e-5, atol=1e-6
+    )
     assert engine.size_gb(fbin.parent, merged.parent) > 0
     with pytest.raises(NotImplementedError):
         engine.topk_hits(q, 10, vec_range=(0, 10))

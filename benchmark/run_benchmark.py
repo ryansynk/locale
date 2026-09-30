@@ -17,11 +17,12 @@ from src.config import (
     run_search_identity,
 )
 from src.dense_index import DenseIndex
-from src.engines import make_engine
 from src.download_accessions import download_accessions
+from src.engines import make_engine
 from src.metagraph_index import MetagraphIndex
 from src.mmseqs2_index import MMseqs2Index
 from src.topk_regroup import merge_topk_hits, regroup_topk_hits
+
 
 def verify_download(accession_ids: list[str], accession_paths: list[Path]):
     # Check all accessions in manifest were found
@@ -150,8 +151,11 @@ def hits_path(cfg: ExperimentConfig) -> Path:
 def _hits_key(search_identity: dict) -> dict:
     """The part of a search identity a hits file must share to be reusable:
     everything but k and the query draw (coverage is checked by query_id)."""
-    return {k: v for k, v in search_identity.items()
-            if k not in ("top_k", "num_queries", "random_seed")}
+    return {
+        k: v
+        for k, v in search_identity.items()
+        if k not in ("top_k", "num_queries", "random_seed")
+    }
 
 
 def find_cached_hits(
@@ -283,7 +287,9 @@ def main(cfg: ExperimentConfig):
     # The label's directory must have been built under this identity (or be
     # new). Written before the build so every rank of a multi-node job, and
     # every later run, can check it.
-    ensure_config(index_path, method.index_identity(), (index_path / DONE_FILE).exists())
+    ensure_config(
+        index_path, method.index_identity(), (index_path / DONE_FILE).exists()
+    )
 
     if cfg.stage == "merge":
         # ExperimentConfig refused already unless every shard is .done. A
@@ -303,9 +309,13 @@ def main(cfg: ExperimentConfig):
         if not dense:
             raise ValueError("stage engine needs a dense method (model.index)")
         if not (index_path / DONE_FILE).exists():
-            raise FileNotFoundError(f"{index_path} is not .done: run stage embed (and merge) first")
+            raise FileNotFoundError(
+                f"{index_path} is not .done: run stage embed (and merge) first"
+            )
         engine_path = method.engine_path(cfg.index_dir)
-        ensure_config(engine_path, method.engine_identity(), (engine_path / DONE_FILE).exists())
+        ensure_config(
+            engine_path, method.engine_identity(), (engine_path / DONE_FILE).exists()
+        )
         if (engine_path / DONE_FILE).exists():
             print(f"Engine already built and marked .done: {engine_path}")
             return
@@ -313,7 +323,11 @@ def main(cfg: ExperimentConfig):
         t0 = time.time()
         engine.build(index_path, engine_path, node_rank, num_nodes)
         print(f"[shard {node_rank}/{num_nodes}] built in {time.time() - t0:.0f}s")
-        complete = engine.complete(engine_path) if hasattr(engine, "complete") else node_rank == 0
+        complete = (
+            engine.complete(engine_path)
+            if hasattr(engine, "complete")
+            else node_rank == 0
+        )
         if complete:
             (engine_path / DONE_FILE).touch()
             print(f"all {num_nodes} shards present: {engine_path} marked {DONE_FILE}")
@@ -322,7 +336,9 @@ def main(cfg: ExperimentConfig):
     if cfg.stage == "search":
         needed = [index_path] + ([method.engine_path(cfg.index_dir)] if dense else [])
         if missing := [str(p) for p in needed if not (p / DONE_FILE).exists()]:
-            raise FileNotFoundError(f"stage search needs built indexes; not .done: {missing}")
+            raise FileNotFoundError(
+                f"stage search needs built indexes; not .done: {missing}"
+            )
 
     # dataset_dir must already hold accs.txt and the per-rate query files (the
     # bundle layout finalize_query_dataset.py + mutate_queries.py write, or a
@@ -376,7 +392,9 @@ def main(cfg: ExperimentConfig):
                 (shard_path / DONE_FILE).touch()
 
             if cfg.stage == "embed":
-                print(f"[Node {node_rank}] Shard saved. Run stage merge to merge. Exiting.")
+                print(
+                    f"[Node {node_rank}] Shard saved. Run stage merge to merge. Exiting."
+                )
                 sys.exit(0)
 
             if node_rank != 0:
@@ -408,7 +426,9 @@ def main(cfg: ExperimentConfig):
     # coordinate inside it and return once the index is complete.
     if dense:
         engine_path = method.engine_path(cfg.index_dir)
-        ensure_config(engine_path, method.engine_identity(), (engine_path / DONE_FILE).exists())
+        ensure_config(
+            engine_path, method.engine_identity(), (engine_path / DONE_FILE).exists()
+        )
         if not (engine_path / DONE_FILE).exists():
             index.engine.build(index_path, engine_path, node_rank, num_nodes)
             if node_rank == 0:
@@ -436,7 +456,9 @@ def main(cfg: ExperimentConfig):
 
     out_dir = results_path(cfg)
     ensure_config(
-        out_dir, run_search_identity(cfg), any(out_dir.glob("mut*.parquet")) if out_dir.is_dir() else False
+        out_dir,
+        run_search_identity(cfg),
+        any(out_dir.glob("mut*.parquet")) if out_dir.is_dir() else False,
     )
 
     index.load(index_path)
@@ -479,7 +501,9 @@ def main(cfg: ExperimentConfig):
             times.append(elapsed)
             print(f"[timing] run {i + 1}/{cfg.timing_runs}: {elapsed:.3f}s", flush=True)
         avg_time = sum(times[1:]) / (cfg.timing_runs - 1)
-        print(f"[timing] avg_time (runs 2-{cfg.timing_runs}) {avg_time:.3f}s", flush=True)
+        print(
+            f"[timing] avg_time (runs 2-{cfg.timing_runs}) {avg_time:.3f}s", flush=True
+        )
     else:
         results: pl.DataFrame = index.search(queries)
         avg_time = -1.0

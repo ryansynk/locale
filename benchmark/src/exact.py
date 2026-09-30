@@ -50,7 +50,10 @@ class FbinBlockLoader:
 
 @contextmanager
 def block_loader(
-    fbin_path: Path | None, all_embeddings: torch.Tensor, block_rows: int, device: torch.device
+    fbin_path: Path | None,
+    all_embeddings: torch.Tensor,
+    block_rows: int,
+    device: torch.device,
 ):
     """Yields load(bs, be) -> (be - bs, d) tensor of index rows on device.
 
@@ -79,10 +82,14 @@ class ExactEngine:
         self.fbin_path: Path | None = None
         self.devices: list[str] = ["cpu"]
 
-    def build(self, fbin_dir: Path, index_dir: Path, shard: int, num_shards: int) -> None:
+    def build(
+        self, fbin_dir: Path, index_dir: Path, shard: int, num_shards: int
+    ) -> None:
         pass
 
-    def load(self, fbin_dir: Path, index_dir: Path, devices: list[str], encoder_cfg=None) -> None:
+    def load(
+        self, fbin_dir: Path, index_dir: Path, devices: list[str], encoder_cfg=None
+    ) -> None:
         mmap = _load_fbin_mmap(fbin_dir / "embeddings.fbin")
         self._mmap = mmap  # keep reference to prevent GC closing the mapping
         self.all_embeddings = torch.from_numpy(mmap)
@@ -132,7 +139,9 @@ class ExactEngine:
                     desc=f"Exact top-{top_k} vector scan ({n_dev} device(s), "
                     f"{end - start:,} vectors)",
                 )
-            with block_loader(self.fbin_path, self.all_embeddings, block_rows, dev) as load_block:
+            with block_loader(
+                self.fbin_path, self.all_embeddings, block_rows, dev
+            ) as load_block:
                 for bs in blocks:
                     be = min(bs + block_rows, e)
                     logits = q @ load_block(bs, be).T  # (n_chunks, be-bs)

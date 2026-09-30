@@ -13,16 +13,16 @@ only the four that emit tables, so it works with any set of mutation rates.
 import tempfile
 from pathlib import Path
 
+import plot_results as pr
 import polars as pl
 from jsonargparse import auto_cli
 from jsonargparse.typing import Path_fr
 from matplotlib import pyplot as plt
 
-import plot_results as pr
-
 # The two table-emitting functions also savefig. We throw the PDFs away, so skip
 # the LaTeX round-trip that makes that slow.
 plt.rcParams["text.usetex"] = False
+
 
 def main(
     results_dir: str,

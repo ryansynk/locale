@@ -43,7 +43,15 @@ TITLE_NAMES = {
 # compressed / approximate LOCALE indexes are kept apart, since pooling them
 # with exact search would average an IVF-PQ run into the LOCALE curve and hand
 # the exact-search timing to the ANN point.
-MODEL_ORDER = ["LOCALE", "LOCALE+IVF-PQ", "LOCALE+RaBitQ", "MMseqs2", "LLM-ED", "ESA", "MetaGraph"]
+MODEL_ORDER = [
+    "LOCALE",
+    "LOCALE+IVF-PQ",
+    "LOCALE+RaBitQ",
+    "MMseqs2",
+    "LLM-ED",
+    "ESA",
+    "MetaGraph",
+]
 
 # What run_benchmark writes (see src/config.py for the label columns).
 RESULTS_SCHEMA = pl.Schema(
@@ -72,7 +80,11 @@ def model_key() -> pl.Expr:
     return (
         pl.when(pl.col("encoder").is_null())
         .then(pl.concat_str([pl.col("index"), pl.col("search")], separator="/"))
-        .otherwise(pl.concat_str([pl.col("encoder"), pl.col("index"), pl.col("search")], separator="/"))
+        .otherwise(
+            pl.concat_str(
+                [pl.col("encoder"), pl.col("index"), pl.col("search")], separator="/"
+            )
+        )
         .alias("model")
     )
 
@@ -81,7 +93,9 @@ def _display_model() -> pl.Expr:
     base = (
         pl.when(pl.col("encoder").is_null())
         .then(pl.col("index"))
-        .otherwise(pl.col("encoder").str.split("@").list.get(0).str.split("-").list.get(0))
+        .otherwise(
+            pl.col("encoder").str.split("@").list.get(0).str.split("-").list.get(0)
+        )
         .replace(TITLE_NAMES)
     )
     return (
@@ -93,7 +107,9 @@ def _display_model() -> pl.Expr:
     ).alias("model")
 
 
-def load_results(results_dirs: list[Path], exclude_models: list[str] = ()) -> pl.DataFrame:
+def load_results(
+    results_dirs: list[Path], exclude_models: list[str] = ()
+) -> pl.DataFrame:
     """Every results parquet under the directories (hits/ and partials are not
     results and are skipped), validated against RESULTS_SCHEMA, with the
     ``model`` key added. Results written before run_benchmark recorded
@@ -101,9 +117,13 @@ def load_results(results_dirs: list[Path], exclude_models: list[str] = ()) -> pl
     frames = []
     for d in results_dirs:
         for f in sorted(Path(d).rglob("*.parquet")):
-            if any(p == "hits" or p.startswith("partials_") for p in f.relative_to(d).parts):
+            if any(
+                p == "hits" or p.startswith("partials_") for p in f.relative_to(d).parts
+            ):
                 continue
-            frames.append(pl.read_parquet(f, schema=RESULTS_SCHEMA, missing_columns="insert"))
+            frames.append(
+                pl.read_parquet(f, schema=RESULTS_SCHEMA, missing_columns="insert")
+            )
     if not frames:
         raise SystemExit(f"No results parquets under {[str(d) for d in results_dirs]}")
     data = pl.concat(frames).with_columns(model_key())

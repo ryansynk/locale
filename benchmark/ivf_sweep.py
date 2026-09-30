@@ -33,11 +33,17 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 import torch
-from jsonargparse import CLI
-
 from ivf_probe import accuracy
+from jsonargparse import CLI
 from run_benchmark import _annotate_results, hits_path, query_file_name, results_path
-from src.config import DONE_FILE, ExperimentConfig, IVFPQIndex, ensure_config, results_file_name, run_search_identity
+from src.config import (
+    DONE_FILE,
+    ExperimentConfig,
+    IVFPQIndex,
+    ensure_config,
+    results_file_name,
+    run_search_identity,
+)
 from src.dense_index import DenseIndex
 from src.topk_regroup import regroup_topk_hits
 
@@ -51,7 +57,9 @@ def main():
     ap.add_argument("--rates", default="0.0,0.05,0.1")
     ap.add_argument("--repeats", type=int, default=2)
     ap.add_argument("--results_dir", default=None)
-    ap.add_argument("--threads", type=int, default=0, help="torch/faiss threads (0 = all)")
+    ap.add_argument(
+        "--threads", type=int, default=0, help="torch/faiss threads (0 = all)"
+    )
     args, rest = ap.parse_known_args()
 
     base_args = ["--config", args.config] + rest
@@ -65,13 +73,17 @@ def main():
         faiss.omp_set_num_threads(args.threads)
     index_path = cfg.model.index_path(cfg.index_dir)
     engine_path = cfg.model.engine_path(cfg.index_dir)
-    ensure_config(engine_path, cfg.model.engine_identity(), (engine_path / DONE_FILE).exists())
+    ensure_config(
+        engine_path, cfg.model.engine_identity(), (engine_path / DONE_FILE).exists()
+    )
     index = DenseIndex(cfg)
     t0 = time.time()
     index.load(index_path)
     print(f"index ready in {time.time() - t0:.0f}s", flush=True)
     accs = index.indexed_accessions()
-    gpu = isinstance(cfg.model.index, IVFPQIndex)  # cuVS IVF-PQ engine; else faiss IVF-RaBitQ
+    gpu = isinstance(
+        cfg.model.index, IVFPQIndex
+    )  # cuVS IVF-PQ engine; else faiss IVF-RaBitQ
     if gpu:
         args.qbs = "0"  # no qb knob
     raw = pl.read_parquet(Path(cfg.dataset_dir) / "queries.parquet")
@@ -83,7 +95,9 @@ def main():
     summary = []
     for rate in [float(r) for r in args.rates.split(",")]:
         queries = pl.read_parquet(Path(cfg.dataset_dir) / query_file_name(rate))
-        queries = queries.sample(min(cfg.num_queries, len(queries)), seed=cfg.random_seed)
+        queries = queries.sample(
+            min(cfg.num_queries, len(queries)), seed=cfg.random_seed
+        )
         for _ in range(2):  # the second embed is the warm (timed) one
             t0 = time.time()
             feats, ranges, _ = index._embed_queries(queries)
@@ -95,17 +109,26 @@ def main():
         for qb in [int(x) for x in args.qbs.split(",")]:
             for rerank in [int(x) for x in args.reranks.split(",")]:
                 for nprobe in [int(x) for x in args.nprobes.split(",")]:
-                    label = f"top{index.top_k}-np{nprobe}-rr{rerank}" + ("" if gpu else f"-qb{qb}")
+                    label = f"top{index.top_k}-np{nprobe}-rr{rerank}" + (
+                        "" if gpu else f"-qb{qb}"
+                    )
                     run_cfg = CLI(
                         ExperimentConfig,
                         as_positional=False,
                         args=base_args
                         + ["--mutation_rate", str(rate), "--model.search_label", label]
-                        + ["--model.index.nprobe", str(nprobe), "--model.index.rerank", str(rerank)]
+                        + [
+                            "--model.index.nprobe",
+                            str(nprobe),
+                            "--model.index.rerank",
+                            str(rerank),
+                        ]
                         + ([] if gpu else ["--model.index.qb", str(qb)]),
                     )
                     index.cfg = run_cfg
-                    index.engine.cfg = run_cfg.model.index  # the engine reads nprobe/rerank/qb from here
+                    index.engine.cfg = (
+                        run_cfg.model.index
+                    )  # the engine reads nprobe/rerank/qb from here
                     for _ in range(args.repeats):
                         tm = {}
                         t0 = time.time()
@@ -116,16 +139,30 @@ def main():
                         search_s = time.time() - t0
                     total_s = embed_s + search_s
                     out_dir = results_path(run_cfg)
-                    ensure_config(out_dir, run_search_identity(run_cfg), any(out_dir.glob("mut*.parquet")) if out_dir.is_dir() else False)
+                    ensure_config(
+                        out_dir,
+                        run_search_identity(run_cfg),
+                        any(out_dir.glob("mut*.parquet"))
+                        if out_dir.is_dir()
+                        else False,
+                    )
                     out = out_dir / results_file_name(rate)
-                    _annotate_results(res, run_cfg, index, index_path, total_s).write_parquet(out)
+                    _annotate_results(
+                        res, run_cfg, index, index_path, total_s
+                    ).write_parquet(out)
                     hp = hits_path(run_cfg)
                     hp.parent.mkdir(parents=True, exist_ok=True)
-                    _annotate_results(hits, run_cfg, index, index_path, total_s).write_parquet(hp)
+                    _annotate_results(
+                        hits, run_cfg, index, index_path, total_s
+                    ).write_parquet(hp)
                     acc = accuracy(hits, gt, accs)
                     row = {
-                        "rate": rate, "nprobe": nprobe, "rerank": rerank, "qb": qb,
-                        "total_s": round(total_s, 2), "embed_s": round(embed_s, 2),
+                        "rate": rate,
+                        "nprobe": nprobe,
+                        "rerank": rerank,
+                        "qb": qb,
+                        "total_s": round(total_s, 2),
+                        "embed_s": round(embed_s, 2),
                         "scan_s": round(tm.get("scan_s", 0), 2),
                         "rerank_s": round(tm.get("rerank_s", 0), 2),
                         **{k: round(v, 4) for k, v in acc.items()},

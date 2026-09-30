@@ -17,8 +17,13 @@ side and never merges. The last rank to finish marks the directory .done.
 import time
 
 from jsonargparse import CLI
-
-from src.config import DONE_FILE, DenseMethod, ExperimentConfig, IVFRaBitQIndex, ensure_config
+from src.config import (
+    DONE_FILE,
+    DenseMethod,
+    ExperimentConfig,
+    IVFRaBitQIndex,
+    ensure_config,
+)
 from src.engines import make_engine
 from src.ivf_rabitq import merge_ivf_shards
 
@@ -33,7 +38,11 @@ def main(cfg: ExperimentConfig, merge: bool = False):
     rank = cfg.shard
     num_ranks = cfg.num_shards
     if merge:
-        shards = sorted(engine_dir.glob(f"ivf{m.index.nlist}_rabitq{m.index.nb_bits}_shard_*_of_*.faiss"))
+        shards = sorted(
+            engine_dir.glob(
+                f"ivf{m.index.nlist}_rabitq{m.index.nb_bits}_shard_*_of_*.faiss"
+            )
+        )
         num_ranks = int(shards[0].stem.rsplit("_of_", 1)[1])
         print(merge_ivf_shards(engine_dir, m.index.nlist, m.index.nb_bits, num_ranks))
         return

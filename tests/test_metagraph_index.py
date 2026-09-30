@@ -3,7 +3,6 @@
 import pandas as pd
 import polars as pl
 import pytest
-
 from src import metagraph_index as mg
 from src.metagraph_index import MetagraphIndex
 
@@ -15,7 +14,9 @@ def _make_shard(index_path, rank, accessions, graph_bytes=10, anno_bytes=5):
     for ext in mg.GRAPH_SIDECARS:
         (shard / (mg.GRAPH_FILE + ext)).write_bytes(b"s")
     (shard / mg.ANNOTATION_FILE).write_bytes(b"a" * anno_bytes)
-    (shard / mg.MANIFEST_FILE).write_text("".join(f"/d/{a}/{a}.contigs.fa\n" for a in accessions))
+    (shard / mg.MANIFEST_FILE).write_text(
+        "".join(f"/d/{a}/{a}.contigs.fa\n" for a in accessions)
+    )
     return shard
 
 
@@ -45,7 +46,10 @@ class TestMergeShards:
         MetagraphIndex.merge_shards(tmp_path, 2)
         index = MetagraphIndex.__new__(MetagraphIndex)
         expected = (
-            100 + 50 + 200 + 25
+            100
+            + 50
+            + 200
+            + 25
             + 2 * len(mg.GRAPH_SIDECARS)
             + (tmp_path / mg.MANIFEST_FILE).stat().st_size
         )
@@ -92,7 +96,9 @@ class TestSearchPostprocessing:
         rows = [("0", f"/d/A{i}/A{i}.contigs.fa", 10) for i in range(n)]
         rows += [("0", f"/d/B{i}/B{i}.contigs.fa", 50 + i) for i in range(20)]
         frame = pd.DataFrame(rows, columns=["seq_description", "sample", "kmer_count"])
-        queries = pl.DataFrame({"query_id": ["q0", "q1"], "query_sequence": ["ACGT" * 20] * 2})
+        queries = pl.DataFrame(
+            {"query_id": ["q0", "q1"], "query_sequence": ["ACGT" * 20] * 2}
+        )
 
         out = _index_with(frame).search(queries)
 
@@ -107,12 +113,17 @@ class TestSearchPostprocessing:
         assert out.schema["results"] == mg.RESULTS_DTYPE
 
     def test_client_is_asked_for_top_labels(self):
-        frame = pd.DataFrame([("0", "/d/X/X.contigs.fa", 3)],
-                             columns=["seq_description", "sample", "kmer_count"])
+        frame = pd.DataFrame(
+            [("0", "/d/X/X.contigs.fa", 3)],
+            columns=["seq_description", "sample", "kmer_count"],
+        )
         index = _index_with(frame)
         index.search(pl.DataFrame({"query_id": ["q"], "query_sequence": ["ACGT" * 20]}))
         _, kwargs = index.graph_client.calls[0]
-        assert kwargs == {"top_labels": mg.TOP_LABELS, "discovery_fraction": mg.DISCOVERY_FRACTION}
+        assert kwargs == {
+            "top_labels": mg.TOP_LABELS,
+            "discovery_fraction": mg.DISCOVERY_FRACTION,
+        }
 
     def test_no_hits_at_all(self):
         frame = pd.DataFrame(columns=["seq_description", "sample", "kmer_count"])

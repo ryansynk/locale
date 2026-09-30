@@ -105,7 +105,7 @@ class EncoderConfig:
         if self.checkpoint_path is None:
             return PAPER_CHECKPOINT["ckpt_id"], PAPER_CHECKPOINT["step"]
         p = Path(self.checkpoint_path).resolve()
-        return p.parent.name, int(p.name.split(".")[0][len("checkpoint"):])
+        return p.parent.name, int(p.name.split(".")[0][len("checkpoint") :])
 
     def identity(self) -> dict:
         ckpt, step = self.checkpoint()
@@ -163,7 +163,12 @@ class IVFPQIndex:
     candidates per query chunk are re-scored exactly from the fbin (0 = PQ
     estimates only)."""
 
-    BUILD: ClassVar[tuple[str, ...]] = ("pq_dim", "pq_bits", "lists_per_shard", "num_shards")
+    BUILD: ClassVar[tuple[str, ...]] = (
+        "pq_dim",
+        "pq_bits",
+        "lists_per_shard",
+        "num_shards",
+    )
     SEARCH: ClassVar[tuple[str, ...]] = ("top_k", "nprobe", "rerank", "lut")
     engine: Literal["ivfpq"] = "ivfpq"
     top_k: int = 100
@@ -185,7 +190,14 @@ class IVFRaBitQIndex:
     SIMD 4-bit LUT layout at load time. Built multi-node by build_ivf.py."""
 
     BUILD: ClassVar[tuple[str, ...]] = ("nlist", "nb_bits", "train_rows")
-    SEARCH: ClassVar[tuple[str, ...]] = ("top_k", "nprobe", "rerank", "qb", "quantizer", "fastscan")
+    SEARCH: ClassVar[tuple[str, ...]] = (
+        "top_k",
+        "nprobe",
+        "rerank",
+        "qb",
+        "quantizer",
+        "fastscan",
+    )
     engine: Literal["ivfrabitq"] = "ivfrabitq"
     top_k: int = 100
     nlist: int = 16384
@@ -198,8 +210,16 @@ class IVFRaBitQIndex:
     fastscan: bool = False
 
 
-IndexConfig = Union[ExactIndex, ExhaustiveIndex, RaBitQIndex, IVFPQIndex, IVFRaBitQIndex]
-INDEX_TYPES: tuple[type, ...] = (ExactIndex, ExhaustiveIndex, RaBitQIndex, IVFPQIndex, IVFRaBitQIndex)
+IndexConfig = Union[
+    ExactIndex, ExhaustiveIndex, RaBitQIndex, IVFPQIndex, IVFRaBitQIndex
+]
+INDEX_TYPES: tuple[type, ...] = (
+    ExactIndex,
+    ExhaustiveIndex,
+    RaBitQIndex,
+    IVFPQIndex,
+    IVFRaBitQIndex,
+)
 
 
 def build_identity(index) -> dict:
@@ -248,7 +268,12 @@ class DenseMethod:
         return self.index_path(index_dir) / self.index_label
 
     def results_path(self, results_dir: Path) -> Path:
-        return Path(results_dir) / self.encoder_label / self.index_label / self.search_label
+        return (
+            Path(results_dir)
+            / self.encoder_label
+            / self.index_label
+            / self.search_label
+        )
 
     def index_identity(self) -> dict:
         return self.encoder.identity()
@@ -375,11 +400,14 @@ class ExperimentConfig:
 
     def __post_init__(self):
         if not 0 <= self.shard < self.num_shards:
-            raise ValueError(f"shard {self.shard} is not in [0, num_shards={self.num_shards})")
+            raise ValueError(
+                f"shard {self.shard} is not in [0, num_shards={self.num_shards})"
+            )
         if self.stage == "merge":
             index_path = self.model.index_path(self.index_dir)
             missing = [
-                r for r in range(self.num_shards)
+                r
+                for r in range(self.num_shards)
                 if not (index_path / f"shard_{r}" / DONE_FILE).exists()
             ]
             if missing and not (index_path / DONE_FILE).exists():

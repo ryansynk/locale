@@ -9,12 +9,12 @@ Using standard basis vectors makes the expected top-1 result deterministic: the
 query is e_2, so only acc1 (whose vectors include e_2) can score 1.0.
 """
 
-import torch
+from types import SimpleNamespace
+
 import numpy as np
 import polars as pl
 import pytest
-from types import SimpleNamespace
-
+import torch
 from src.config import ExactIndex, ExhaustiveIndex
 from src.dense_index import DenseIndex
 from src.exact import ExactEngine
@@ -38,7 +38,10 @@ class _FakeEncoder:
 
 
 def _make_index(
-    query_vec: torch.Tensor, all_embeddings: torch.Tensor, exhaustive: bool = True, top_k: int = 10
+    query_vec: torch.Tensor,
+    all_embeddings: torch.Tensor,
+    exhaustive: bool = True,
+    top_k: int = 10,
 ):
     """Construct a DenseIndex with synthetic state, bypassing __init__."""
     index = DenseIndex.__new__(DenseIndex)
@@ -47,7 +50,9 @@ def _make_index(
     index.top_k = top_k
     index.both_strands = False
     index.engine = (
-        ExhaustiveEngine(ExhaustiveIndex()) if exhaustive else ExactEngine(ExactIndex(top_k=top_k))
+        ExhaustiveEngine(ExhaustiveIndex())
+        if exhaustive
+        else ExactEngine(ExactIndex(top_k=top_k))
     )
     index.engine.all_embeddings = all_embeddings
     index.engine.fbin_path = None
@@ -55,7 +60,9 @@ def _make_index(
     index.acc_names_flat = ["acc0", "acc1", "acc2"]
     index.acc_offsets = [0, 2, 4, 6]
     index.n_vectors = 6
-    index.encoder_cfg = SimpleNamespace(device="cpu", max_seq_len=50, query_embed_gpus=1)
+    index.encoder_cfg = SimpleNamespace(
+        device="cpu", max_seq_len=50, query_embed_gpus=1
+    )
     index.chunk_type = "stride"
     index.chunk_overlap = 0
     index.model = _FakeEncoder(query_vec)
@@ -167,7 +174,9 @@ class TestExactTopKSearch:
         assert scores == sorted(scores, reverse=True)
 
     def test_top_k_larger_than_index_returns_every_vector_once(self):
-        index = _make_index(_basis(_DIM, 0), _ALL_EMBEDDINGS, exhaustive=False, top_k=50)
+        index = _make_index(
+            _basis(_DIM, 0), _ALL_EMBEDDINGS, exhaustive=False, top_k=50
+        )
         hits = index.topk_hits(self._queries())
         ids = sorted(r["vector_id"] for r in hits["hits"][0].to_list())
         assert ids == list(range(6))  # no -1 padding leaks through
@@ -259,7 +268,8 @@ class TestFileBackedBlockLoader:
         expected = mem.topk_hits(q, 4, block_rows=4)
 
         disk = self._file_backed(
-            tmp_path, _make_index(_basis(_DIM, 2), _ALL_EMBEDDINGS, exhaustive=False, top_k=4)
+            tmp_path,
+            _make_index(_basis(_DIM, 2), _ALL_EMBEDDINGS, exhaustive=False, top_k=4),
         )
         got = disk.engine.topk_hits(q, 4, block_rows=4)
         np.testing.assert_array_equal(got[1], expected[1])

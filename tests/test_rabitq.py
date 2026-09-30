@@ -288,7 +288,9 @@ def _dense_index(built: Path, fbin: Path, query_rows: list[int]) -> DenseIndex:
     index.acc_names_flat = ["acc0", "acc1", "acc2", "acc3"]
     index.acc_offsets = [0, 1000, 2000, 3000, N]
     index.n_vectors = N
-    index.encoder_cfg = SimpleNamespace(device="cpu", max_seq_len=50, query_embed_gpus=1)
+    index.encoder_cfg = SimpleNamespace(
+        device="cpu", max_seq_len=50, query_embed_gpus=1
+    )
     index.chunk_type = "stride"
     index.chunk_overlap = 0
     index.model = _RowEncoder(x[query_rows].copy())

@@ -1,9 +1,7 @@
 import numpy as np
 import polars as pl
 import pytest
-
-from src.dense_index import _create_fbin_memmap, _load_fbin_mmap, DenseIndex
-
+from src.dense_index import DenseIndex, _create_fbin_memmap, _load_fbin_mmap
 
 # ---------------------------------------------------------------------------
 # fbin round-trip
@@ -76,8 +74,10 @@ class TestMergeShards:
         _write_shard(
             tmp_path / "shard_0",
             shard0_vecs,
-            [{"srr_id": "acc0", "start_row": 0, "num_rows": 2},
-             {"srr_id": "acc1", "start_row": 2, "num_rows": 1}],
+            [
+                {"srr_id": "acc0", "start_row": 0, "num_rows": 2},
+                {"srr_id": "acc1", "start_row": 2, "num_rows": 1},
+            ],
         )
         _write_shard(
             tmp_path / "shard_1",
@@ -148,6 +148,7 @@ class TestReadFbinRows:
 
     def test_matches_memmap_across_piece_boundaries(self, tmp_path):
         import os
+
         from src.fbin import read_fbin_rows
 
         path, data = self._fbin(tmp_path)
@@ -166,6 +167,7 @@ class TestReadFbinRows:
 
     def test_rejects_buffer_too_small_or_wrong_layout(self, tmp_path):
         import os
+
         from src.fbin import read_fbin_rows
 
         path, data = self._fbin(tmp_path)

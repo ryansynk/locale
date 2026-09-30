@@ -93,9 +93,7 @@ def sample_rows(
     return out[:n_rows]
 
 
-def read_rows_by_id(
-    fbin_path: Path, ids: np.ndarray, threads: int = 64
-) -> np.ndarray:
+def read_rows_by_id(fbin_path: Path, ids: np.ndarray, threads: int = 64) -> np.ndarray:
     """fp32 rows ``ids`` (any order, repeats allowed) by one pread per row.
 
     Reads in sorted order, so rows of one Lustre stripe tend to go out
@@ -114,7 +112,9 @@ def read_rows_by_id(
         def _read(span):
             s, e = span
             for j in range(s, e):
-                buf = os.pread(fd, row_bytes, FBIN_HEADER_BYTES + int(uniq[j]) * row_bytes)
+                buf = os.pread(
+                    fd, row_bytes, FBIN_HEADER_BYTES + int(uniq[j]) * row_bytes
+                )
                 out[j] = np.frombuffer(buf, dtype=np.float32)
 
         step = max(1, -(-len(uniq) // (threads * 8)))
@@ -163,7 +163,9 @@ def spherical_kmeans(
     rng = np.random.default_rng(seed)
     cent = x[rng.choice(n, size=k, replace=False)].copy()
     parts = np.array_split(np.arange(n), len(devices))
-    xs = [torch.from_numpy(x[p[0] : p[-1] + 1]).to(dev) for p, dev in zip(parts, devices)]
+    xs = [
+        torch.from_numpy(x[p[0] : p[-1] + 1]).to(dev) for p, dev in zip(parts, devices)
+    ]
 
     def _step(i, cent_np):
         dev = devices[i]
@@ -186,7 +188,9 @@ def spherical_kmeans(
             empty = np.flatnonzero(counts.numpy() == 0)
             if len(empty):
                 pool_rows = torch.cat([r[3] for r in res]).numpy()
-                new[empty] = pool_rows[rng.choice(len(pool_rows), len(empty), replace=False)]
+                new[empty] = pool_rows[
+                    rng.choice(len(pool_rows), len(empty), replace=False)
+                ]
             cent = np.ascontiguousarray(new, dtype=np.float32)
             if verbose:
                 print(
@@ -201,7 +205,10 @@ def spherical_kmeans(
 
 @torch.no_grad()
 def assign_rows(
-    x: np.ndarray, centroids: np.ndarray, devices: list[str] | None = None, tile: int = 8192
+    x: np.ndarray,
+    centroids: np.ndarray,
+    devices: list[str] | None = None,
+    tile: int = 8192,
 ) -> np.ndarray:
     """Nearest centroid (by IP) of every row of x, split across the GPUs."""
     devices = devices or _devices()
@@ -262,7 +269,9 @@ def index_name(nlist: int, nb_bits: int) -> str:
     return f"ivf{nlist}_rabitq{nb_bits}"
 
 
-def shard_path(ivf_dir: Path, nlist: int, nb_bits: int, rank: int, num_ranks: int) -> Path:
+def shard_path(
+    ivf_dir: Path, nlist: int, nb_bits: int, rank: int, num_ranks: int
+) -> Path:
     return ivf_dir / f"{index_name(nlist, nb_bits)}_shard_{rank}_of_{num_ranks}.faiss"
 
 
@@ -282,12 +291,18 @@ def _wait(paths: list[Path], timeout: float = 4 * 3600, poll: float = 15) -> Non
     deadline = time.time() + timeout
     while not all(p.exists() for p in paths):
         if time.time() > deadline:
-            raise TimeoutError(f"timed out waiting for {[str(p) for p in paths if not p.exists()]}")
+            raise TimeoutError(
+                f"timed out waiting for {[str(p) for p in paths if not p.exists()]}"
+            )
         time.sleep(poll)
 
 
 def train_centroids(
-    fbin_path: Path, ivf_dir: Path, nlist: int, train_rows: int = DEFAULT_TRAIN_ROWS, seed: int = 0
+    fbin_path: Path,
+    ivf_dir: Path,
+    nlist: int,
+    train_rows: int = DEFAULT_TRAIN_ROWS,
+    seed: int = 0,
 ) -> np.ndarray:
     """Spherical k-means centroids for nlist cells, cached in ivf_dir.
 
@@ -299,7 +314,9 @@ def train_centroids(
     if cp.exists():
         return np.load(cp)
     if train_rows < 40 * nlist:
-        raise ValueError(f"train_rows={train_rows:,} is under 40 rows per cell for nlist={nlist}")
+        raise ValueError(
+            f"train_rows={train_rows:,} is under 40 rows per cell for nlist={nlist}"
+        )
     ivf_dir.mkdir(parents=True, exist_ok=True)
     sp = ivf_dir / "train_sample.npy"
     if sp.exists() and len(np.load(sp, mmap_mode="r")) >= train_rows:
@@ -322,7 +339,9 @@ def new_ivf_rabitq(centroids: np.ndarray, nb_bits: int = 1):
     nlist, d = centroids.shape
     quantizer = faiss.IndexFlatIP(d)
     quantizer.add(centroids)
-    index = faiss.IndexIVFRaBitQ(quantizer, d, nlist, faiss.METRIC_INNER_PRODUCT, True, nb_bits)
+    index = faiss.IndexIVFRaBitQ(
+        quantizer, d, nlist, faiss.METRIC_INNER_PRODUCT, True, nb_bits
+    )
     # The quantizer is already populated, so train() only fits the RaBitQ
     # side, which for residual codes needs no data beyond the centroids --
     # training on the centroids themselves keeps every shard identical.
@@ -378,7 +397,13 @@ def build_ivf_shard(
     t0 = time.time()
     with ThreadPoolExecutor(max_workers=1) as reader:
         fut = reader.submit(_read, 0) if blocks else None
-        for i, bs in enumerate(tqdm(blocks, desc=f"[rank {rank}] IVF encode {end - start:,} rows", mininterval=30)):
+        for i, bs in enumerate(
+            tqdm(
+                blocks,
+                desc=f"[rank {rank}] IVF encode {end - start:,} rows",
+                mininterval=30,
+            )
+        ):
             x = fut.result()
             # The reader may refill the other buffer while this one is used.
             fut = reader.submit(_read, i + 1) if i + 1 < len(blocks) else None
@@ -413,7 +438,9 @@ def to_fastscan(index):
     if index.own_fields:
         index.own_fields = False
         fs.own_fields = True
-    fs.referenced_objects = list(getattr(index, "referenced_objects", None) or []) + [index.quantizer]
+    fs.referenced_objects = list(getattr(index, "referenced_objects", None) or []) + [
+        index.quantizer
+    ]
     return fs
 
 
@@ -428,7 +455,9 @@ def list_shards(ivf_dir: Path, nlist: int, nb_bits: int) -> list[Path]:
     if len(counts) > 1:
         raise ValueError(f"shards of several build sizes in {ivf_dir}: {counts}")
     if shards and len(shards) != int(counts.pop()):
-        raise FileNotFoundError(f"incomplete IVF build in {ivf_dir}: {len(shards)} shards")
+        raise FileNotFoundError(
+            f"incomplete IVF build in {ivf_dir}: {len(shards)} shards"
+        )
     return shards
 
 
@@ -443,7 +472,9 @@ def merge_ivf_shards(ivf_dir: Path, nlist: int, nb_bits: int, num_ranks: int) ->
     out = merged_path(ivf_dir, nlist, nb_bits)
     if out.exists():
         return out
-    paths = [shard_path(ivf_dir, nlist, nb_bits, r, num_ranks) for r in range(num_ranks)]
+    paths = [
+        shard_path(ivf_dir, nlist, nb_bits, r, num_ranks) for r in range(num_ranks)
+    ]
     t0 = time.time()
     index = faiss.read_index(str(paths[0]))
     for p in tqdm(paths[1:], desc="Merging IVF shards"):
@@ -507,11 +538,15 @@ class IVFRaBitQSearcher:
         if quantizer == "hnsw":
             flat = faiss.downcast_index(self.parts[0].quantizer)
             cent = flat.reconstruct_n(0, flat.ntotal)
-            hnsw = faiss.IndexHNSWFlat(cent.shape[1], hnsw_m, faiss.METRIC_INNER_PRODUCT)
+            hnsw = faiss.IndexHNSWFlat(
+                cent.shape[1], hnsw_m, faiss.METRIC_INNER_PRODUCT
+            )
             hnsw.hnsw.efConstruction = 200
             t0 = time.time()
             hnsw.add(cent)
-            print(f"  HNSW coarse quantizer over {len(cent):,} centroids in {time.time() - t0:.1f}s")
+            print(
+                f"  HNSW coarse quantizer over {len(cent):,} centroids in {time.time() - t0:.1f}s"
+            )
             for part in self.parts:
                 # the part still owns (and frees) its flat quantizer; keep it
                 # referenced and give the part the shared graph, unowned
@@ -553,7 +588,9 @@ class IVFRaBitQSearcher:
         D = np.take_along_axis(D, top, axis=1)
         I = np.take_along_axis(I, top, axis=1)
         order = np.argsort(-D, axis=1, kind="stable")
-        return np.take_along_axis(D, order, axis=1), np.take_along_axis(I, order, axis=1)
+        return np.take_along_axis(D, order, axis=1), np.take_along_axis(
+            I, order, axis=1
+        )
 
     def search(
         self,
@@ -613,7 +650,9 @@ class IVFRaBitQEngine:
         self.index_files: list[Path] = []
         self.last_timings: dict = {}
 
-    def build(self, fbin_dir: Path, index_dir: Path, shard: int, num_shards: int) -> None:
+    def build(
+        self, fbin_dir: Path, index_dir: Path, shard: int, num_shards: int
+    ) -> None:
         build_ivf_shard(
             fbin_dir / "embeddings.fbin",
             index_dir,
@@ -626,13 +665,16 @@ class IVFRaBitQEngine:
 
     def complete(self, index_dir: Path) -> bool:
         try:
-            return bool(list_shards(index_dir, self.cfg.nlist, self.cfg.nb_bits)) or merged_path(
-                index_dir, self.cfg.nlist, self.cfg.nb_bits
-            ).exists()
+            return (
+                bool(list_shards(index_dir, self.cfg.nlist, self.cfg.nb_bits))
+                or merged_path(index_dir, self.cfg.nlist, self.cfg.nb_bits).exists()
+            )
         except FileNotFoundError:
             return False
 
-    def load(self, fbin_dir: Path, index_dir: Path, devices: list[str], encoder_cfg=None) -> None:
+    def load(
+        self, fbin_dir: Path, index_dir: Path, devices: list[str], encoder_cfg=None
+    ) -> None:
         m = self.cfg
         merged = merged_path(index_dir, m.nlist, m.nb_bits)
         shards = list_shards(index_dir, m.nlist, m.nb_bits)
@@ -649,11 +691,17 @@ class IVFRaBitQEngine:
             files = [merged]
         self.index_files = files
         self.searcher = IVFRaBitQSearcher(
-            files, fbin_dir / "embeddings.fbin", quantizer=m.quantizer, fastscan=m.fastscan
+            files,
+            fbin_dir / "embeddings.fbin",
+            quantizer=m.quantizer,
+            fastscan=m.fastscan,
         )
 
     def topk_hits(
-        self, query_vecs: np.ndarray, top_k: int, vec_range: tuple[int, int] | None = None
+        self,
+        query_vecs: np.ndarray,
+        top_k: int,
+        vec_range: tuple[int, int] | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         if vec_range is not None:
             raise NotImplementedError("IVF search cannot be row-sharded")

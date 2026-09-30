@@ -26,12 +26,17 @@ import numpy as np
 import polars as pl
 import torch
 from jsonargparse import CLI
-from sklearn.metrics import average_precision_score
-
 from run_benchmark import query_file_name
+from sklearn.metrics import average_precision_score
 from src.config import ExperimentConfig, results_file_name
 from src.dense_index import DenseIndex
-from src.ivf_rabitq import assign_rows, probe_ranks, read_rows_by_id, sample_rows, spherical_kmeans
+from src.ivf_rabitq import (
+    assign_rows,
+    probe_ranks,
+    read_rows_by_id,
+    sample_rows,
+    spherical_kmeans,
+)
 from src.topk_regroup import regroup_topk_hits
 
 NPROBES = [1, 4, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096]
@@ -62,7 +67,11 @@ def accuracy(hits: pl.DataFrame, gt: dict[str, set[str]], accs: list[str]) -> di
         top7 = order[:7]
         top7 = top7[y[top7] > -2.0]
         r7.append(y_true[top7].sum() / nr)
-    return {"auprc": float(np.mean(ap)), "rprec": float(np.mean(rp)), "recall7": float(np.mean(r7))}
+    return {
+        "auprc": float(np.mean(ap)),
+        "rprec": float(np.mean(rp)),
+        "recall7": float(np.mean(r7)),
+    }
 
 
 def main():
@@ -107,9 +116,13 @@ def main():
 
     per_rate = {}
     for rate in [float(r) for r in args.rates.split(",")]:
-        hits = pl.read_parquet(hits_dir / results_file_name(rate), columns=["query_id", "hits"])
+        hits = pl.read_parquet(
+            hits_dir / results_file_name(rate), columns=["query_id", "hits"]
+        )
         queries = pl.read_parquet(Path(cfg.dataset_dir) / query_file_name(rate))
-        queries = queries.sample(min(cfg.num_queries, len(queries)), seed=cfg.random_seed)
+        queries = queries.sample(
+            min(cfg.num_queries, len(queries)), seed=cfg.random_seed
+        )
         queries = queries.join(hits.select("query_id"), on="query_id", how="semi")
         hits = queries.select("query_id").join(hits, on="query_id", how="left")
         feats, ranges, strand = index._embed_queries(queries)
@@ -117,12 +130,24 @@ def main():
         chunk_q = np.concatenate([np.full(e - s, i) for i, (s, e) in enumerate(ranges)])
         chunk_starts = np.array([s for s, _ in ranges])
         top = hits.with_columns(pl.col("hits").list.head(EVAL_TOP))
-        vid = np.stack([np.array([h["vector_id"] for h in row]) for row in top["hits"].to_list()])
+        vid = np.stack(
+            [np.array([h["vector_id"] for h in row]) for row in top["hits"].to_list()]
+        )
         t0 = time.time()
         vecs = read_rows_by_id(fbin, vid.ravel())
         dt = time.time() - t0
-        print(f"rate {rate}: read {vid.size:,} hit rows in {dt:.1f}s ({vid.size / dt:,.0f} rows/s)")
-        per_rate[rate] = dict(queries=queries, hits=top, feats=feats, vid=vid, vecs=vecs, chunk_q=chunk_q, chunk_starts=chunk_starts)
+        print(
+            f"rate {rate}: read {vid.size:,} hit rows in {dt:.1f}s ({vid.size / dt:,.0f} rows/s)"
+        )
+        per_rate[rate] = dict(
+            queries=queries,
+            hits=top,
+            feats=feats,
+            vid=vid,
+            vecs=vecs,
+            chunk_q=chunk_q,
+            chunk_starts=chunk_starts,
+        )
 
     results = {"nprobes": NPROBES, "baseline": {}, "nlist": {}}
     for rate, pr in per_rate.items():
@@ -138,14 +163,18 @@ def main():
             cent = spherical_kmeans(train, nlist, n_iter=20)
             print(f"kmeans nlist={nlist}: {time.time() - t0:.0f}s")
             np.save(cent_p, cent)
-        sizes = np.bincount(assign_rows(train, cent), minlength=nlist).astype(np.float64)
+        sizes = np.bincount(assign_rows(train, cent), minlength=nlist).astype(
+            np.float64
+        )
         sizes /= sizes.sum()
         res_n = {}
         for rate, pr in per_rate.items():
             n_q, m = pr["vid"].shape
             cells = assign_rows(pr["vecs"], cent).reshape(n_q, m)
             # rank per query chunk (every strand/window), then the best chunk
-            rk_chunk = probe_ranks(pr["feats"], cent, np.ascontiguousarray(cells[pr["chunk_q"]]))
+            rk_chunk = probe_ranks(
+                pr["feats"], cent, np.ascontiguousarray(cells[pr["chunk_q"]])
+            )
             rk = np.minimum.reduceat(rk_chunk, pr["chunk_starts"], axis=0)
             # fraction of the index scanned at each nprobe (both strands, avg)
             order_sizes = []

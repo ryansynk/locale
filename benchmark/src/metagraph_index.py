@@ -120,7 +120,9 @@ class MetagraphIndex(BaseIndex):
             tmp = index_path / (name + ".tmp")
             tmp.write_text(text)
             tmp.replace(index_path / name)
-        print(f"[merge] {num_nodes} metagraph shards listed in {index_path / GRAPHS_CSV}")
+        print(
+            f"[merge] {num_nodes} metagraph shards listed in {index_path / GRAPHS_CSV}"
+        )
 
     # ------------------------------------------------------------------- build
     def build(self, accessions: list[Path], index_path: Path):
@@ -128,7 +130,9 @@ class MetagraphIndex(BaseIndex):
         index_path.mkdir(exist_ok=True, parents=True)
         bash_script_path = Path(__file__).parent / "build_metagraph.sh"
         if not bash_script_path.is_file():
-            print(f"Error: Bash script not found at {bash_script_path}", file=sys.stderr)
+            print(
+                f"Error: Bash script not found at {bash_script_path}", file=sys.stderr
+            )
             sys.exit(1)
         # os.cpu_count() reports the whole node, not the CPUs this process may
         # run on, so under a partial allocation it oversubscribes --
@@ -181,7 +185,9 @@ class MetagraphIndex(BaseIndex):
         self.manifest_path = index_path / MANIFEST_FILE
         missing = [str(p) for p in self._required_files(index_path) if not p.exists()]
         if missing:
-            raise FileNotFoundError(f"metagraph index under {index_path} is missing {missing}")
+            raise FileNotFoundError(
+                f"metagraph index under {index_path} is missing {missing}"
+            )
 
         cmd = shlex.split(self.executable) + ["server_query"]
         if (index_path / GRAPHS_CSV).exists():
@@ -217,9 +223,11 @@ class MetagraphIndex(BaseIndex):
         seqs = queries["query_sequence"].to_list()
         n_req = max(1, min(self.server_parallel, len(seqs)))
         if n_req == 1:
-            results = [self.graph_client.search(
-                seqs, top_labels=TOP_LABELS, discovery_fraction=DISCOVERY_FRACTION
-            )]
+            results = [
+                self.graph_client.search(
+                    seqs, top_labels=TOP_LABELS, discovery_fraction=DISCOVERY_FRACTION
+                )
+            ]
         else:
             # Contiguous slices, one request each; seq_description is the
             # position within a request, so shift it back to the batch.
@@ -241,7 +249,11 @@ class MetagraphIndex(BaseIndex):
             with ThreadPoolExecutor(max_workers=n_req) as pool:
                 results = list(pool.map(_one, range(n_req)))
         results = [r for r in results if len(r)]
-        df = pl.concat([pl.from_pandas(r) for r in results]) if results else pl.DataFrame()
+        df = (
+            pl.concat([pl.from_pandas(r) for r in results])
+            if results
+            else pl.DataFrame()
+        )
         if len(df) == 0:
             return queries.select(
                 "query_id", pl.lit([], dtype=RESULTS_DTYPE).alias("results")
@@ -264,7 +276,9 @@ class MetagraphIndex(BaseIndex):
         df = queries.join(
             df, left_on="index", right_on="seq_description", how="left"
         ).select("query_id", "results")
-        df = df.with_columns(pl.col("results").fill_null(pl.lit([], dtype=RESULTS_DTYPE)))
+        df = df.with_columns(
+            pl.col("results").fill_null(pl.lit([], dtype=RESULTS_DTYPE))
+        )
         assert len(df) == len(queries)
         return df
 

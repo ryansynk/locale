@@ -547,7 +547,9 @@ class RaBitQEngine:
         self.codes: RaBitQCodes | None = None
         self.devices: list[str] = ["cpu"]
 
-    def build(self, fbin_dir: Path, index_dir: Path, shard: int, num_shards: int) -> None:
+    def build(
+        self, fbin_dir: Path, index_dir: Path, shard: int, num_shards: int
+    ) -> None:
         """Quantize this rank's row range (resumable; every rank returns once
         meta.json exists, so the index is complete on return)."""
         build_rabitq_index(
@@ -558,7 +560,9 @@ class RaBitQEngine:
             centroid_sample_rows=self.cfg.sample_rows,
         )
 
-    def load(self, fbin_dir: Path, index_dir: Path, devices: list[str], encoder_cfg=None) -> None:
+    def load(
+        self, fbin_dir: Path, index_dir: Path, devices: list[str], encoder_cfg=None
+    ) -> None:
         """Only metadata is read here; the codes for a row range are brought
         onto the devices by topk_hits."""
         self.codes = RaBitQCodes.open(index_dir)
@@ -566,7 +570,10 @@ class RaBitQEngine:
 
     @torch.no_grad()
     def topk_hits(
-        self, query_vecs: np.ndarray, top_k: int, vec_range: tuple[int, int] | None = None
+        self,
+        query_vecs: np.ndarray,
+        top_k: int,
+        vec_range: tuple[int, int] | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         assert self.codes is not None
         n_vecs = self.codes.n

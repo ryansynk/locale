@@ -18,10 +18,9 @@ from types import SimpleNamespace
 import numpy as np
 import polars as pl
 import pytest
+import run_benchmark
 import torch
 import torch.nn.functional as F
-
-import run_benchmark
 from plot_results import recall_at_k_per_query
 from src.config import (
     DenseMethod,
@@ -42,11 +41,15 @@ from src.topk_regroup import MISS_SCORE, regroup_topk_hits
 # --------------------------------------------------------------------------- #
 
 
-def _cfg(tmp_path: Path, top_k: int = 100, both_strands: bool = False) -> ExperimentConfig:
+def _cfg(
+    tmp_path: Path, top_k: int = 100, both_strands: bool = False
+) -> ExperimentConfig:
     strands = "" if both_strands else "-fwd"
     return ExperimentConfig(
         model=DenseMethod(
-            encoder=EncoderConfig(name="dna2vec", device="cpu", both_strands=both_strands),
+            encoder=EncoderConfig(
+                name="dna2vec", device="cpu", both_strands=both_strands
+            ),
             index=ExactIndex(top_k=top_k),
             encoder_label="esa",
             index_label="exact",
@@ -135,7 +138,9 @@ def _synthetic_index(
     index.acc_names_flat = accs
     index.acc_offsets = offsets
     index.n_vectors = offsets[-1]
-    index.encoder_cfg = SimpleNamespace(device="cpu", max_seq_len=window, query_embed_gpus=1)
+    index.encoder_cfg = SimpleNamespace(
+        device="cpu", max_seq_len=window, query_embed_gpus=1
+    )
     index.chunk_type = "stride"
     index.chunk_overlap = window - stride
     index.model = enc
@@ -172,19 +177,33 @@ class TestConfig:
     def test_top_k_and_strands_are_search_identity_not_index_identity(self):
         m = _cfg(Path("/tmp/x"), top_k=50).model
         assert m.index_identity() == {
-            "name": "dna2vec", "checkpoint": None, "step": None,
-            "pooling": "mean", "max_seq_len": 256, "chunk_overlap": 150,
+            "name": "dna2vec",
+            "checkpoint": None,
+            "step": None,
+            "pooling": "mean",
+            "max_seq_len": 256,
+            "chunk_overlap": 150,
         }
         assert m.engine_identity() == {"engine": "exact"}
-        assert m.search_identity() == {"engine": "exact", "top_k": 50, "both_strands": False}
+        assert m.search_identity() == {
+            "engine": "exact",
+            "top_k": 50,
+            "both_strands": False,
+        }
 
     def test_labels_place_the_artifacts(self, tmp_path):
         cfg = _cfg(tmp_path, top_k=50, both_strands=True)
         m = cfg.model
         assert m.index_path(cfg.index_dir) == tmp_path / "index" / "esa"
         assert m.engine_path(cfg.index_dir) == tmp_path / "index" / "esa" / "exact"
-        assert m.results_path(cfg.results_dir) == tmp_path / "results" / "esa" / "exact" / "top50"
-        assert run_benchmark.hits_path(cfg) == m.results_path(cfg.results_dir) / "hits" / "mut0.00.parquet"
+        assert (
+            m.results_path(cfg.results_dir)
+            == tmp_path / "results" / "esa" / "exact" / "top50"
+        )
+        assert (
+            run_benchmark.hits_path(cfg)
+            == m.results_path(cfg.results_dir) / "hits" / "mut0.00.parquet"
+        )
 
     def test_exhaustive_has_no_search_fields(self):
         m = DenseMethod(encoder=EncoderConfig(name="dna2vec"), index=ExhaustiveIndex())
@@ -219,7 +238,9 @@ class TestBothStrandEmbedding:
     def _index(self, both: bool, max_len: int):
         idx = DenseIndex.__new__(DenseIndex)
         idx.both_strands = both
-        idx.encoder_cfg = SimpleNamespace(device="cpu", max_seq_len=max_len, query_embed_gpus=1)
+        idx.encoder_cfg = SimpleNamespace(
+            device="cpu", max_seq_len=max_len, query_embed_gpus=1
+        )
         idx.model = self._Recorder()
         return idx
 
@@ -306,9 +327,9 @@ class TestCachedHitsReproduceFreshSearch:
         assert from_cache.filter(untied).equals(fresh.filter(untied))
         assert len(tied) < len(queries) // 2
         for at in (1, 5):
-            assert _mean_recall(from_cache.filter(untied), accs, truth, at) == pytest.approx(
-                _mean_recall(fresh.filter(untied), accs, truth, at)
-            )
+            assert _mean_recall(
+                from_cache.filter(untied), accs, truth, at
+            ) == pytest.approx(_mean_recall(fresh.filter(untied), accs, truth, at))
 
     def test_larger_k_or_missing_queries_are_not_served(self, tmp_path):
         index, accs, contigs = _synthetic_index(top_k=5)

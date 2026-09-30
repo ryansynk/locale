@@ -16,8 +16,8 @@ import multiprocessing as mp
 import os
 import sys
 import threading
-import traceback
 import time
+import traceback
 from collections import defaultdict
 from concurrent.futures import (
     ProcessPoolExecutor,
@@ -38,7 +38,10 @@ from .base_index import BaseIndex
 from .config import DenseMethod, ExhaustiveIndex, ExperimentConfig
 from .encoders import DenseEncoder, batched  # noqa: F401  (re-exported for tests)
 from .engines import make_engine
-from .fbin import _create_fbin_memmap, _load_fbin_mmap  # noqa: F401  (re-exported for tests)
+from .fbin import (  # noqa: F401  (re-exported for tests)
+    _create_fbin_memmap,
+    _load_fbin_mmap,
+)
 from .topk_regroup import build_hits_frame, regroup_topk_hits
 
 # IUPAC complement; case is preserved. Anything else (gaps, '*') maps to itself,
@@ -389,7 +392,9 @@ class DenseIndex(BaseIndex):
         chunk_to_query = np.zeros(n_chunks, dtype=np.int64)
         for qi, (s, e) in enumerate(query_indices):
             chunk_to_query[s:e] = qi
-        chunk_to_slot = chunk_to_query * n_strands + chunk_strand.numpy().astype(np.int64)
+        chunk_to_slot = chunk_to_query * n_strands + chunk_strand.numpy().astype(
+            np.int64
+        )
         slot_scores = self.engine.slot_scores(
             query_chunk_features.float().cpu().numpy(),
             chunk_to_slot,
@@ -444,7 +449,9 @@ class DenseIndex(BaseIndex):
         if self.exhaustive:
             raise NotImplementedError("topk_hits has no meaning under exhaustive")
         if vec_range is not None and not self.engine.SHARDABLE:
-            raise NotImplementedError(f"{type(self.engine).__name__} cannot be row-sharded")
+            raise NotImplementedError(
+                f"{type(self.engine).__name__} cannot be row-sharded"
+            )
         t0 = time.time()
         query_chunk_features, query_indices, _ = self._embed_queries(queries)
         q = query_chunk_features.float().cpu().numpy()
@@ -667,7 +674,9 @@ class DenseIndex(BaseIndex):
         engine = getattr(self, "engine", None)
         if engine is not None and engine.WORKER_EMBED:
             return torch.from_numpy(engine.embed(chunks))
-        n_gpu = min(getattr(self.encoder_cfg, "query_embed_gpus", 1), torch.cuda.device_count())
+        n_gpu = min(
+            getattr(self.encoder_cfg, "query_embed_gpus", 1), torch.cuda.device_count()
+        )
         if n_gpu <= 1 or len(chunks) < 2 * n_gpu:
             return self.model.encode(chunks)
         if self._query_replicas is None:
@@ -681,7 +690,11 @@ class DenseIndex(BaseIndex):
 
         def _run(i):
             with torch.cuda.device(i):
-                return self._query_replicas[i].encode(chunks[bounds[i] : bounds[i + 1]]).cpu()
+                return (
+                    self._query_replicas[i]
+                    .encode(chunks[bounds[i] : bounds[i + 1]])
+                    .cpu()
+                )
 
         with ThreadPoolExecutor(max_workers=n_gpu) as pool:
             return torch.cat(list(pool.map(_run, range(n_gpu))))

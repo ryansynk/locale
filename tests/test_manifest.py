@@ -17,8 +17,8 @@ interface is explicit for when you extract it from run_benchmark.py.
 """
 
 from pathlib import Path
-import pytest
 
+import pytest
 
 # ---------------------------------------------------------------------------
 # Reference implementation (mirrors the logic in run_benchmark.py)
