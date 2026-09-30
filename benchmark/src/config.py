@@ -210,8 +210,22 @@ class IVFRaBitQIndex:
     fastscan: bool = False
 
 
+@dataclass
+class EpsilonNetIndex:
+    BUILD: ClassVar[tuple[str, ...]] = ("epsilon",)
+    SEARCH: ClassVar[tuple[str, ...]] = ("top_k",)
+    engine: Literal["epsilonnet"] = "epsilonnet"
+    epsilon: float = 0.99
+    top_k: int = 100
+
+
 IndexConfig = Union[
-    ExactIndex, ExhaustiveIndex, RaBitQIndex, IVFPQIndex, IVFRaBitQIndex
+    ExactIndex,
+    ExhaustiveIndex,
+    RaBitQIndex,
+    IVFPQIndex,
+    IVFRaBitQIndex,
+    EpsilonNetIndex,
 ]
 INDEX_TYPES: tuple[type, ...] = (
     ExactIndex,
@@ -219,6 +233,7 @@ INDEX_TYPES: tuple[type, ...] = (
     RaBitQIndex,
     IVFPQIndex,
     IVFRaBitQIndex,
+    EpsilonNetIndex,
 )
 
 

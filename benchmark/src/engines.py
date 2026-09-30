@@ -20,6 +20,7 @@ from .config import (
     IVFPQIndex,
     IVFRaBitQIndex,
     RaBitQIndex,
+    EpsilonNetIndex,
 )
 
 
@@ -44,4 +45,8 @@ def make_engine(index_cfg):
         from .ivf_rabitq import IVFRaBitQEngine
 
         return IVFRaBitQEngine(index_cfg)
+    if isinstance(index_cfg, EpsilonNetIndex):
+        from .epsilonnet import EpsilonNetEngine
+
+        return EpsilonNetEngine(index_cfg)
     raise TypeError(f"no engine for index config {type(index_cfg).__name__}")
