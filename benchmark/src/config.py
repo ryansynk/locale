@@ -220,12 +220,17 @@ class EpsilonNetIndex:
 
 
 @dataclass
-class RandomSampleIndex:
-    """Baseline for EpsilonNetIndex (src/random_sample.py): keep a uniform
-    random subset of each accession's vectors, max(1, round(n / compression_ratio))
-    of its n rows, and scan the kept rows exactly. compression_ratio 3.09 keeps
-    the same 32% of sra50 as epsilon 0.40."""
+class MergedEpsilonNetIndex:
+    BUILD: ClassVar[tuple[str, ...]] = ("epsilon", "per_accession_epsilon")
+    SEARCH: ClassVar[tuple[str, ...]] = ("top_k",)
+    engine: Literal["merged_epsilonnet"] = "merged_epsilonnet"
+    epsilon: float = 0.99
+    per_accession_epsilon: float = 0.2
+    top_k: int = 100
 
+
+@dataclass
+class RandomSampleIndex:
     BUILD: ClassVar[tuple[str, ...]] = ("compression_ratio", "seed")
     SEARCH: ClassVar[tuple[str, ...]] = ("top_k",)
     engine: Literal["randomsample"] = "randomsample"
@@ -247,6 +252,7 @@ IndexConfig = Union[
     IVFPQIndex,
     IVFRaBitQIndex,
     EpsilonNetIndex,
+    MergedEpsilonNetIndex,
     RandomSampleIndex,
 ]
 INDEX_TYPES: tuple[type, ...] = (
@@ -256,6 +262,7 @@ INDEX_TYPES: tuple[type, ...] = (
     IVFPQIndex,
     IVFRaBitQIndex,
     EpsilonNetIndex,
+    MergedEpsilonNetIndex,
     RandomSampleIndex,
 )
 

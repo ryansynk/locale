@@ -21,6 +21,7 @@ from .config import (
     IVFRaBitQIndex,
     RaBitQIndex,
     EpsilonNetIndex,
+    MergedEpsilonNetIndex,
     RandomSampleIndex,
 )
 
@@ -50,6 +51,10 @@ def make_engine(index_cfg):
         from .epsilonnet import EpsilonNetEngine
 
         return EpsilonNetEngine(index_cfg)
+    if isinstance(index_cfg, MergedEpsilonNetIndex):
+        from .merged_epsilonnet import MergedEpsilonNetEngine
+
+        return MergedEpsilonNetEngine(index_cfg)
     if isinstance(index_cfg, RandomSampleIndex):
         from .random_sample import RandomSampleEngine
 

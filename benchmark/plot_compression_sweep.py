@@ -1,9 +1,10 @@
-"""AUPRC vs compression ratio for the epsilon-net and random-subsample sweeps,
-one figure per mutation rate, with exact top-k and metagraph as dotted
-reference lines.
+"""AUPRC vs compression ratio for the epsilon-net, merged epsilon-net and
+random-subsample sweeps, one figure per mutation rate, with exact top-k and
+metagraph as dotted reference lines.
 
 Compression ratio = total vectors / kept vectors, counted from each index's
-net_ids.pt (both engines write one), so the two sweeps sit on the same axis
+net_ids.pt (all three engines write one; the merged net's holds one row per
+merged center), so the sweeps sit on the same axis
 even though epsilon only fixes the ratio after the build. AUPRC and its 95%
 bootstrap band come from plot_results.compute_auprc, the numbers
 print_results.py prints.
@@ -27,17 +28,17 @@ plt.rcParams["text.usetex"] = False  # plot_results turns it on; not needed here
 BENCH = Path(__file__).parent
 BUNDLE = Path("/pscratch/sd/r/rsynk/locale-data/constructed/sra50/bundle")
 
-# Categorical slots 1-2 of the reference palette (validated as a pair); the
-# reference line is a neutral ink, not a series hue.
+# Categorical slots 1-3 of the reference palette, in fixed order.
 SERIES = {
     "epsnet": ("Epsilon net", "#2a78d6", "o"),
     "randsample": ("Random subsample", "#eb6834", "s"),
+    "mergednet": ("Merged epsilon net", "#1baf7a", "D"),
 }
 # Reference lines: (label, color). Exact is neutral ink; metagraph takes the
-# third categorical slot (slots 1-3 validate all-pairs).
+# fourth categorical slot (slots 1-4 validate all-pairs).
 REFERENCES = {
     "exact": ("Exact top-k", "#52514e"),
-    "metagraph": ("Metagraph", "#1baf7a"),
+    "metagraph": ("Metagraph", "#eda100"),
 }
 GRID_INK = "#e4e3df"
 
@@ -59,7 +60,7 @@ def main(
     """
     Args:
         results_dir: the encoder's results directory (holds exact/, epsnet-*/,
-            randsample-*/).
+            mergednet-*/, randsample-*/).
         metagraph_dir: metagraph's results directory (None: no metagraph line).
         index_dir: the encoder's index directory (holds each net_ids.pt and
             meta.parquet).
@@ -69,6 +70,7 @@ def main(
     data = pr.load_results(dirs)
     data = data.filter(
         pl.col("index").str.starts_with("epsnet-")
+        | pl.col("index").str.starts_with("mergednet-")
         | pl.col("index").str.starts_with("randsample-")
         | pl.col("index").is_in([exact_label, "metagraph"])
     )
@@ -86,7 +88,7 @@ def main(
     }
     auprc = auprc.with_columns(
         pl.col("index").replace_strict(ratios, default=None).alias("compression"),
-        pl.col("index").str.extract(r"^(epsnet|randsample)-").alias("family"),
+        pl.col("index").str.extract(r"^(epsnet|mergednet|randsample)-").alias("family"),
         pl.col("index")
         .replace_strict({exact_label: "exact", "metagraph": "metagraph"}, default=None)
         .alias("reference"),

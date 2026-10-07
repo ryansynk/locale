@@ -6,11 +6,12 @@ import numpy as np
 import polars as pl
 import pytest
 import torch
-from src import epsilonnet
+from src import greedy_net as greedy_net_module
 from src.config import EpsilonNetIndex
 from src.engines import make_engine
-from src.epsilonnet import EpsilonNetEngine, greedy_net
+from src.epsilonnet import EpsilonNetEngine
 from src.fbin import _create_fbin_memmap, _load_fbin_mmap
+from src.greedy_net import greedy_net
 
 ROWS = [400, 1, 250, 3]
 D = 8
@@ -28,7 +29,7 @@ def _worst_cover(x, net):
 @pytest.mark.parametrize("eps", [0.05, 0.3, 0.6])
 def test_greedy_net_covers_every_row(eps):
     x = _unit(2000)
-    net = greedy_net(x, eps, batch_size=64)
+    net, _, _ = greedy_net(x, eps, batch_size=64)
     assert len(net.unique()) == len(net)
     assert _worst_cover(x, net) >= 1 - eps - 1e-6
 
@@ -37,17 +38,47 @@ def test_column_tiled_max_matches_untiled(monkeypatch):
     # Tiles of 64 x 5 elements force many column tiles per batch.
     x = _unit(1500)
     g = lambda: torch.Generator().manual_seed(3)  # noqa: E731
-    full = greedy_net(x, 0.4, batch_size=64, generator=g())
-    monkeypatch.setattr(epsilonnet, "SIM_TILE_ELEMS", 64 * 5)
-    tiled = greedy_net(x, 0.4, batch_size=64, generator=g())
+    full, _, _ = greedy_net(x, 0.4, batch_size=64, generator=g())
+    monkeypatch.setattr(greedy_net_module, "SIM_TILE_ELEMS", 64 * 5)
+    tiled, _, _ = greedy_net(x, 0.4, batch_size=64, generator=g())
     assert torch.equal(full, tiled)
 
 
 def test_generator_makes_net_reproducible():
     x = _unit(1000)
-    a = greedy_net(x, 0.3, generator=torch.Generator().manual_seed(7))
-    b = greedy_net(x, 0.3, generator=torch.Generator().manual_seed(7))
+    a, _, _ = greedy_net(x, 0.3, generator=torch.Generator().manual_seed(7))
+    b, _, _ = greedy_net(x, 0.3, generator=torch.Generator().manual_seed(7))
     assert torch.equal(a, b)
+
+
+def test_assign_and_sim_point_at_a_covering_center():
+    x = _unit(2000)
+    ids, assign, sim = greedy_net(x, 0.3, batch_size=64)
+    assert torch.equal(assign[ids], torch.arange(len(ids)))  # centers own themselves
+    assert torch.allclose((x * x[ids[assign]]).sum(dim=1), sim, atol=1e-5)
+    assert (sim >= 1 - 0.3 - 1e-6).all()
+
+
+@pytest.mark.parametrize("init", [1, 7])
+def test_growing_center_buffer_matches_preallocated(monkeypatch, init):
+    # A center buffer that starts tiny and doubles many times picks the same
+    # centers, assignments and similarities as one sized for every row.
+    x = _unit(2000)
+    g = lambda: torch.Generator().manual_seed(5)  # noqa: E731
+    full = greedy_net(x, 0.3, batch_size=64, generator=g())
+    monkeypatch.setattr(greedy_net_module, "INIT_CENTERS", init)
+    grown = greedy_net(x, 0.3, batch_size=64, generator=g())
+    assert all(torch.equal(a, b) for a, b in zip(full, grown))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a GPU")
+def test_host_x_matches_device_x():
+    # x in host memory with the work on the GPU equals x resident on the GPU.
+    x = _unit(5000)
+    g = lambda: torch.Generator(device="cuda").manual_seed(2)  # noqa: E731
+    on_gpu = greedy_net(x.cuda(), 0.3, batch_size=256, generator=g())
+    on_host = greedy_net(x, 0.3, batch_size=256, generator=g(), device="cuda")
+    assert all(torch.equal(a, b) for a, b in zip(on_gpu, on_host))
 
 
 @pytest.fixture

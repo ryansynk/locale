@@ -24,50 +24,10 @@ from tqdm import tqdm
 from .config import EpsilonNetIndex, ExactIndex
 from .exact import BLOCK_ROWS, ExactEngine
 from .fbin import _create_fbin_memmap, _load_fbin_mmap, read_fbin_rows
+from .greedy_net import greedy_net
 
 NET_IDS = "net_ids.pt"
 NET_FBIN = "embeddings.fbin"
-# Score tile budget in greedy_net: (batch, centers) fp32 elements per matmul.
-SIM_TILE_ELEMS = 2**30  # 4 GB
-
-
-@torch.no_grad()
-def greedy_net(
-    x: torch.Tensor,
-    eps: float,
-    batch_size: int = 4096,
-    generator: torch.Generator | None = None,
-) -> torch.Tensor:
-    """Indices into x (unit-norm rows) of a greedy eps-net: every row has cosine
-    similarity >= 1 - eps to some center. Rows are visited in one random order,
-    batch_size at a time; a row becomes a center if no earlier center covers
-    it. Rows in the same batch are not checked against each other, so larger
-    batches run faster but can add near-duplicate centers. Memory: two (n, d)
-    buffers plus a SIM_TILE_ELEMS score tile."""
-    n, d = x.shape
-    perm = torch.randperm(n, device=x.device, generator=generator)
-    net_points = torch.empty((n, d), dtype=x.dtype, device=x.device)
-    net_idx = torch.empty(n, dtype=torch.long, device=x.device)
-    m = 0  # centers so far: net_points[:m], net_idx[:m]
-    for i in range(0, n, batch_size):
-        p_idx = perm[i : i + batch_size]
-        if m == 0:
-            new = p_idx
-        else:
-            # Max over the centers in column tiles: the full (batch, m) score
-            # matrix is 33 GB for sra500's largest accession.
-            p = x[p_idx]
-            cols = max(1, SIM_TILE_ELEMS // len(p_idx))
-            maxsim = torch.full((len(p_idx),), -2.0, device=x.device, dtype=x.dtype)
-            for c in range(0, m, cols):
-                tile_max = (p @ net_points[c : min(c + cols, m)].T).max(dim=1).values
-                maxsim = torch.maximum(maxsim, tile_max)
-            new = p_idx[maxsim < 1 - eps]
-        k = len(new)
-        net_points[m : m + k] = x[new]
-        net_idx[m : m + k] = new
-        m += k
-    return net_idx[:m]
 
 
 def write_net(fbin_dir: Path, index_dir: Path, ids: torch.Tensor) -> None:
@@ -152,11 +112,16 @@ class EpsilonNetEngine:
                         i = todo.get_nowait()
                     except queue.Empty:
                         return
+                    if counts[i] == 0:  # read_fbin_rows cannot read zero rows
+                        nets[i] = torch.empty(0, dtype=torch.long)
+                        with lock:
+                            pbar.update(1)
+                        continue
                     host = np.empty((counts[i], d), dtype=np.float32)
                     rows = read_fbin_rows(fd, starts[i], starts[i] + counts[i], host)
                     x = torch.from_numpy(rows).to(dev)
                     gen = torch.Generator(device=dev).manual_seed(i)
-                    local = greedy_net(x, self.cfg.epsilon, generator=gen)
+                    local, _, _ = greedy_net(x, self.cfg.epsilon, generator=gen)
                     nets[i] = (local + starts[i]).cpu()
                     del x, local
                     with lock:
