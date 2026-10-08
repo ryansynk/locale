@@ -3,11 +3,13 @@
 # spreading them round-robin over its nodes: node i runs configs i, i+N, ...
 # one after another; the nodes run in parallel. Per config: stage engine
 # (skipped when the engine dir is .done), then stage search at every rate
-# (accuracy only; set TIMING=1 for --do_timing). Meant for the epsilon-net
-# sweep but works for any dense config whose embeddings are already built.
+# (accuracy only; set TIMING=1 for --do_timing). Works for any dense config
+# (any engine) whose encoder embeddings are already built; the per-method
+# wrappers (pca_sweep.sh, pca_bf16_sweep.sh, quantized_sweep.sh) just pick
+# their configs and call this. Written for the epsilon-net sweep, 2026-09.
 #
 #   salloc -A m5408_g -C gpu -q interactive -N 4 --gpus-per-node=4 -t 2:00:00
-#   bash slurm_scripts/epsnet_sweep.sh configs/sra50/perlmutter_locale_sra50v2_epsnet_e*.yaml
+#   bash slurm_scripts/dense_sweep.sh configs/sra50/perlmutter_locale_sra50v2_pca_d*_bf16.yaml
 #
 # Logs: slurm_logs/sweep_<config name>.log (one per config).
 set -euo pipefail

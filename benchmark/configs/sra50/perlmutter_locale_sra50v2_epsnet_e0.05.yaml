@@ -3,7 +3,7 @@
 # search is an exact top-k scan over the centers only. One of the epsilon
 # sweep 0.05 / 0.10 / 0.20 / 0.30 / 0.40 (configs differ only in epsilon and
 # index_label). Reuses the exact config's embeddings (indexes/sra50/locale@8vqiabk9/).
-#   bash slurm_scripts/epsnet_sweep.sh configs/sra50/perlmutter_locale_sra50v2_epsnet_e*.yaml
+#   bash slurm_scripts/dense_sweep.sh configs/sra50/perlmutter_locale_sra50v2_epsnet_e*.yaml
 model:
   encoder:
     name: locale

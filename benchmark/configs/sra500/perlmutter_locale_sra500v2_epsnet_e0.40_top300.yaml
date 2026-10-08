@@ -6,7 +6,7 @@
 # embeddings.fbin and searched by the exact top-k scan across the node's GPUs.
 # One of the sra500 epsilon sweep 0.20 / 0.25 / 0.30 / 0.40 (configs differ
 # only in epsilon and index_label). Reuses indexes/sra500/locale@8vqiabk9/.
-#   bash slurm_scripts/epsnet_sweep.sh configs/sra500/perlmutter_locale_sra500v2_epsnet_e*.yaml
+#   bash slurm_scripts/dense_sweep.sh configs/sra500/perlmutter_locale_sra500v2_epsnet_e*.yaml
 model:
   encoder:
     name: locale

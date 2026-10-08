@@ -5,7 +5,7 @@
 # the epsilon net, only the row choice differs. compression_ratio 3.2224
 # matches epsnet-e0.40 (47,508,180 of 153,088,185 vectors kept). Reuses
 # indexes/sra500/locale@8vqiabk9/.
-#   bash slurm_scripts/epsnet_sweep.sh configs/sra500/perlmutter_locale_sra500v2_randsample_c*.yaml
+#   bash slurm_scripts/dense_sweep.sh configs/sra500/perlmutter_locale_sra500v2_randsample_c*.yaml
 model:
   encoder:
     name: locale

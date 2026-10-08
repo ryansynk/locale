@@ -4,7 +4,7 @@
 # top-k scan over the kept rows -- the same engine as the epsilon net, only
 # the row choice differs. compression_ratio 3.0913 matches epsnet-e0.40
 # (3,477,113 of 10,748,876 vectors kept). Reuses indexes/sra50/locale@8vqiabk9/.
-#   bash slurm_scripts/epsnet_sweep.sh configs/sra50/perlmutter_locale_sra50v2_randsample_c*.yaml
+#   bash slurm_scripts/dense_sweep.sh configs/sra50/perlmutter_locale_sra50v2_randsample_c*.yaml
 model:
   encoder:
     name: locale

@@ -2,7 +2,7 @@
 # PCA pca_dim sweep (configs/<dataset>/*_pca_d*.yaml) inside an existing
 # allocation: one config per node, each building its projected fbin (stage
 # engine) then searching at every noise level, 0.0 0.05 0.1. The scheduling
-# is epsnet_sweep.sh's; pass configs to run a subset, RATES=... or TIMING=1
+# is dense_sweep.sh's; pass configs to run a subset, RATES=... or TIMING=1
 # as there. A dataset name (sra50, the default, or sra500) picks that
 # dataset's four configs; anything else is taken as config paths.
 #
@@ -31,4 +31,4 @@ for c in "${CONFIGS[@]}"; do
 done
 printf 'configs:\n'
 printf '  %s\n' "${CONFIGS[@]}"
-exec bash slurm_scripts/epsnet_sweep.sh "${CONFIGS[@]}"
+exec bash slurm_scripts/dense_sweep.sh "${CONFIGS[@]}"

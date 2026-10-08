@@ -2,7 +2,7 @@
 # fp16 / bf16 quantized-exact runs (configs/<dataset>/*_quantized_{fp16,bf16}.yaml)
 # inside an existing allocation: one config per node, each building its
 # 2-byte copy of the encoder fbin (stage engine) then searching at every
-# noise level, 0.0 0.05 0.1. The scheduling is epsnet_sweep.sh's; pass
+# noise level, 0.0 0.05 0.1. The scheduling is dense_sweep.sh's; pass
 # configs to run a subset, RATES=... or TIMING=1 as there. A dataset name
 # (sra50, the default) picks that dataset's two configs; anything else is
 # taken as config paths. Two configs use two nodes; extra nodes sit idle.
@@ -24,4 +24,4 @@ for c in "${CONFIGS[@]}"; do
 done
 printf 'configs:\n'
 printf '  %s\n' "${CONFIGS[@]}"
-exec bash slurm_scripts/epsnet_sweep.sh "${CONFIGS[@]}"
+exec bash slurm_scripts/dense_sweep.sh "${CONFIGS[@]}"

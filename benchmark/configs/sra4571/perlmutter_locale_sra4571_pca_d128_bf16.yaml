@@ -1,0 +1,34 @@
+# LOCALE on sra4571, PCA 768 -> 128 stored as bf16 (src/pca.py, dtype bf16),
+# 12x smaller than the fp32 encoder fbin: 2.06 B x 128 x 2 B = 527 GB.
+# Search matches the exact baseline perlmutter_locale_sra4571_exact_topk1000.yaml
+# (top-1000 vectors, both strands, 1000 queries), so results land beside
+# results/sra4571/locale@8vqiabk9/exact/top1000/.
+#
+# The build shards rows over the job's nodes (PCAEngine.build); run stage
+# engine on every node with --shard $SLURM_PROCID --num_shards $SLURM_NTASKS,
+# then stage search the same way (perlmutter_sra4571_search.sbatch's srun).
+model:
+  encoder:
+    name: locale
+    checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/8vqiabk9/checkpoint5859.pth.tar
+    pooling: mean
+    max_seq_len: 256
+    chunk_overlap: 150
+    batch_size: 1000
+    device: cuda
+    both_strands: true
+  index:
+    engine: pca
+    pca_dim: 128
+    dtype: bf16
+    top_k: 1000
+  encoder_label: locale@8vqiabk9
+  index_label: pca-d128-bf16
+  search_label: top1000
+
+dataset_name: sra4571
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra4571/bundle
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes/sra4571
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results/sra4571
+mutation_rate: 0.0
+num_queries: 1000
