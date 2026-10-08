@@ -23,11 +23,16 @@ def _create_fbin_memmap(path: Path, n: int, d: int) -> np.memmap:
     return np.memmap(path, dtype=np.float32, mode="r+", offset=8, shape=(n, d))
 
 
-def _load_fbin_mmap(path: Path) -> np.memmap:
-    """Memory-map an fbin file and return a read-only float32 array."""
+def _load_fbin_mmap(path: Path, dtype=np.float32) -> np.memmap:
+    """Memory-map an fbin file and return a read-only (n, d) array of ``dtype``.
+
+    float32 for the standard format; quantized_exact's 2-byte files share the
+    header and are mapped as int16 (numpy has no bfloat16), then viewed as
+    torch.float16 / torch.bfloat16 by the caller.
+    """
     with open(path, "rb") as f:
         n, d = np.frombuffer(f.read(8), dtype=np.uint32)
-    return np.memmap(path, dtype=np.float32, mode="r", offset=8, shape=(int(n), int(d)))
+    return np.memmap(path, dtype=dtype, mode="r", offset=8, shape=(int(n), int(d)))
 
 
 def pread_into(

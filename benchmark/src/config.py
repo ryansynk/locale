@@ -244,6 +244,7 @@ class RandomSampleIndex:
                 f"compression_ratio must be >= 1, got {self.compression_ratio}"
             )
 
+
 @dataclass
 class PCAIndex:
     BUILD: ClassVar[tuple[str, ...]] = ("pca_dim",)
@@ -251,6 +252,19 @@ class PCAIndex:
     engine: Literal["pca"] = "pca"
     top_k: int = 100
     pca_dim: int = 128
+
+
+@dataclass
+class QuantizedExactIndex:
+    """Exact top-k scan (ExactEngine) over a 2-byte copy of the encoder fbin
+    (src/quantized_exact.py): fp16 or bf16 storage, upcast to fp32 on the
+    device before the matmul, so only the stored values are rounded."""
+
+    BUILD: ClassVar[tuple[str, ...]] = ("dtype",)
+    SEARCH: ClassVar[tuple[str, ...]] = ("top_k",)
+    engine: Literal["quantized_exact"] = "quantized_exact"
+    dtype: Literal["fp16", "bf16"] = "bf16"
+    top_k: int = 100
 
 
 IndexConfig = Union[
@@ -263,6 +277,7 @@ IndexConfig = Union[
     MergedEpsilonNetIndex,
     RandomSampleIndex,
     PCAIndex,
+    QuantizedExactIndex,
 ]
 INDEX_TYPES: tuple[type, ...] = (
     ExactIndex,
@@ -274,6 +289,7 @@ INDEX_TYPES: tuple[type, ...] = (
     MergedEpsilonNetIndex,
     RandomSampleIndex,
     PCAIndex,
+    QuantizedExactIndex,
 )
 
 

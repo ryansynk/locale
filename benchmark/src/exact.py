@@ -7,6 +7,11 @@ block's top-k into a running (n_queries, top_k) buffer, so a multi-TB index
 never has to fit anywhere. ``vec_range`` makes it shardable: a node's hits are
 exact over its own row range, so node 0 merges them with
 topk_regroup.merge_topk_hits.
+
+The scan also reads 2-byte files (fp16 / bf16, written by quantized_exact):
+``load_file`` takes the stored dtype, the read and H2D copy move half the
+bytes, and each block is upcast to fp32 on the device before the matmul, so
+scores and the top-k are computed exactly as for an fp32 file.
 """
 
 import os
@@ -19,30 +24,53 @@ import torch
 from tqdm import tqdm
 
 from .config import ExactIndex
-from .fbin import _load_fbin_mmap, read_fbin_rows
+from .fbin import FBIN_HEADER_BYTES, _load_fbin_mmap, pread_into
 
 BLOCK_ROWS = 2_000_000  # 2M x 768 fp32 = 6 GB per block
+
+# Stored value types the scan reads. The 2-byte ones are mapped as int16 and
+# viewed as the torch dtype (numpy has no bfloat16).
+STORED_DTYPES = {
+    torch.float32: np.float32,
+    torch.float16: np.int16,
+    torch.bfloat16: np.int16,
+}
 
 
 class FbinBlockLoader:
     """Brings row blocks of an fbin onto one device: pread into a pinned host
     buffer, then a single H2D copy. One instance per scanning thread; each
     holds its own descriptor (positional reads, no shared offset) and one
-    (block_rows, d) staging buffer, so a 2M-row block is 6 GB of pinned
-    memory per GPU.
+    (block_rows, d) staging buffer of the file's dtype, so a 2M-row block is
+    6 GB of pinned memory per GPU at fp32 and 3 GB at fp16 / bf16. Blocks come
+    back as fp32: a 2-byte block is upcast on the device, after the copy.
     """
 
-    def __init__(self, path: Path, d: int, block_rows: int, device: torch.device):
+    def __init__(
+        self,
+        path: Path,
+        d: int,
+        block_rows: int,
+        device: torch.device,
+        dtype: torch.dtype = torch.float32,
+    ):
         self.fd = os.open(path, os.O_RDONLY)
         self.device = device
         self.buf = torch.empty(
-            (block_rows, d), dtype=torch.float32, pin_memory=device.type == "cuda"
+            (block_rows, d), dtype=dtype, pin_memory=device.type == "cuda"
         )
+        self.row_bytes = d * self.buf.element_size()
 
     def __call__(self, bs: int, be: int) -> torch.Tensor:
-        """Rows [bs, be) as a (be - bs, d) tensor on the device."""
-        read_fbin_rows(self.fd, bs, be, self.buf.numpy())
-        return self.buf[: be - bs].to(self.device)
+        """Rows [bs, be) as a (be - bs, d) fp32 tensor on the device."""
+        rows = self.buf[: be - bs]
+        # Raw bytes: .numpy() has no bfloat16, a uint8 view of any dtype works.
+        pread_into(
+            self.fd,
+            FBIN_HEADER_BYTES + bs * self.row_bytes,
+            rows.view(torch.uint8).numpy(),
+        )
+        return rows.to(self.device).float()
 
     def close(self) -> None:
         os.close(self.fd)
@@ -55,16 +83,18 @@ def block_loader(
     block_rows: int,
     device: torch.device,
 ):
-    """Yields load(bs, be) -> (be - bs, d) tensor of index rows on device.
+    """Yields load(bs, be) -> (be - bs, d) fp32 tensor of index rows on device.
 
     Reads through FbinBlockLoader when the index is file-backed, else slices
-    ``all_embeddings`` (in-memory tests). One loader per thread: call inside
-    the thread.
+    ``all_embeddings`` (in-memory tests). Either way the file's dtype is
+    ``all_embeddings.dtype``. One loader per thread: call inside the thread.
     """
     if fbin_path is None:
-        yield lambda bs, be: all_embeddings[bs:be].to(device)
+        yield lambda bs, be: all_embeddings[bs:be].to(device).float()
         return
-    loader = FbinBlockLoader(fbin_path, all_embeddings.shape[1], block_rows, device)
+    loader = FbinBlockLoader(
+        fbin_path, all_embeddings.shape[1], block_rows, device, all_embeddings.dtype
+    )
     try:
         yield loader
     finally:
@@ -90,12 +120,22 @@ class ExactEngine:
     def load(
         self, fbin_dir: Path, index_dir: Path, devices: list[str], encoder_cfg=None
     ) -> None:
-        mmap = _load_fbin_mmap(fbin_dir / "embeddings.fbin")
+        self.load_file(fbin_dir / "embeddings.fbin", devices)
+
+    def load_file(
+        self, path: Path, devices: list[str], dtype: torch.dtype = torch.float32
+    ) -> None:
+        """Scan the fbin-layout file at ``path``, whose values are ``dtype``
+        (one of STORED_DTYPES). load() is this on the encoder's fp32 fbin;
+        quantized_exact calls it on its 2-byte copy."""
+        if dtype not in STORED_DTYPES:
+            raise ValueError(f"unsupported stored dtype {dtype}")
+        mmap = _load_fbin_mmap(path, STORED_DTYPES[dtype])
         self._mmap = mmap  # keep reference to prevent GC closing the mapping
-        self.all_embeddings = torch.from_numpy(mmap)
-        self.fbin_path = fbin_dir / "embeddings.fbin"
+        self.all_embeddings = torch.from_numpy(mmap).view(dtype)
+        self.fbin_path = path
         self.devices = list(devices)
-        print(f"Loaded {mmap.shape[0]:,} vectors [memory-mapped]")
+        print(f"Loaded {mmap.shape[0]:,} vectors ({dtype}) [memory-mapped]")
 
     @torch.no_grad()
     def topk_hits(

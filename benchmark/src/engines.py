@@ -24,6 +24,7 @@ from .config import (
     MergedEpsilonNetIndex,
     RandomSampleIndex,
     PCAIndex,
+    QuantizedExactIndex,
 )
 
 
@@ -64,4 +65,8 @@ def make_engine(index_cfg):
         from .pca import PCAEngine
 
         return PCAEngine(index_cfg)
+    if isinstance(index_cfg, QuantizedExactIndex):
+        from .quantized_exact import QuantizedExactEngine
+
+        return QuantizedExactEngine(index_cfg)
     raise TypeError(f"no engine for index config {type(index_cfg).__name__}")

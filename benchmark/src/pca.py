@@ -5,7 +5,6 @@ encoder-fbin ids, so hits need no remapping and vec_range sharding works."""
 
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -15,23 +14,11 @@ from tqdm import tqdm
 
 from .config import ExactIndex, PCAIndex
 from .exact import BLOCK_ROWS, ExactEngine
-from .fbin import FBIN_HEADER_BYTES, _load_fbin_mmap, read_fbin_rows
+from .fbin import _load_fbin_mmap, read_fbin_rows
+from .fbin_stream import transform_fbin
 
 PCA_PROJECTOR = "projector.pt"
 PCA_FBIN = "embeddings.fbin"
-
-
-def _pwrite_all(fd: int, offset: int, arr: np.ndarray, piece_bytes: int = 64 << 20):
-    """Write the C-contiguous ``arr`` at ``offset`` of ``fd`` in positional
-    writes of ``piece_bytes``, retrying short writes (the write-side twin of
-    fbin.pread_into)."""
-    mv = memoryview(np.ascontiguousarray(arr)).cast("B")
-    done = 0
-    while done < len(mv):
-        got = os.pwrite(fd, mv[done : done + piece_bytes], offset + done)
-        if got <= 0:
-            raise IOError(f"short write at byte {offset + done}")
-        done += got
 
 
 class PCAEngine:
@@ -116,67 +103,14 @@ class PCAEngine:
         # remapping.
         index_dir.mkdir(parents=True, exist_ok=True)
         torch.save(self.projector.cpu(), index_dir / PCA_PROJECTOR)
-        # Double-buffered: a reader thread preads block i + 1 into one host
-        # buffer while block i, in the other, is projected and pwritten. The
-        # output goes out in large pwrites instead of through a memmap, whose
-        # page-at-a-time faults ran at 0.19 GB/s on Lustre (login node,
-        # 2026-10-08).
-        blocks = [
-            (bs, min(bs + BLOCK_ROWS, n_src)) for bs in range(0, n_src, BLOCK_ROWS)
-        ]
-        bufs = [
-            torch.empty(
-                (min(BLOCK_ROWS, n_src), d),
-                dtype=torch.float32,
-                pin_memory=device != "cpu",
-            )
-            for _ in range(2)
-        ]
-
-        def read_block(i: int) -> None:
-            bs, be = blocks[i]
-            read_fbin_rows(src_fd, bs, be, bufs[i % 2].numpy())
-
-        # Postfix: time the main thread spent waiting on the reader, projecting
-        # and writing, so the log shows which side is the bottleneck.
-        t_wait = t_proj = t_write = 0.0
-        pbar = tqdm(
-            total=n_src, desc=f"Projecting {d} -> {k}", unit="vec", unit_scale=True
-        )
-        src_fd = os.open(src_path, os.O_RDONLY)
-        out_fd = os.open(
-            index_dir / PCA_FBIN, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o664
-        )
-        try:
-            _pwrite_all(out_fd, 0, np.array([n_src, k], dtype=np.uint32))
-            with ThreadPoolExecutor(1) as reader:
-                pending = reader.submit(read_block, 0)
-                for i, (bs, be) in enumerate(blocks):
-                    t0 = time.time()
-                    pending.result()
-                    if i + 1 < len(blocks):  # into the other buffer
-                        pending = reader.submit(read_block, i + 1)
-                    t1 = time.time()
-                    x = bufs[i % 2][: be - bs].to(device)
-                    y = (x @ self.projector).cpu().numpy()
-                    t2 = time.time()
-                    _pwrite_all(out_fd, FBIN_HEADER_BYTES + bs * k * 4, y)
-                    t_wait += t1 - t0
-                    t_proj += t2 - t1
-                    t_write += time.time() - t2
-                    pbar.set_postfix(
-                        wait_read=f"{t_wait:.0f}s",
-                        proj=f"{t_proj:.0f}s",
-                        write=f"{t_write:.0f}s",
-                    )
-                    pbar.update(be - bs)
-        finally:
-            os.close(src_fd)
-            os.close(out_fd)
-            pbar.close()
-        print(
-            f"Wrote {n_src:,} x {k} projected fbin: waited on reads {t_wait:.0f}s, "
-            f"project {t_proj:.0f}s, write {t_write:.0f}s"
+        projector = self.projector
+        transform_fbin(
+            src_path,
+            index_dir / PCA_FBIN,
+            lambda x: x @ projector,
+            k,
+            device,
+            desc=f"Projecting {d} -> {k}",
         )
 
     def load(
