@@ -27,6 +27,7 @@ import polars as pl
 import torch
 from jsonargparse import auto_cli
 from matplotlib import pyplot as plt
+from src.config import read_config
 from src.fbin import _load_fbin_mmap
 
 plt.rcParams["text.usetex"] = False  # plot_results turns it on; not needed here
@@ -53,11 +54,12 @@ GRID_INK = "#e4e3df"
 
 def kept_fraction(index_dir: Path, index_label: str, total: int) -> float:
     if index_label.startswith("pca-"):
+        # Stored bytes per vector over the encoder's fp32 bytes: pca_dim x
+        # (4 for fp32, 2 for fp16 / bf16), from the index's config.json.
+        ident = read_config(index_dir / index_label)
         full_dim = _load_fbin_mmap(index_dir / "embeddings.fbin").shape[1]
-        return (
-            _load_fbin_mmap(index_dir / index_label / "embeddings.fbin").shape[1]
-            / full_dim
-        )
+        itemsize = 4 if ident.get("dtype", "fp32") == "fp32" else 2
+        return ident["pca_dim"] * itemsize / (full_dim * 4)
     return len(torch.load(index_dir / index_label / "net_ids.pt")) / total
 
 

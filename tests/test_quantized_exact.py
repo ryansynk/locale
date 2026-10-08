@@ -132,7 +132,9 @@ def test_transform_fbin_multi_block(fbin_dir, tmp_path):
     out = tmp_path / "proj.fbin"
     # 1000 rows in blocks of 300: three full blocks and a partial one, so both
     # buffers and the prefetch are used.
-    transform_fbin(d / "embeddings.fbin", out, lambda x: x @ P, 5, "cpu", "t", 300)
+    transform_fbin(
+        d / "embeddings.fbin", out, lambda x: x @ P, 5, torch.float32, "cpu", "t", 300
+    )
     raw = out.read_bytes()
     assert np.frombuffer(raw[:8], np.uint32).tolist() == [N, 5]
     got = np.frombuffer(raw[8:], np.float32).reshape(N, 5)

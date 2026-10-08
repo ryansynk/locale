@@ -34,6 +34,16 @@ def quantized_file(dtype: str) -> str:
     return f"embeddings.{dtype}bin"
 
 
+def round_to(x: torch.Tensor, dtype: str) -> torch.Tensor:
+    """``x`` rounded to ``dtype`` ("fp16" / "bf16"; torch's round-to-nearest-
+    even). A value the dtype cannot hold raises instead of becoming inf."""
+    y = x.to(TORCH_DTYPES[dtype])
+    if not torch.isfinite(y).all():
+        bad = x[~torch.isfinite(y)].abs().max().item()
+        raise ValueError(f"{dtype} cannot hold |x| = {bad:g}")
+    return y
+
+
 class QuantizedExactEngine:
     SHARDABLE = True  # topk_hits accepts vec_range (multi-node row sharding)
     WORKER_EMBED = False
@@ -55,26 +65,16 @@ class QuantizedExactEngine:
                 f"{type(self).__name__} build is single-process (num_shards must be 1)"
             )
         device = "cuda:0" if torch.cuda.is_available() else "cpu"
-        dtype = self.dtype
         src_path = fbin_dir / "embeddings.fbin"
         d = _load_fbin_mmap(src_path).shape[1]
-
-        def quantize(x: torch.Tensor) -> torch.Tensor:
-            y = x.to(dtype)
-            if not torch.isfinite(y).all():
-                bad = x[~torch.isfinite(y)].abs().max().item()
-                raise ValueError(
-                    f"{self.cfg.dtype} cannot hold |x| = {bad:g}: rows of "
-                    f"{src_path} overflow it"
-                )
-            return y
-
+        dtype = self.cfg.dtype
         index_dir.mkdir(parents=True, exist_ok=True)
         transform_fbin(
             src_path,
             index_dir / quantized_file(self.cfg.dtype),
-            quantize,
+            lambda x: round_to(x, dtype),
             d,
+            self.dtype,
             device,
             desc=f"Quantizing to {self.cfg.dtype}",
         )

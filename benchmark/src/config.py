@@ -247,11 +247,15 @@ class RandomSampleIndex:
 
 @dataclass
 class PCAIndex:
-    BUILD: ClassVar[tuple[str, ...]] = ("pca_dim",)
+    """PCA projection to pca_dim (src/pca.py), stored as dtype, then the exact
+    scan over it."""
+
+    BUILD: ClassVar[tuple[str, ...]] = ("pca_dim", "dtype")
     SEARCH: ClassVar[tuple[str, ...]] = ("top_k",)
     engine: Literal["pca"] = "pca"
     top_k: int = 100
     pca_dim: int = 128
+    dtype: Literal["fp32", "fp16", "bf16"] = "fp32"
 
 
 @dataclass
