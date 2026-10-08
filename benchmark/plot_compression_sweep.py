@@ -1,17 +1,22 @@
-"""AUPRC vs compression ratio for the epsilon-net, merged epsilon-net and
-random-subsample sweeps, one figure per mutation rate, with exact top-k and
-metagraph as dotted reference lines.
+"""AUPRC vs compression ratio for the epsilon-net, merged epsilon-net,
+random-subsample and PCA sweeps, one figure per mutation rate, with exact
+top-k and metagraph as dotted reference lines.
 
 Compression ratio = total vectors / kept vectors, counted from each index's
 net_ids.pt (all three engines write one; the merged net's holds one row per
 merged center), so the sweeps sit on the same axis
-even though epsilon only fixes the ratio after the build. AUPRC and its 95%
+even though epsilon only fixes the ratio after the build. PCA keeps every
+vector and shrinks each one instead, so its ratio is encoder dim / pca_dim
+(both read from the fbin headers): fp32 bytes of the full vectors over fp32
+bytes of the index's, the same thing the net ratios measure. AUPRC and its 95%
 bootstrap band come from plot_results.compute_auprc, the numbers
 print_results.py prints.
 
     uv run python plot_compression_sweep.py            # sra50 defaults
     uv run python plot_compression_sweep.py --out figs/sra50_compression
     # -> figs/sra50_compression_mut0.00.pdf/.png, _mut0.05, _mut0.10
+    uv run python plot_compression_sweep.py \
+        --families '[epsnet, randsample, pca]' --out figs/sra50_compression_pca
 """
 
 from pathlib import Path
@@ -22,6 +27,7 @@ import polars as pl
 import torch
 from jsonargparse import auto_cli
 from matplotlib import pyplot as plt
+from src.fbin import _load_fbin_mmap
 
 plt.rcParams["text.usetex"] = False  # plot_results turns it on; not needed here
 
@@ -33,6 +39,8 @@ SERIES = {
     "epsnet": ("Epsilon net", "#2a78d6", "o"),
     "randsample": ("Random subsample", "#eb6834", "s"),
     "mergednet": ("Merged epsilon net", "#1baf7a", "D"),
+    # Slot 5: slot 4 is metagraph's reference line below.
+    "pca": ("PCA", "#e87ba4", "^"),
 }
 # Reference lines: (label, color). Exact is neutral ink; metagraph takes the
 # fourth categorical slot (slots 1-4 validate all-pairs).
@@ -44,6 +52,12 @@ GRID_INK = "#e4e3df"
 
 
 def kept_fraction(index_dir: Path, index_label: str, total: int) -> float:
+    if index_label.startswith("pca-"):
+        full_dim = _load_fbin_mmap(index_dir / "embeddings.fbin").shape[1]
+        return (
+            _load_fbin_mmap(index_dir / index_label / "embeddings.fbin").shape[1]
+            / full_dim
+        )
     return len(torch.load(index_dir / index_label / "net_ids.pt")) / total
 
 
@@ -54,6 +68,8 @@ def main(
     raw_read_queries_path: Path = BUNDLE / "queries.parquet",
     accessions: Path = BUNDLE / "accs.txt",
     exact_label: str = "exact",
+    families: list[str] = ["epsnet", "randsample", "mergednet"],
+    search_label: str = "top100",
     bootstrap_samples: int = 1000,
     out: Path = BENCH / "figs/sra50_compression_sweep",
 ):
@@ -64,15 +80,24 @@ def main(
         metagraph_dir: metagraph's results directory (None: no metagraph line).
         index_dir: the encoder's index directory (holds each net_ids.pt and
             meta.parquet).
+        families: sweeps to plot, from SERIES (epsnet, randsample, mergednet,
+            pca). Including pca puts the x axis on a log scale: its ratios
+            (3-24 for 256-32 dims) run far past the nets' (1.2-3).
+        search_label: the dense runs' search label to plot (sra500 also has
+            top300 runs of exact and some nets); metagraph keeps its own.
         out: output path prefix; writes <out>_mut<rate>.pdf and .png per rate.
     """
     dirs = [results_dir] + ([metagraph_dir] if metagraph_dir is not None else [])
     data = pr.load_results(dirs)
+    if unknown := set(families) - set(SERIES):
+        raise ValueError(
+            f"unknown families {sorted(unknown)}; pick from {list(SERIES)}"
+        )
+    family_re = rf"^({'|'.join(families)})-"
     data = data.filter(
-        pl.col("index").str.starts_with("epsnet-")
-        | pl.col("index").str.starts_with("mergednet-")
-        | pl.col("index").str.starts_with("randsample-")
-        | pl.col("index").is_in([exact_label, "metagraph"])
+        (pl.col("index").str.contains(family_re) | (pl.col("index") == exact_label))
+        & (pl.col("search") == search_label)
+        | (pl.col("index") == "metagraph")
     )
     accs = Path(accessions).read_text().splitlines()
     oracle = pr.raw_read_oracle_results(pl.read_parquet(raw_read_queries_path))
@@ -88,7 +113,7 @@ def main(
     }
     auprc = auprc.with_columns(
         pl.col("index").replace_strict(ratios, default=None).alias("compression"),
-        pl.col("index").str.extract(r"^(epsnet|mergednet|randsample)-").alias("family"),
+        pl.col("index").str.extract(family_re).alias("family"),
         pl.col("index")
         .replace_strict({exact_label: "exact", "metagraph": "metagraph"}, default=None)
         .alias("reference"),
@@ -99,7 +124,8 @@ def main(
     for rate in sorted(auprc["mutation_rate"].unique()):
         at_rate = auprc.filter(pl.col("mutation_rate") == rate)
         fig, ax = plt.subplots(figsize=(5, 3.8))
-        for family, (name, color, marker) in SERIES.items():
+        for family in families:
+            name, color, marker = SERIES[family]
             s = at_rate.filter(pl.col("family") == family).sort("compression")
             if s.is_empty():
                 continue
@@ -117,7 +143,16 @@ def main(
                     label=f"{name} ({r['auprc'][0]:.3f})",
                 )  # fmt: skip
         ax.set_title(f"Mutation rate {rate:g}", fontsize=11)
-        ax.set_xlabel("Compression ratio (total / kept vectors)")
+        if "pca" in families:
+            ax.set_xscale("log")
+            # Log decades leave 1-24 with one labelled tick; label the
+            # PCA ratios (and 1-2 for the nets) instead.
+            ax.set_xticks([1, 1.5, 2, 3, 6, 12, 24])
+            ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:g}"))
+            ax.xaxis.set_minor_locator(plt.NullLocator())
+            ax.set_xlabel("Compression ratio (full / index vector bytes)")
+        else:
+            ax.set_xlabel("Compression ratio (total / kept vectors)")
         ax.set_ylabel("AUPRC")
         ax.grid(True, color=GRID_INK, lw=0.8)
         ax.set_axisbelow(True)

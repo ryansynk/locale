@@ -23,6 +23,7 @@ from .config import (
     EpsilonNetIndex,
     MergedEpsilonNetIndex,
     RandomSampleIndex,
+    PCAIndex,
 )
 
 
@@ -59,4 +60,8 @@ def make_engine(index_cfg):
         from .random_sample import RandomSampleEngine
 
         return RandomSampleEngine(index_cfg)
+    if isinstance(index_cfg, PCAIndex):
+        from .pca import PCAEngine
+
+        return PCAEngine(index_cfg)
     raise TypeError(f"no engine for index config {type(index_cfg).__name__}")

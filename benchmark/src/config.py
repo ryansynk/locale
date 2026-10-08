@@ -244,6 +244,14 @@ class RandomSampleIndex:
                 f"compression_ratio must be >= 1, got {self.compression_ratio}"
             )
 
+@dataclass
+class PCAIndex:
+    BUILD: ClassVar[tuple[str, ...]] = ("pca_dim",)
+    SEARCH: ClassVar[tuple[str, ...]] = ("top_k",)
+    engine: Literal["pca"] = "pca"
+    top_k: int = 100
+    pca_dim: int = 128
+
 
 IndexConfig = Union[
     ExactIndex,
@@ -254,6 +262,7 @@ IndexConfig = Union[
     EpsilonNetIndex,
     MergedEpsilonNetIndex,
     RandomSampleIndex,
+    PCAIndex,
 ]
 INDEX_TYPES: tuple[type, ...] = (
     ExactIndex,
@@ -264,6 +273,7 @@ INDEX_TYPES: tuple[type, ...] = (
     EpsilonNetIndex,
     MergedEpsilonNetIndex,
     RandomSampleIndex,
+    PCAIndex,
 )
 
 
