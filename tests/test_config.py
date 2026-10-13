@@ -56,6 +56,18 @@ class TestEncoderConfig:
         assert enc.checkpoint() == ("abc123", 5859)
         assert enc.identity()["checkpoint"] == "abc123"
 
+    def test_end_window_identity_only_when_set(self):
+        # Unset keeps the pre-2026-10-13 identity, so old indexes still match.
+        assert "end_window_min_tail_bp" not in EncoderConfig(name="locale").identity()
+        enc = EncoderConfig(name="locale", end_window_min_tail_bp=50)
+        assert enc.identity()["end_window_min_tail_bp"] == 50
+
+    @pytest.mark.parametrize("bad", [-1, 105, 200])
+    def test_end_window_threshold_must_be_able_to_fire(self, bad):
+        # default geometry: step 106, so the tail is at most 105 bp
+        with pytest.raises(ValueError, match="end_window_min_tail_bp"):
+            EncoderConfig(name="locale", end_window_min_tail_bp=bad)
+
     def test_identity_excludes_runtime_fields(self):
         a = EncoderConfig(
             name="llmed",

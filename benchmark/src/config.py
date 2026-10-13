@@ -79,6 +79,13 @@ class EncoderConfig:
     pooling: str = "mean"
     max_seq_len: int = 256
     chunk_overlap: int = 150
+    # Contigs longer than max_seq_len are cut into strided windows that must
+    # fit whole, which leaves up to (max_seq_len - chunk_overlap - 1) bp at
+    # the contig's 3' end unembedded. When that uncovered tail is longer than
+    # this many bp, one extra window aligned to the contig's end
+    # (seq[-max_seq_len:]) is added; None never adds it (the original
+    # chunking, which every index before 2026-10-13 was built with).
+    end_window_min_tail_bp: int | None = None
     batch_size: int = 128
     # Also embed each query's reverse complement and union the two hit lists
     # before the top_k cut (dense methods only; metagraph/mmseqs already see
@@ -97,6 +104,17 @@ class EncoderConfig:
             )
         if self.chunk_overlap >= self.max_seq_len:
             raise ValueError("chunk_overlap must be strictly less than max_seq_len")
+        step = self.max_seq_len - self.chunk_overlap
+        if self.end_window_min_tail_bp is not None and not (
+            0 <= self.end_window_min_tail_bp < step - 1
+        ):
+            # The tail is at most step - 1 bp, so a threshold of step - 1 or
+            # more could never fire: refuse it rather than silently do nothing.
+            raise ValueError(
+                f"end_window_min_tail_bp must be in [0, {step - 1}) for "
+                f"max_seq_len {self.max_seq_len} / chunk_overlap "
+                f"{self.chunk_overlap}, got {self.end_window_min_tail_bp}"
+            )
 
     def checkpoint(self) -> tuple[str | None, int | None]:
         """(run id, step) of the checkpoint; (None, None) for pretrained encoders."""
@@ -116,6 +134,13 @@ class EncoderConfig:
             "pooling": self.pooling,
             "max_seq_len": self.max_seq_len,
             "chunk_overlap": self.chunk_overlap,
+            # Only when set, so every index built before the option existed
+            # (identical to None) keeps its config.json identity.
+            **(
+                {"end_window_min_tail_bp": self.end_window_min_tail_bp}
+                if self.end_window_min_tail_bp is not None
+                else {}
+            ),
         }
 
 

@@ -94,3 +94,105 @@ class TestChunkSequenceInvalidType:
     def test_invalid_type_raises(self):
         with pytest.raises(ValueError, match="chunk_type"):
             chunk_sequence(_seq(100), "c1", 30, 10, "sliding_window")
+
+
+# ---------------------------------------------------------------------------
+# chunk_sequence — end-aligned window (end_window_min_tail_bp)
+# ---------------------------------------------------------------------------
+
+# The index's real geometry: 256-bp windows, 150-bp overlap, 106-bp step.
+W, OVERLAP, STEP = 256, 150, 106
+
+
+def _covered(seq_len: int, chunks: list[str], seq: str) -> set[int]:
+    """Positions of ``seq`` covered by ``chunks`` (each located by content)."""
+    covered: set[int] = set()
+    for i in range(0, seq_len - W + 1, STEP):  # strided windows, in order
+        covered.update(range(i, i + W))
+    if len(chunks) > (seq_len - W) // STEP + 1:  # plus the end window
+        assert chunks[-1] == seq[-W:]
+        covered.update(range(seq_len - W, seq_len))
+    return covered
+
+
+class TestEndWindow:
+    def test_none_keeps_original_chunking(self):
+        # 361 bp: one strided window (0-256), a 105-bp tail left uncovered.
+        seq = _seq(361)
+        assert chunk_sequence(seq, "c1", W, OVERLAP, "stride") == [seq[:W]]
+        assert chunk_sequence(seq, "c1", W, OVERLAP, "stride", None) == [seq[:W]]
+
+    def test_long_tail_gets_end_aligned_window(self):
+        seq = _seq(361)  # tail 105 > 50
+        chunks = chunk_sequence(seq, "c1", W, OVERLAP, "stride", 50)
+        assert chunks == [seq[:W], seq[-W:]]
+
+    def test_short_tail_gets_none(self):
+        seq = _seq(280)  # tail 24 <= 50
+        assert chunk_sequence(seq, "c1", W, OVERLAP, "stride", 50) == [seq[:W]]
+
+    def test_threshold_is_strict(self):
+        seq = _seq(W + 50)  # tail exactly 50: not added at T = 50, added at 49
+        assert len(chunk_sequence(seq, "c1", W, OVERLAP, "stride", 50)) == 1
+        assert len(chunk_sequence(seq, "c1", W, OVERLAP, "stride", 49)) == 2
+
+    def test_no_tail_no_extra_window(self):
+        seq = _seq(W + STEP)  # strided windows end exactly at the contig end
+        chunks = chunk_sequence(seq, "c1", W, OVERLAP, "stride", 0)
+        assert chunks == [seq[:W], seq[STEP : STEP + W]]
+
+    def test_short_sequence_still_empty(self):
+        assert chunk_sequence("ACGT", "c1", W, OVERLAP, "stride", 0) == []
+
+    @pytest.mark.parametrize("threshold", [0, 50, 104])
+    def test_uncovered_tail_never_exceeds_threshold(self, threshold):
+        for n in range(W + 1, 1200):
+            seq = _seq(n)
+            chunks = chunk_sequence(seq, "c1", W, OVERLAP, "stride", threshold)
+            assert all(len(c) == W for c in chunks)
+            uncovered = n - (max(_covered(n, chunks, seq)) + 1)
+            assert uncovered <= threshold, (n, uncovered)
+            # and nothing is uncovered except possibly that 3' tail
+            assert _covered(n, chunks, seq) == set(range(n - uncovered))
+
+
+# ---------------------------------------------------------------------------
+# chunk counting must match chunking exactly (the build preallocates the
+# fbin from count_total_chunks, then fills it from _iter_chunks)
+# ---------------------------------------------------------------------------
+
+
+class TestChunkCountMatchesChunking:
+    @pytest.mark.parametrize("threshold", [None, 0, 50, 104])
+    def test_per_length(self, threshold):
+        from src.dense_index import _chunks_for_length
+
+        for n in range(0, 1200):
+            got = _chunks_for_length(n, W, STEP, threshold)
+            if n <= W:
+                want = 1  # _iter_chunks passes these through whole
+            else:
+                want = len(
+                    chunk_sequence(_seq(n), "c1", W, OVERLAP, "stride", threshold)
+                )
+            assert got == want, (n, threshold)
+
+    @pytest.mark.parametrize("threshold", [None, 50])
+    def test_per_file(self, tmp_path, threshold):
+        from src.dense_index import _count_file_chunks
+
+        lengths = [10, 256, 257, 300, 361, 362, 1000, 4096]
+        fa = tmp_path / "x.contigs.fa"
+        with open(fa, "w") as f:
+            for i, n in enumerate(lengths):
+                s = _seq(n)
+                f.write(f">c{i}\n")
+                for j in range(0, n, 60):  # wrapped like real FASTA
+                    f.write(s[j : j + 60] + "\n")
+        want = sum(
+            1
+            if n <= W
+            else len(chunk_sequence(_seq(n), "c", W, OVERLAP, "stride", threshold))
+            for n in lengths
+        )
+        assert _count_file_chunks(str(fa), W, STEP, threshold) == want

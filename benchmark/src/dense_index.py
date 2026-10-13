@@ -56,20 +56,42 @@ def reverse_complement(seq: str) -> str:
     return seq.translate(_COMPLEMENT)[::-1]
 
 
-def _chunks_for_length(seq_len: int, chunk_size: int, step_size: int) -> int:
+def _end_tail(seq_len: int, chunk_size: int, step_size: int) -> int:
+    """bp after the last strided window of a sequence longer than chunk_size."""
+    return (seq_len - chunk_size) % step_size
+
+
+def _chunks_for_length(
+    seq_len: int,
+    chunk_size: int,
+    step_size: int,
+    end_window_min_tail_bp: int | None = None,
+) -> int:
     """Chunk count _iter_chunks yields for one sequence, from its length alone.
 
     Mirrors the two branches exactly: sequences of at most chunk_size (including
     empty ones) pass through _iter_chunks whole as a single chunk; longer ones go
     through chunk_sequence's stride mode, which yields
-    range(0, seq_len - chunk_size + 1, step_size) chunks.
+    range(0, seq_len - chunk_size + 1, step_size) chunks, plus the end-aligned
+    window when the uncovered tail exceeds end_window_min_tail_bp.
     """
     if seq_len <= chunk_size:
         return 1
-    return (seq_len - chunk_size) // step_size + 1
+    n = (seq_len - chunk_size) // step_size + 1
+    if (
+        end_window_min_tail_bp is not None
+        and _end_tail(seq_len, chunk_size, step_size) > end_window_min_tail_bp
+    ):
+        n += 1
+    return n
 
 
-def _count_file_chunks(fasta_path: str, chunk_size: int, step_size: int) -> int:
+def _count_file_chunks(
+    fasta_path: str,
+    chunk_size: int,
+    step_size: int,
+    end_window_min_tail_bp: int | None = None,
+) -> int:
     """Count the chunks one FASTA contributes without materializing any of them.
 
     Plain text scan instead of SeqIO: only per-record sequence lengths are
@@ -83,18 +105,25 @@ def _count_file_chunks(fasta_path: str, chunk_size: int, step_size: int) -> int:
         for line in f:
             if line.startswith(">"):
                 if in_record:
-                    total += _chunks_for_length(seq_len, chunk_size, step_size)
+                    total += _chunks_for_length(
+                        seq_len, chunk_size, step_size, end_window_min_tail_bp
+                    )
                 in_record = True
                 seq_len = 0
             else:
                 seq_len += len(line.strip())
         if in_record:
-            total += _chunks_for_length(seq_len, chunk_size, step_size)
+            total += _chunks_for_length(
+                seq_len, chunk_size, step_size, end_window_min_tail_bp
+            )
     return total
 
 
 def count_total_chunks(
-    accessions: list[Path], chunk_size: int, chunk_overlap: int
+    accessions: list[Path],
+    chunk_size: int,
+    chunk_overlap: int,
+    end_window_min_tail_bp: int | None = None,
 ) -> int:
     """Parallel arithmetic replacement for `sum(1 for _ in _iter_chunks(...))`."""
     step_size = chunk_size - chunk_overlap
@@ -107,7 +136,13 @@ def count_total_chunks(
     total = 0
     with ProcessPoolExecutor(max_workers=num_workers, mp_context=ctx) as executor:
         futures = [
-            executor.submit(_count_file_chunks, str(acc), chunk_size, step_size)
+            executor.submit(
+                _count_file_chunks,
+                str(acc),
+                chunk_size,
+                step_size,
+                end_window_min_tail_bp,
+            )
             for acc in accessions
         ]
         for f in tqdm(
@@ -184,6 +219,9 @@ class DenseIndex(BaseIndex):
         # stride is the only supported chunking mode (legacy column in run_benchmark).
         self.chunk_type: Literal["stride"] = "stride"
         self.chunk_overlap: int = cfg.model.encoder.chunk_overlap
+        self.end_window_min_tail_bp: int | None = (
+            cfg.model.encoder.end_window_min_tail_bp
+        )
 
     # ------------------------------------------------------------------ #
     # load / build
@@ -227,6 +265,7 @@ class DenseIndex(BaseIndex):
                         self.encoder_cfg.max_seq_len,
                         self.chunk_overlap,
                         self.chunk_type,
+                        self.end_window_min_tail_bp,
                     ):
                         yield srr_id, chunk
 
@@ -241,7 +280,10 @@ class DenseIndex(BaseIndex):
 
         print("Pre-counting chunks (parallel length scan)...")
         total_chunks = count_total_chunks(
-            accessions, self.encoder_cfg.max_seq_len, self.chunk_overlap
+            accessions,
+            self.encoder_cfg.max_seq_len,
+            self.chunk_overlap,
+            self.end_window_min_tail_bp,
         )
         print(f"Total chunks: {total_chunks:,}")
 
@@ -706,7 +748,13 @@ def chunk_sequence(
     chunk_size: int,
     chunk_overlap: int,
     chunk_type: Literal["stride"],
+    end_window_min_tail_bp: int | None = None,
 ):
+    """Strided chunk_size windows of ``seq`` (each must fit whole), plus one
+    window aligned to the end, seq[-chunk_size:], when the strided windows
+    leave more than end_window_min_tail_bp bp uncovered (None: never).
+    Sequences shorter than chunk_size yield no windows; _iter_chunks passes
+    those through whole instead."""
     if chunk_type == "stride":
         if chunk_overlap >= chunk_size:
             raise ValueError("The overlap must be strictly less than the chunk size.")
@@ -720,6 +768,12 @@ def chunk_sequence(
             seq[i : i + chunk_size]
             for i in range(0, len(seq) - chunk_size + 1, step_size)
         ]
+        if (
+            end_window_min_tail_bp is not None
+            and chunks
+            and _end_tail(len(seq), chunk_size, step_size) > end_window_min_tail_bp
+        ):
+            chunks.append(seq[-chunk_size:])
     else:
         raise ValueError(f"Incorrect chunk_type recieved: {chunk_type}")
 
