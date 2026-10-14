@@ -234,3 +234,5 @@ benchmark/old
 *.fbin
 *.cuvs
 benchmark/logs_ivf/
+experiments/seqlen_cutoff/*.json
+experiments/seqlen_cutoff/*.u32
