@@ -26,7 +26,7 @@ export PYTHONUNBUFFERED=1
 # The exact scan allocates and frees a large logits tile per block; expandable
 # segments keep the caching allocator from fragmenting.
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-CONFIG=configs/sra500/perlmutter_locale_sra500v2_endwin50.yaml
+CONFIG=${CONFIG:-configs/sra500/perlmutter_locale_sra500v2_endwin50.yaml}
 BUNDLE=/pscratch/sd/r/rsynk/locale-data/constructed/sra500/bundle
 read -r -a RATE_LIST <<<"${RATES:-0.0 0.05 0.1}"
 mapfile -t NODES < <(scontrol show hostnames "$(squeue -h -j "$SLURM_JOB_ID" -o %N)")

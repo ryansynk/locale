@@ -68,6 +68,21 @@ class TestEncoderConfig:
         with pytest.raises(ValueError, match="end_window_min_tail_bp"):
             EncoderConfig(name="locale", end_window_min_tail_bp=bad)
 
+    def test_min_seq_len_identity_only_when_set(self):
+        assert "min_seq_len" not in EncoderConfig(name="locale").identity()
+        enc = EncoderConfig(name="locale", min_seq_len=100)
+        assert enc.identity()["min_seq_len"] == 100
+
+    @pytest.mark.parametrize("bad", [0, -1, 257])
+    def test_min_seq_len_must_be_in_range(self, bad):
+        # (0, max_seq_len]: longer contigs are always cut into full windows,
+        # so a cutoff past max_seq_len could never apply to them
+        with pytest.raises(ValueError, match="min_seq_len"):
+            EncoderConfig(name="locale", min_seq_len=bad)
+
+    def test_min_seq_len_may_equal_max_seq_len(self):
+        assert EncoderConfig(name="locale", min_seq_len=256).min_seq_len == 256
+
     def test_identity_excludes_runtime_fields(self):
         a = EncoderConfig(
             name="llmed",

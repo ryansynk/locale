@@ -1,0 +1,40 @@
+# LOCALE on sra500v2 with the end-aligned window (end_window_min_tail_bp = 50)
+# and a build-time contig-length cutoff: contigs shorter than 100 bp are not
+# embedded (EncoderConfig.min_seq_len). Everything else is identical to
+# perlmutter_locale_sra500v2_endwin50.yaml (exact top-100, both strands).
+#
+# Picked from the post-hoc sweep over the endwin50 index
+# (experiments/seqlen_cutoff, 2026-10-13): 100 bp keeps 51.7% of the vectors
+# and raises AUPRC by +0.014 / +0.025 / +0.024 at 0 / 5 / 10% noise, and no
+# relevant alignment in sra500 rests on a contig shorter than 77 bp.
+# This build must reproduce the sweep's
+#   results/sra500_minlen/locale@8vqiabk9-endwin50/exact-minlen100/top100/
+# (same top-100 vectors up to float ties); compare with
+#   experiments/seqlen_cutoff/verify_build.py
+# Build + search on an allocation like sra500_endwin.sh:
+#   CONFIG=configs/sra500/perlmutter_locale_sra500v2_endwin50_minlen100.yaml \
+#   bash slurm_scripts/sra500_endwin.sh
+model:
+  encoder:
+    name: locale
+    checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/8vqiabk9/checkpoint5859.pth.tar
+    pooling: mean
+    max_seq_len: 256
+    chunk_overlap: 150
+    end_window_min_tail_bp: 50
+    min_seq_len: 100
+    batch_size: 1000
+    device: cuda
+    both_strands: true
+  index:
+    engine: exact
+    top_k: 100
+  encoder_label: locale@8vqiabk9-endwin50-minlen100
+  index_label: exact
+  search_label: top100
+
+dataset_name: sra500v2
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra500/bundle
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes/sra500
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results/sra500
+mutation_rate: 0.0

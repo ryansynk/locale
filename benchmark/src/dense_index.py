@@ -66,15 +66,19 @@ def _chunks_for_length(
     chunk_size: int,
     step_size: int,
     end_window_min_tail_bp: int | None = None,
+    min_seq_len: int | None = None,
 ) -> int:
-    """Chunk count _iter_chunks yields for one sequence, from its length alone.
+    """Chunk count iter_chunks yields for one sequence, from its length alone.
 
-    Mirrors the two branches exactly: sequences of at most chunk_size (including
-    empty ones) pass through _iter_chunks whole as a single chunk; longer ones go
-    through chunk_sequence's stride mode, which yields
+    Mirrors its branches exactly: sequences shorter than min_seq_len (when
+    set) yield nothing; sequences of at most chunk_size (including empty
+    ones) pass through whole as a single chunk; longer ones go through
+    chunk_sequence's stride mode, which yields
     range(0, seq_len - chunk_size + 1, step_size) chunks, plus the end-aligned
     window when the uncovered tail exceeds end_window_min_tail_bp.
     """
+    if min_seq_len is not None and seq_len < min_seq_len:
+        return 0
     if seq_len <= chunk_size:
         return 1
     n = (seq_len - chunk_size) // step_size + 1
@@ -91,6 +95,7 @@ def _count_file_chunks(
     chunk_size: int,
     step_size: int,
     end_window_min_tail_bp: int | None = None,
+    min_seq_len: int | None = None,
 ) -> int:
     """Count the chunks one FASTA contributes without materializing any of them.
 
@@ -106,15 +111,16 @@ def _count_file_chunks(
             if line.startswith(">"):
                 if in_record:
                     total += _chunks_for_length(
-                        seq_len, chunk_size, step_size, end_window_min_tail_bp
-                    )
+                        seq_len, chunk_size, step_size, end_window_min_tail_bp,
+                        min_seq_len,
+                    )  # fmt: skip
                 in_record = True
                 seq_len = 0
             else:
                 seq_len += len(line.strip())
         if in_record:
             total += _chunks_for_length(
-                seq_len, chunk_size, step_size, end_window_min_tail_bp
+                seq_len, chunk_size, step_size, end_window_min_tail_bp, min_seq_len
             )
     return total
 
@@ -124,8 +130,9 @@ def count_total_chunks(
     chunk_size: int,
     chunk_overlap: int,
     end_window_min_tail_bp: int | None = None,
+    min_seq_len: int | None = None,
 ) -> int:
-    """Parallel arithmetic replacement for `sum(1 for _ in _iter_chunks(...))`."""
+    """Parallel arithmetic replacement for `sum(1 for _ in iter_chunks(...))`."""
     step_size = chunk_size - chunk_overlap
     if step_size <= 0:
         raise ValueError("The overlap must be strictly less than the chunk size.")
@@ -142,6 +149,7 @@ def count_total_chunks(
                 chunk_size,
                 step_size,
                 end_window_min_tail_bp,
+                min_seq_len,
             )
             for acc in accessions
         ]
@@ -150,6 +158,71 @@ def count_total_chunks(
         ):
             total += f.result()
     return total
+
+
+def iter_chunks(
+    accessions: list[Path],
+    chunk_size: int,
+    chunk_overlap: int,
+    end_window_min_tail_bp: int | None = None,
+    min_seq_len: int | None = None,
+):
+    """Yield (srr_id, sequence_chunk) for every chunk across all accessions,
+    in file order: the fbin row order of a build. Contigs shorter than
+    min_seq_len (when set) are skipped; contigs of at most chunk_size pass
+    through whole; longer ones are cut by chunk_sequence. _chunks_for_length
+    must count exactly what this yields."""
+    for accession in accessions:
+        srr_id = accession.parent.stem
+        for record in SeqIO.parse(accession, "fasta"):
+            seq = str(record.seq)
+            if min_seq_len is not None and len(seq) < min_seq_len:
+                continue
+            if len(seq) <= chunk_size:
+                yield srr_id, seq
+            else:
+                for chunk in chunk_sequence(
+                    seq,
+                    str(record.id),
+                    chunk_size,
+                    chunk_overlap,
+                    "stride",
+                    end_window_min_tail_bp,
+                ):
+                    yield srr_id, chunk
+
+
+def complete_meta_rows(rows: list[dict], srr_ids: list[str]) -> list[dict]:
+    """meta.parquet rows for every accession in ``srr_ids`` order.
+
+    ``rows`` are the (srr_id, start_row, num_rows) entries a build recorded,
+    one per accession that contributed at least one vector, in build order.
+    An accession that contributed none (every contig below min_seq_len) gets
+    a zero-row entry at the offset where its vectors would have started, so
+    the accession list stays equal to accs.txt and the offsets stay
+    contiguous (an empty range: start_row equals the next accession's).
+    """
+    present = {r["srr_id"]: r for r in rows}
+    if len(present) != len(rows):
+        raise ValueError("duplicate accession in build rows")
+    unknown = present.keys() - set(srr_ids)
+    if unknown:
+        raise ValueError(f"build rows name accessions not in the list: {unknown}")
+    out: list[dict] = []
+    offset = 0
+    for srr_id in srr_ids:
+        r = present.get(srr_id)
+        if r is None:
+            out.append({"srr_id": srr_id, "start_row": offset, "num_rows": 0})
+            continue
+        if r["start_row"] != offset:
+            raise ValueError(
+                f"{srr_id} starts at row {r['start_row']}, expected {offset}: "
+                "build rows are not in accession order"
+            )
+        out.append(dict(r))
+        offset = r["start_row"] + r["num_rows"]
+    return out
 
 
 # Global variable to hold the model instance per worker process
@@ -222,6 +295,7 @@ class DenseIndex(BaseIndex):
         self.end_window_min_tail_bp: int | None = (
             cfg.model.encoder.end_window_min_tail_bp
         )
+        self.min_seq_len: int | None = cfg.model.encoder.min_seq_len
 
     # ------------------------------------------------------------------ #
     # load / build
@@ -251,23 +325,13 @@ class DenseIndex(BaseIndex):
 
     def _iter_chunks(self, accessions: list[Path]):
         """Yield (srr_id, sequence_chunk) for every chunk across all accessions."""
-        for accession in accessions:
-            srr_id = accession.parent.stem
-            for record in SeqIO.parse(accession, "fasta"):
-                seq = str(record.seq)
-                contig_id = str(record.id)
-                if len(seq) <= self.encoder_cfg.max_seq_len:
-                    yield srr_id, seq
-                else:
-                    for chunk in chunk_sequence(
-                        seq,
-                        contig_id,
-                        self.encoder_cfg.max_seq_len,
-                        self.chunk_overlap,
-                        self.chunk_type,
-                        self.end_window_min_tail_bp,
-                    ):
-                        yield srr_id, chunk
+        yield from iter_chunks(
+            accessions,
+            self.encoder_cfg.max_seq_len,
+            self.chunk_overlap,
+            self.end_window_min_tail_bp,
+            self.min_seq_len,
+        )
 
     def build(self, accessions: list[Path], index_path: Path):
         """Embed every chunk of ``accessions`` into index_path/embeddings.fbin
@@ -284,6 +348,7 @@ class DenseIndex(BaseIndex):
             self.encoder_cfg.max_seq_len,
             self.chunk_overlap,
             self.end_window_min_tail_bp,
+            self.min_seq_len,
         )
         print(f"Total chunks: {total_chunks:,}")
 
@@ -378,6 +443,8 @@ class DenseIndex(BaseIndex):
                 final_rows[-1]["num_rows"] += r["num_rows"]
             else:
                 final_rows.append(dict(r))
+        # Every accession gets a row, including ones min_seq_len emptied.
+        final_rows = complete_meta_rows(final_rows, [a.parent.stem for a in accessions])
 
         pl.DataFrame(final_rows).write_parquet(index_path / "meta.parquet")
         self._streamed_to = index_path

@@ -196,3 +196,106 @@ class TestChunkCountMatchesChunking:
             for n in lengths
         )
         assert _count_file_chunks(str(fa), W, STEP, threshold) == want
+
+
+# ---------------------------------------------------------------------------
+# min_seq_len: contigs below it are not embedded at all; the count, the
+# iterator and meta.parquet completion must agree
+# ---------------------------------------------------------------------------
+
+
+def _write_fasta(path, records: dict[str, int]):
+    with open(path, "w") as f:
+        for name, n in records.items():
+            s = _seq(n)
+            f.write(f">{name}\n")
+            for j in range(0, n, 60):
+                f.write(s[j : j + 60] + "\n")
+
+
+class TestMinSeqLen:
+    def test_per_length(self):
+        from src.dense_index import _chunks_for_length
+
+        for n in range(0, 600):
+            without = _chunks_for_length(n, W, STEP, 50)
+            with_cut = _chunks_for_length(n, W, STEP, 50, min_seq_len=100)
+            assert with_cut == (0 if n < 100 else without), n
+        # the boundary is inclusive: a contig exactly min_seq_len long stays
+        assert _chunks_for_length(100, W, STEP, None, min_seq_len=100) == 1
+        assert _chunks_for_length(99, W, STEP, None, min_seq_len=100) == 0
+
+    def test_count_matches_iterator(self, tmp_path):
+        from src.dense_index import _count_file_chunks, iter_chunks
+
+        acc = tmp_path / "SRR1"
+        acc.mkdir()
+        fa = acc / "SRR1.contigs.fa"
+        lengths = {"a": 10, "b": 99, "c": 100, "d": 256, "e": 361, "f": 1000}
+        _write_fasta(fa, lengths)
+        for cut in (None, 1, 100, 256):
+            got = list(iter_chunks([fa], W, OVERLAP, 50, cut))
+            assert _count_file_chunks(str(fa), W, STEP, 50, cut) == len(got)
+            assert all(srr == "SRR1" for srr, _ in got)
+            # nothing shorter than the cutoff is ever yielded
+            assert all(len(chunk) >= (cut or 0) for _, chunk in got)
+        # with the cutoff, a / b are gone and the rest are unchanged
+        full = [c for _, c in iter_chunks([fa], W, OVERLAP, 50, None)]
+        cut = [c for _, c in iter_chunks([fa], W, OVERLAP, 50, 100)]
+        assert cut == full[2:]
+
+    def test_file_with_nothing_surviving_counts_zero(self, tmp_path):
+        from src.dense_index import _count_file_chunks, iter_chunks
+
+        fa = tmp_path / "x.contigs.fa"
+        _write_fasta(fa, {"a": 31, "b": 45, "c": 60})
+        assert _count_file_chunks(str(fa), W, STEP, None, 100) == 0
+        assert list(iter_chunks([fa], W, OVERLAP, None, 100)) == []
+
+    def test_complete_meta_rows_inserts_empty_accessions(self):
+        from src.dense_index import complete_meta_rows
+
+        rows = [
+            {"srr_id": "B", "start_row": 0, "num_rows": 5},
+            {"srr_id": "D", "start_row": 5, "num_rows": 3},
+        ]
+        out = complete_meta_rows(rows, ["A", "B", "C", "D", "E"])
+        assert out == [
+            {"srr_id": "A", "start_row": 0, "num_rows": 0},
+            {"srr_id": "B", "start_row": 0, "num_rows": 5},
+            {"srr_id": "C", "start_row": 5, "num_rows": 0},
+            {"srr_id": "D", "start_row": 5, "num_rows": 3},
+            {"srr_id": "E", "start_row": 8, "num_rows": 0},
+        ]
+        # DenseIndex.load's offsets stay contiguous and map rows to the
+        # accession that owns them, empty ranges included.
+        import numpy as np
+        from src.topk_regroup import vector_ids_to_accessions
+
+        starts = [r["start_row"] for r in out]
+        counts = [r["num_rows"] for r in out]
+        offsets = np.asarray(starts + [starts[-1] + counts[-1]])
+        assert all(offsets[i + 1] - offsets[i] == counts[i] for i in range(5))
+        names = vector_ids_to_accessions(
+            np.arange(8), offsets, [r["srr_id"] for r in out]
+        )
+        assert names == ["B"] * 5 + ["D"] * 3
+
+    def test_complete_meta_rows_is_identity_when_all_present(self):
+        from src.dense_index import complete_meta_rows
+
+        rows = [
+            {"srr_id": "A", "start_row": 0, "num_rows": 2},
+            {"srr_id": "B", "start_row": 2, "num_rows": 4},
+        ]
+        assert complete_meta_rows(rows, ["A", "B"]) == rows
+
+    def test_complete_meta_rows_rejects_out_of_order_rows(self):
+        from src.dense_index import complete_meta_rows
+
+        rows = [
+            {"srr_id": "B", "start_row": 0, "num_rows": 2},
+            {"srr_id": "A", "start_row": 2, "num_rows": 1},
+        ]
+        with pytest.raises(ValueError, match="accession order"):
+            complete_meta_rows(rows, ["A", "B"])

@@ -108,12 +108,15 @@ def _accession_lengths(
     step_size: int,
     end_window_min_tail_bp: int | None,
     expected_rows: int,
+    min_seq_len: int | None = None,
 ) -> np.ndarray:
     """uint32 contig length per fbin row of one accession, in row order."""
     out = np.empty(expected_rows, dtype=np.uint32)
     pos = 0
     for seq_len in _iter_fasta_lengths(Path(fasta_path)):
-        n = _chunks_for_length(seq_len, chunk_size, step_size, end_window_min_tail_bp)
+        n = _chunks_for_length(
+            seq_len, chunk_size, step_size, end_window_min_tail_bp, min_seq_len
+        )
         if pos + n > expected_rows:
             raise ValueError(
                 f"{fasta_path}: chunk count exceeds meta.parquet num_rows "
@@ -134,8 +137,9 @@ def _chunk_strings_for_rows(
     chunk_size: int,
     chunk_overlap: int,
     end_window_min_tail_bp: int | None,
+    min_seq_len: int | None = None,
 ) -> dict[int, str]:
-    """The exact chunk string _iter_chunks yielded for each local row index
+    """The exact chunk string iter_chunks yielded for each local row index
     (row offset within the accession)."""
     wanted = sorted(set(local_rows))
     found: dict[int, str] = {}
@@ -143,7 +147,11 @@ def _chunk_strings_for_rows(
     pos = 0
     wi = 0
     for seq in _iter_fasta_records(fasta_path):
-        n = _chunks_for_length(len(seq), chunk_size, step_size, end_window_min_tail_bp)
+        n = _chunks_for_length(
+            len(seq), chunk_size, step_size, end_window_min_tail_bp, min_seq_len
+        )
+        if n == 0:
+            continue
         while wi < len(wanted) and wanted[wi] < pos + n:
             if len(seq) <= chunk_size:
                 chunks = [seq]
@@ -193,6 +201,7 @@ def _spot_check(
         max_seq_len=identity["max_seq_len"],
         chunk_overlap=identity["chunk_overlap"],
         end_window_min_tail_bp=identity.get("end_window_min_tail_bp"),
+        min_seq_len=identity.get("min_seq_len"),
         device=device,
     )
     starts = meta["start_row"].to_numpy()
@@ -212,6 +221,7 @@ def _spot_check(
             enc_cfg.max_seq_len,
             enc_cfg.chunk_overlap,
             enc_cfg.end_window_min_tail_bp,
+            enc_cfg.min_seq_len,
         )
         for lr, s in strings.items():
             chunks[int(starts[ai] + lr)] = s
@@ -274,11 +284,7 @@ def main(
     chunk_size = identity["max_seq_len"]
     step_size = chunk_size - identity["chunk_overlap"]
     end_window = identity.get("end_window_min_tail_bp")
-    if identity.get("min_seq_len") is not None:
-        raise NotImplementedError(
-            "index was built with a build-time length filter; this script "
-            "reproduces unfiltered chunking only"
-        )
+    min_seq_len = identity.get("min_seq_len")
 
     meta = pl.read_parquet(index_path / "meta.parquet")
     with open(index_path / "embeddings.fbin", "rb") as f:
@@ -316,6 +322,7 @@ def main(
                 step_size,
                 end_window,
                 int(counts[i]),
+                min_seq_len,
             )
             ctx_jobs.append((fut, i))
         by_future = {f: i for f, i in ctx_jobs}

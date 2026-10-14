@@ -86,6 +86,13 @@ class EncoderConfig:
     # (seq[-max_seq_len:]) is added; None never adds it (the original
     # chunking, which every index before 2026-10-13 was built with).
     end_window_min_tail_bp: int | None = None
+    # Contigs shorter than this many bp are not embedded at all (None: embed
+    # everything, the original behaviour). Only whole contigs can be this
+    # short -- every strided or end window is max_seq_len long -- so the
+    # filter never touches the chunking of longer contigs. An accession
+    # whose contigs are all shorter keeps a zero-row entry in meta.parquet.
+    # Index-side only: queries are never filtered.
+    min_seq_len: int | None = None
     batch_size: int = 128
     # Also embed each query's reverse complement and union the two hit lists
     # before the top_k cut (dense methods only; metagraph/mmseqs already see
@@ -115,6 +122,13 @@ class EncoderConfig:
                 f"max_seq_len {self.max_seq_len} / chunk_overlap "
                 f"{self.chunk_overlap}, got {self.end_window_min_tail_bp}"
             )
+        if self.min_seq_len is not None and not (
+            0 < self.min_seq_len <= self.max_seq_len
+        ):
+            raise ValueError(
+                f"min_seq_len must be in (0, max_seq_len={self.max_seq_len}], "
+                f"got {self.min_seq_len}"
+            )
 
     def checkpoint(self) -> tuple[str | None, int | None]:
         """(run id, step) of the checkpoint; (None, None) for pretrained encoders."""
@@ -139,6 +153,11 @@ class EncoderConfig:
             **(
                 {"end_window_min_tail_bp": self.end_window_min_tail_bp}
                 if self.end_window_min_tail_bp is not None
+                else {}
+            ),
+            **(
+                {"min_seq_len": self.min_seq_len}
+                if self.min_seq_len is not None
                 else {}
             ),
         }
