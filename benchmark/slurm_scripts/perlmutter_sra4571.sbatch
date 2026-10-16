@@ -30,6 +30,12 @@ set -euo pipefail
 cd /pscratch/sd/r/rsynk/locale/benchmark
 mkdir -p slurm_logs
 
+# Which encoder to embed; the index directory comes from its encoder_label.
+# Default: the original sra4571 index. CONFIG=... sbatch ... picks another,
+# e.g. configs/sra4571/perlmutter_locale_sra4571_endwin0_minlen100.yaml.
+CONFIG=${CONFIG:-configs/sra4571/perlmutter_locale_sra4571.yaml}
+echo "config: $CONFIG"
+
 BUNDLE=/pscratch/sd/r/rsynk/locale-data/constructed/sra4571/bundle
 CONTIGS=/pscratch/sd/r/rsynk/locale-data/constructed/sra4571/work/logan_contigs
 
@@ -63,4 +69,4 @@ echo "logan_accessions: rglob finds $n_found contigs for $n_accs accessions"
 export PYTHONUNBUFFERED=1
 
 srun bash -c 'exec "$@" --shard "$SLURM_NODEID" --num_shards "$SLURM_NNODES"' _ \
-  uv run python run_benchmark.py --config configs/sra4571/perlmutter_locale_sra4571.yaml --stage embed
+  uv run python run_benchmark.py --config "$CONFIG" --stage embed

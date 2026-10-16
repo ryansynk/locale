@@ -19,7 +19,10 @@ set -euo pipefail
 cd /pscratch/sd/r/rsynk/locale/benchmark
 mkdir -p slurm_logs
 export PYTHONUNBUFFERED=1
-CONFIG=configs/sra4571/perlmutter_locale_sra4571_pca_d128_bf16.yaml
+# CONFIG=... picks another PCA config over another encoder index, e.g.
+# configs/sra4571/perlmutter_locale_sra4571_endwin0_minlen100_pca_d128_bf16.yaml
+CONFIG=${CONFIG:-configs/sra4571/perlmutter_locale_sra4571_pca_d128_bf16.yaml}
+echo "config: $CONFIG"
 mapfile -t NODES < <(scontrol show hostnames "$(squeue -h -j "$SLURM_JOB_ID" -o %N)")
 NODELIST=$(IFS=,; echo "${NODES[*]}")
 STEP=(srun --jobid "$SLURM_JOB_ID" --overlap --unbuffered -N "${#NODES[@]}"
@@ -44,5 +47,4 @@ step build --stage engine
 for rate in 0.0 0.05 0.1; do
     step "search_mut$rate" --stage search --mutation_rate "$rate"
 done
-echo "=== all done ($(date +%T)); results in" \
-    "results/sra4571/locale@8vqiabk9/pca-d128-bf16/top100/"
+echo "=== all done ($(date +%T)); results under results/sra4571/ for $CONFIG"
