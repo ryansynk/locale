@@ -1,0 +1,38 @@
+# Biowulf twin of perlmutter_locale_sra4571_endwin0_minlen100_pca_d128_bf16.yaml:
+# PCA 768 -> 128 stored as bf16 over the end-window + min_seq_len sra4571
+# embeddings (biowulf_locale_sra4571_endwin0_minlen100.yaml). The encoder
+# block must match that config exactly: it names the encoder directory the
+# projector is fitted on and projected from. ~1.1 B x 128 x 2 B = ~280 GB.
+#
+# Needs the encoder index merged and .done first (slurm_scripts/biowulf_sra4571.sh).
+# The build is --stage engine with --shard/--num_shards over N ranks (rank 0
+# fits the projector, every rank projects 1/N of the rows), then --stage search;
+# both run as single-node job-array tasks on Biowulf like the exact search.
+# Results: results/sra4571/locale@8vqiabk9-endwin0-minlen100/pca-d128-bf16/top100/
+model:
+  encoder:
+    name: locale
+    checkpoint_path: /data/synkrp/locale/checkpoints/8vqiabk9/checkpoint5859.pth.tar
+    pooling: mean
+    max_seq_len: 256
+    chunk_overlap: 150
+    end_window_min_tail_bp: 0
+    min_seq_len: 100
+    batch_size: 2000
+    device: cuda
+    both_strands: true
+  index:
+    engine: pca
+    pca_dim: 128
+    dtype: bf16
+    top_k: 100
+  encoder_label: locale@8vqiabk9-endwin0-minlen100
+  index_label: pca-d128-bf16
+  search_label: top100
+
+dataset_name: sra4571
+dataset_dir: /data/synkrp/locale-data/constructed/sra4571/bundle
+index_dir: /data/synkrp/locale/benchmark/indexes/sra4571
+results_dir: /data/synkrp/locale/benchmark/results/sra4571
+mutation_rate: 0.0
+num_queries: 1000

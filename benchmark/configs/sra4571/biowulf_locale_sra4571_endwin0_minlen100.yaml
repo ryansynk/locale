@@ -1,0 +1,42 @@
+# Biowulf twin of perlmutter_locale_sra4571_endwin0_minlen100.yaml: LOCALE on
+# sra4571 with the two chunking fixes of 2026-10 (end_window_min_tail_bp: 0,
+# min_seq_len: 100). Same encoder identity as the Perlmutter index, so the
+# vectors are interchangeable; only paths and batch_size differ:
+#   - contigs, checkpoint, index and results live under /data/synkrp
+#     (/home is 16 GB and nearly full)
+#   - batch_size 2000: 2x the Perlmutter value, which was sized for 40 GB
+#     A100s; Biowulf's gpu partition A100s have 80 GB. batch_size is not part
+#     of the index identity, so the shards are compatible either way.
+#
+# Expected size: ~1.1 B rows, ~3.2 TB fp32 (plus the same again in shards
+# until the merge finishes; /data quota is 10 TB). Embed, merge, search as a
+# 16-task job array (4x A100-80GB per node), a CPU merge, and 4-task search
+# arrays, all chained by dependencies:
+#   bash slurm_scripts/biowulf_sra4571.sh
+# The PCA-128 bf16 index over the same embeddings is
+# biowulf_locale_sra4571_endwin0_minlen100_pca_d128_bf16.yaml.
+model:
+  encoder:
+    name: locale
+    checkpoint_path: /data/synkrp/locale/checkpoints/8vqiabk9/checkpoint5859.pth.tar
+    pooling: mean
+    max_seq_len: 256
+    chunk_overlap: 150
+    end_window_min_tail_bp: 0
+    min_seq_len: 100
+    batch_size: 2000
+    device: cuda
+    both_strands: true
+  index:
+    engine: exact
+    top_k: 100
+  encoder_label: locale@8vqiabk9-endwin0-minlen100
+  index_label: exact
+  search_label: top100
+
+dataset_name: sra4571
+dataset_dir: /data/synkrp/locale-data/constructed/sra4571/bundle
+index_dir: /data/synkrp/locale/benchmark/indexes/sra4571
+results_dir: /data/synkrp/locale/benchmark/results/sra4571
+mutation_rate: 0.0
+num_queries: 1000
