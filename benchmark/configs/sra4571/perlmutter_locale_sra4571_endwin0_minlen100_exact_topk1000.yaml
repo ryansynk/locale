@@ -1,0 +1,41 @@
+# Exact fp32 top-1000 yardstick over the end-window + min_seq_len sra4571
+# index (perlmutter_locale_sra4571_endwin0_minlen100.yaml). The encoder block
+# must match that config exactly: it names the merged index this scans.
+# Same protocol as perlmutter_locale_sra4571_exact_topk1000.yaml (exact global
+# top-1000 nearest vectors, both strands, regrouped to accessions by max
+# score), so PCA/IVF runs over this index can be measured against it.
+#
+# Results: results/sra4571/locale@8vqiabk9-endwin0-minlen100/exact/top1000/
+# Raw hits under its hits/ serve any later k <= 1000 run on this index.
+#
+# Launch, one job per rate (4 GPU nodes each; 830 M rows is 40% of the
+# original index, whose 4-node scan took ~30 min):
+#   for r in 0.00 0.05 0.10; do
+#     sbatch slurm_scripts/perlmutter_sra4571_search.sbatch $r \
+#       configs/sra4571/perlmutter_locale_sra4571_endwin0_minlen100_exact_topk1000.yaml
+#   done
+model:
+  encoder:
+    name: locale
+    checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/8vqiabk9/checkpoint5859.pth.tar
+    pooling: mean
+    max_seq_len: 256
+    chunk_overlap: 150
+    end_window_min_tail_bp: 0
+    min_seq_len: 100
+    batch_size: 1000
+    device: cuda
+    both_strands: true
+  index:
+    engine: exact
+    top_k: 1000
+  encoder_label: locale@8vqiabk9-endwin0-minlen100
+  index_label: exact
+  search_label: top1000
+
+dataset_name: sra4571
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra4571/bundle
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes/sra4571
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results/sra4571
+mutation_rate: 0.0
+num_queries: 1000
