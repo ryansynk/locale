@@ -25,8 +25,8 @@ from wandb import Run
 
 
 def par_print(*args, **kwargs):
-    if dist.is_initialized():  # ty: ignore possibly-missing-attribute
-        if dist.get_rank() == 0:  # ty: ignore possibly-missing-attribute
+    if dist.is_initialized():
+        if dist.get_rank() == 0:
             print(*args, **kwargs)
     else:
         # Fallback for single GPU runs so it still works
@@ -34,8 +34,8 @@ def par_print(*args, **kwargs):
 
 
 def par_tqdm_write(*args, **kwargs):
-    if dist.is_initialized():  # ty: ignore possibly-missing-attribute
-        if dist.get_rank() == 0:  # ty: ignore possibly-missing-attribute
+    if dist.is_initialized():
+        if dist.get_rank() == 0:
             tqdm.write(*args, **kwargs)
     else:
         # Fallback for single GPU runs so it still works
