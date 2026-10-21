@@ -50,6 +50,30 @@ class DenseEncoder:
         return self._encoder.encode(sequences)
 
 
+def locale_init_args(checkpoint: dict) -> dict:
+    """LOCALE constructor kwargs for a training checkpoint, from its
+    ``model_args`` (what lae/training/training.py's save_checkpoint records)
+    with the two keys older checkpoints lack filled in: checkpoints from
+    before the backbone swap have no "backbone" (all DNABERT-2), and ones
+    from before 2026-10-21 have no "use_projection_head", so that is read off
+    the state dict -- a projector-trained model has projector_q.* weights,
+    which a strict load_state_dict otherwise rejects as unexpected."""
+    model_args = checkpoint["model_args"]
+    state = checkpoint["model"]
+    return {
+        "pooling": model_args["pooling"],
+        "dim": model_args["dim"],
+        "K": model_args["K"],
+        "m": model_args["m"],
+        "T": model_args["T"],
+        "backbone": model_args.get("backbone", DEFAULT_BACKBONE),
+        "use_projection_head": model_args.get(
+            "use_projection_head",
+            any(k.startswith("projector_q.") for k in state),
+        ),
+    }
+
+
 class LOCALEEncoder:
     # def __init__(self, model_name, batch_size, pooling, checkpoint_path, device="cuda"):
     def __init__(self, cfg: EncoderConfig):
@@ -75,21 +99,10 @@ class LOCALEEncoder:
                 f"Checkpoint does not exist: {checkpoint_path}"
             )
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
-        model_args = checkpoint["model_args"]
-        # Checkpoints trained before the backbone swap have no "backbone" key;
-        # those are all DNABERT-2, so default accordingly.
-        backbone = model_args.get("backbone", DEFAULT_BACKBONE)
-        model = LOCALE(
-            pooling=model_args["pooling"],
-            dim=model_args["dim"],
-            K=model_args["K"],
-            m=model_args["m"],
-            T=model_args["T"],
-            backbone=backbone,
-        )
+        model = LOCALE(**locale_init_args(checkpoint))
         model.load_state_dict(checkpoint["model"])
         model = model.eval().to(device)
-        self.tokenizer = get_tokenizer(backbone)
+        self.tokenizer = get_tokenizer(model.backbone)
 
         self.model = model
         self.batch_size = cfg.batch_size
