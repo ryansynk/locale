@@ -237,3 +237,7 @@ benchmark/logs_ivf/
 experiments/seqlen_cutoff/*.json
 experiments/seqlen_cutoff/*.u32
 .vscode/
+*.json
+*.pt
+*.csv
+experiments/window_grid/summary.txt
