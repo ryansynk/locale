@@ -65,7 +65,6 @@ num_epochs: 1
 # 47-accession eval benchmark and from the 50-accession val split.
 data_type: contig
 dataset_path: /fs/nexus-projects/sra_search/rawbert_datasets/train_contigs.parquet
-val_dataset_path: /fs/nexus-projects/sra_search/rawbert_datasets/val_contigs.parquet
 
 checkpoint_dir: /fs/nexus-scratch/ryansynk/rawbert/checkpoints/
 checkpoint_interval_samples: 1000000
@@ -75,9 +74,6 @@ log_dir: logs
 # 32 CPUs / 8 ranks on the a4000 nodes, leaving one core per rank for the main
 # process.
 num_workers: 3
-val_batch_size: 512
-num_val_queries: 100
-num_val_keys: 10000
 
 containment_only: false
 use_hard_negatives: false

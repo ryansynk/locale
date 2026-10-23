@@ -1,0 +1,30 @@
+# In-training validation: exact top-10 over the sampled sra50 bundle
+# (rsynk/locale-benchmark-sra50-sampled) with the deployed chunking
+# (end window on any tail, 100 bp contig cutoff, both strands).
+#
+# lae.training.validation runs this once per rate after each checkpoint save
+# and supplies what varies per call on the command line:
+#   --model.encoder.checkpoint_path <ckpt> --model.encoder.pooling <pooling>
+#   --dataset_dir <bundle> --index_dir <scratch>/step<N> --results_dir <...>
+#   --mutation_rate <rate> [--shard <node> --num_shards <nodes>]
+# then scores the results dir with scripts/score_recall.py.
+model:
+  encoder:
+    name: locale
+    pooling: mean
+    max_seq_len: 256
+    chunk_overlap: 150
+    end_window_min_tail_bp: 0
+    min_seq_len: 100
+    batch_size: 1000
+    device: cuda
+    both_strands: true
+  index:
+    engine: exact
+    top_k: 10
+  encoder_label: val
+  index_label: exact
+  search_label: top10
+
+dataset_name: sra50_sampled
+num_queries: 500

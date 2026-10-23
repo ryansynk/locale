@@ -1,10 +1,10 @@
 import math
+import os
 import warnings
 from dataclasses import asdict
 from functools import partial
 from pathlib import Path
 
-import edlib  # ty: ignore unresolved-import
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
@@ -17,10 +17,11 @@ from tqdm import tqdm
 from transformers import get_cosine_schedule_with_warmup
 from transformers.utils import logging as transformers_logging
 
-from lae.config import AugmentConfig, TrainConfig
+from lae.config import TrainConfig
 from lae.modeling.backbones import get_tokenizer
 from lae.modeling.model import LOCALE
-from lae.training.batcher import Augmenter, Batcher
+from lae.training.batcher import Batcher
+from lae.training.validation import fetch_bundle, run_benchmark_val
 from wandb import Run
 
 
@@ -104,6 +105,7 @@ def train(
     global_rank: int,
     world_size: int,
     is_distributed: bool,
+    eval_group=None,
 ):
     warnings.filterwarnings("ignore", message=".*Increasing alibi size.*")
     warnings.filterwarnings("ignore", message=".*Unable to import Triton.*")
@@ -168,23 +170,8 @@ def train(
     else:
         ddp_locale = locale
 
-    val_config: AugmentConfig = AugmentConfig(
-        disable_mutations=True,
-        min_seq_len=100,
-        max_seq_len=256,
-        containment_prob=1.0,
-        overlap_prob=0.0,
-    )
-
     reader = Batcher(
         cfg.dataset_path, cfg.augment_config, cfg.data_type, cfg.use_hard_negatives
-    )
-    val_reader = Batcher(
-        cfg.val_dataset_path,
-        augment_config=val_config,
-        mode=cfg.data_type,
-        use_hard_negatives=False,
-        num_examples=cfg.num_val_keys,
     )
     sampler = (
         DistributedSampler(
@@ -208,16 +195,6 @@ def train(
         shuffle=False,
         num_workers=cfg.num_workers,
     )
-    val_dataloader = DataLoader(
-        val_reader,
-        batch_size=cfg.val_batch_size,
-        collate_fn=collater,
-        sampler=None,
-        drop_last=False,
-        shuffle=True,
-        num_workers=1,
-    )
-
     if cfg.total_samples is not None:
         total_steps = cfg.total_samples // global_batch_size
         # Calculate required epochs to reach total_steps (ceiling division)
@@ -254,6 +231,62 @@ def train(
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
     else:
         raise ValueError("No checkpoint_dir provided!")
+
+    # Every rank needs the run id (checkpoint paths) and the val bundle on the
+    # shared filesystem; rank 0 owns both.
+    run_id = [run.id if run else None]
+    if is_distributed:
+        dist.broadcast_object_list(run_id, src=0)
+    run_id = run_id[0]
+    bundle = checkpoint_dir / "val_bundle"
+    if global_rank == 0:
+        fetch_bundle(cfg.val_benchmark_repo, bundle)
+    if is_distributed:
+        dist.barrier(group=eval_group)
+    local_world = int(os.environ.get("LOCAL_WORLD_SIZE", world_size))
+
+    def checkpoint_and_validate(step: int):
+        """Rank 0 saves; then each node's local rank 0 runs its shard of the
+        benchmark on the saved file while the other ranks wait on the CPU."""
+        module = ddp_locale.module if is_distributed else ddp_locale
+        if global_rank == 0:
+            save_checkpoint(
+                {
+                    "step": step,
+                    "model": module.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "model_args": {
+                        "pooling": cfg.pooling,
+                        "dim": cfg.dim,
+                        "K": cfg.moco_queue_size,
+                        "m": cfg.moco_momentum,
+                        "T": cfg.moco_softmax_temp,
+                        "use_projection_head": cfg.use_projection_head,
+                        "backbone": cfg.backbone,
+                    },
+                },
+                checkpoint_dir,
+                cfg,
+                run_id,
+            )
+        torch.cuda.empty_cache()  # room for the benchmark's worker on this GPU
+        if is_distributed:
+            dist.barrier(group=eval_group)
+        if local_rank == 0:
+            metrics = run_benchmark_val(
+                checkpoint_dir / run_id / f"checkpoint{step}.pth.tar",
+                cfg,
+                bundle,
+                checkpoint_dir / run_id / "val" / f"step{step}",
+                shard=global_rank // local_world,
+                num_shards=world_size // local_world,
+            )
+            if global_rank == 0:
+                assert run and metrics
+                run.log({**metrics, "val/samples_seen": step * global_batch_size})
+        if is_distributed:
+            dist.barrier(group=eval_group)
+        ddp_locale.train()
 
     global_step = 0
     ddp_locale.train()
@@ -308,67 +341,7 @@ def train(
                     run.log(metrics)
 
                 if global_step % checkpoint_interval_steps == 0 and global_step > 0:
-                    if global_rank == 0:
-                        assert run
-                        if is_distributed:
-                            module = ddp_locale.module
-                        else:
-                            module = ddp_locale
-
-                        assert isinstance(module, torch.nn.Module)
-                        model_state_dict = module.state_dict()
-
-                        (
-                            val_acc1,
-                            val_acc5,
-                            val_acc1_mut_95,
-                            val_acc5_mut_95,
-                            val_acc1_mut_90,
-                            val_acc5_mut_90,
-                        ) = get_val_accuracy(
-                            val_dataloader,
-                            cfg.num_val_queries,
-                            cfg.num_val_keys,
-                            module,
-                            local_rank,
-                            tokenizer,
-                            cfg.moco_filter_queue_identity_cutoff,
-                            val_config,
-                        )
-
-                        run.log(
-                            {
-                                "val/acc1_100_identity": val_acc1[0],
-                                "val/acc5_100_identity": val_acc5[0],
-                                "val/acc1_95_identity": val_acc1_mut_95[0],
-                                "val/acc5_95_identity": val_acc5_mut_95[0],
-                                "val/acc1_90_identity": val_acc1_mut_90[0],
-                                "val/acc5_90_identity": val_acc5_mut_90[0],
-                                "val/samples_seen": global_step * global_batch_size,
-                            }
-                        )
-                        save_checkpoint(
-                            {
-                                "step": global_step,
-                                "model": model_state_dict,
-                                "optimizer": optimizer.state_dict(),
-                                "model_args": {
-                                    "pooling": cfg.pooling,
-                                    "dim": cfg.dim,
-                                    "K": cfg.moco_queue_size,
-                                    "m": cfg.moco_momentum,
-                                    "T": cfg.moco_softmax_temp,
-                                    "use_projection_head": cfg.use_projection_head,
-                                    "backbone": cfg.backbone,
-                                },
-                            },
-                            checkpoint_dir,
-                            cfg,
-                            run.id,
-                        )
-                    if is_distributed:
-                        torch.distributed.barrier()
-                    ddp_locale.train()
+                    checkpoint_and_validate(global_step)
 
                 global_step += 1
                 pbar.update(1)
@@ -379,64 +352,8 @@ def train(
             if cfg.total_samples is not None and global_step >= total_steps:
                 break
 
-    if global_rank == 0:
-        assert run
-        if is_distributed:
-            module = ddp_locale.module
-        else:
-            module = ddp_locale
-
-        assert isinstance(module, torch.nn.Module)
-        model_state_dict = module.state_dict()
-
-        (
-            val_acc1,
-            val_acc5,
-            val_acc1_mut_95,
-            val_acc5_mut_95,
-            val_acc1_mut_90,
-            val_acc5_mut_90,
-        ) = get_val_accuracy(
-            val_dataloader,
-            cfg.num_val_queries,
-            cfg.num_val_keys,
-            module,
-            local_rank,
-            tokenizer,
-            cfg.moco_filter_queue_identity_cutoff,
-            val_config,
-        )
-
-        run.log(
-            {
-                "val/acc1_100_identity": val_acc1[0],
-                "val/acc5_100_identity": val_acc5[0],
-                "val/acc1_95_identity": val_acc1_mut_95[0],
-                "val/acc5_95_identity": val_acc5_mut_95[0],
-                "val/acc1_90_identity": val_acc1_mut_90[0],
-                "val/acc5_90_identity": val_acc5_mut_90[0],
-                "val/samples_seen": global_step * global_batch_size,
-            }
-        )
-        save_checkpoint(
-            {
-                "step": global_step,
-                "model": model_state_dict,
-                "optimizer": optimizer.state_dict(),
-                "model_args": {
-                    "pooling": cfg.pooling,
-                    "dim": cfg.dim,
-                    "K": cfg.moco_queue_size,
-                    "m": cfg.moco_momentum,
-                    "T": cfg.moco_softmax_temp,
-                    "use_projection_head": cfg.use_projection_head,
-                    "backbone": cfg.backbone,
-                },
-            },
-            checkpoint_dir,
-            cfg,
-            run.id,
-        )
+    if global_step % checkpoint_interval_steps != 0:  # not already done in the loop
+        checkpoint_and_validate(global_step)
 
 
 def accuracy(output, target, topk=(1,)):
@@ -454,139 +371,3 @@ def accuracy(output, target, topk=(1,)):
             correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
             res.append(correct_k.mul_(100.0 / batch_size))
         return res
-
-
-def get_val_accuracy(
-    val_dataloader,
-    num_queries,
-    num_keys,
-    model,
-    local_rank,
-    tokenizer,
-    similarity_cutoff,
-    augment_config,
-):
-    par_tqdm_write("Evaluating val accuracy")
-    model.eval()
-    augmenter = Augmenter(augment_config)
-    with torch.no_grad():
-        all_q = []
-        all_q_mut_95 = []
-        all_q_mut_90 = []
-        all_k = []
-        all_query_seqs = []
-        all_key_seqs = []
-
-        for batch in val_dataloader:
-            q_tokens, query_seqs, k_tokens, key_seqs = batch
-            len_q = sum([embedded_q.shape[0] for embedded_q in all_q])
-            if len_q < num_queries:
-                q_tokens_mut_95 = tokenizer(
-                    [augmenter.augment(query, identity=0.95) for query in query_seqs],
-                    return_tensors="pt",
-                    padding=True,
-                ).to(local_rank)
-                q_tokens_mut_90 = tokenizer(
-                    [augmenter.augment(query, identity=0.90) for query in query_seqs],
-                    return_tensors="pt",
-                    padding=True,
-                ).to(local_rank)
-                q_mut_95 = model.encode(q_tokens_mut_95)
-                all_q_mut_95.append(q_mut_95)
-                q_mut_90 = model.encode(q_tokens_mut_90)
-                all_q_mut_90.append(q_mut_90)
-                q_tokens = q_tokens.to(local_rank)
-                q = model.encode(q_tokens)
-                all_q.append(q)
-                all_query_seqs.extend(query_seqs)
-
-            k_tokens = k_tokens.to(local_rank)
-            k = model.encode(k_tokens)
-            all_k.append(k)
-            all_key_seqs.extend(key_seqs)
-
-        all_q = torch.cat(all_q, dim=0)
-        all_q_mut_95 = torch.cat(all_q_mut_95, dim=0)
-        all_q_mut_90 = torch.cat(all_q_mut_90, dim=0)
-        all_k = torch.cat(all_k, dim=0)
-        logits = torch.matmul(all_q, all_k.T)
-        logits_mut_95 = torch.matmul(all_q_mut_95, all_k.T)
-        logits_mut_90 = torch.matmul(all_q_mut_90, all_k.T)
-
-        # Filter out aligned sequences from consideration
-        logits = _filter_aligned_sequences(
-            logits, all_query_seqs, all_key_seqs, similarity_cutoff
-        )
-        logits_mut_95 = _filter_aligned_sequences(
-            logits_mut_95, all_query_seqs, all_key_seqs, similarity_cutoff
-        )
-        logits_mut_90 = _filter_aligned_sequences(
-            logits_mut_90, all_query_seqs, all_key_seqs, similarity_cutoff
-        )
-
-        labels = torch.arange(all_q.shape[0]).to(local_rank)
-        labels_mut_95 = torch.arange(all_q_mut_95.shape[0]).to(local_rank)
-        labels_mut_90 = torch.arange(all_q_mut_90.shape[0]).to(local_rank)
-
-    acc1 = accuracy(logits, labels, topk=(1,))
-    acc5 = accuracy(logits, labels, topk=(5,))
-    acc1_mut_95 = accuracy(logits_mut_95, labels_mut_95, topk=(1,))
-    acc5_mut_95 = accuracy(logits_mut_95, labels_mut_95, topk=(5,))
-    acc1_mut_90 = accuracy(logits_mut_90, labels_mut_90, topk=(1,))
-    acc5_mut_90 = accuracy(logits_mut_90, labels_mut_90, topk=(5,))
-
-    torch.cuda.empty_cache()
-    return acc1, acc5, acc1_mut_95, acc5_mut_95, acc1_mut_90, acc5_mut_90
-
-
-def _filter_aligned_sequences(logits, query_seqs, key_seqs, similarity_cutoff):
-    """
-    Filter out aligned sequences from validation logits.
-
-    Args:
-        logits: Tensor of shape (num_queries, num_keys) with similarity scores
-        query_seqs: List of query DNA sequences
-        key_seqs: List of key DNA sequences
-        alignment_threshold: Minimum similarity to consider sequences aligned
-
-    Returns:
-        Filtered logits with aligned non-diagonal entries set to -1e9
-    """
-    num_queries = len(query_seqs)
-    num_keys = len(key_seqs)
-    total_filtered = []
-    for i in range(num_queries):
-        query_seq = query_seqs[i]
-
-        num_filtered = 0
-        for j in range(num_keys):
-            # Skip the diagonal (true positive pair)
-            if i == j:
-                continue
-
-            key_seq = key_seqs[j]
-
-            if len(query_seq) <= len(key_seq):
-                q = query_seq
-                t = key_seq
-            else:
-                q = key_seq
-                t = query_seq
-            result = edlib.align(query=q, target=t, mode="HW", task="distance")
-            edit_distance = result["editDistance"]
-            similarity = 1.0 - (edit_distance / len(q))
-
-            # If aligned, mask out this logit
-            if similarity >= similarity_cutoff:
-                num_filtered += 1
-                logits[i, j] = -1e9
-
-        total_filtered.append(num_filtered)
-
-    avg_filtered = sum(total_filtered) / num_queries
-    max_filtered = max(total_filtered)
-    min_filtered = min(total_filtered)
-    par_tqdm_write(
-        f"Val filtering stats: mean = {avg_filtered:.2f}, max = {max_filtered}, min = {min_filtered}"
-    )
-    return logits

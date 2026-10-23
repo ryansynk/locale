@@ -59,8 +59,6 @@ moco_momentum: 0.9995
 moco_queue_size: 0
 moco_softmax_temp: 0.05
 num_epochs: 1
-num_val_keys: 10000
-num_val_queries: 100
 num_workers: 24
 per_device_batch_size: 256
 pooling: mean
@@ -72,7 +70,5 @@ starting_checkpoint_path: null
 total_samples: 6000000
 use_hard_negatives: false
 use_projection_head: true 
-val_batch_size: 512
-val_dataset_path: /data/synkrp/locale-data/locale_data/val_contigs.parquet
 warmup_fraction: 0.08
 warmup_samples: null

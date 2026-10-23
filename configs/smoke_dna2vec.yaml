@@ -8,9 +8,6 @@
 #                                       (must stay >= global batch, or
 #                                        checkpoint_interval_steps rounds to 0
 #                                        and training.py divides by zero)
-#   num_val_keys/queries cut   -> _filter_aligned_sequences is O(queries*keys)
-#                                 edlib; the real 100x10000 would dominate a
-#                                 200-step run
 # Augmentation is held at heavy so the smoke test exercises the mutation path.
 backbone: dna2vec
 
@@ -47,7 +44,6 @@ num_epochs: 1
 
 data_type: contig
 dataset_path: /fs/nexus-projects/sra_search/rawbert_datasets/train_contigs.parquet
-val_dataset_path: /fs/nexus-projects/sra_search/rawbert_datasets/val_contigs.parquet
 
 checkpoint_dir: /fs/nexus-scratch/ryansynk/rawbert/checkpoints_smoke/
 checkpoint_interval_samples: 6400
@@ -55,9 +51,6 @@ starting_checkpoint_path: null
 log_dir: logs/smoke
 
 num_workers: 3
-val_batch_size: 128
-num_val_queries: 32
-num_val_keys: 512
 
 containment_only: false
 use_hard_negatives: false
