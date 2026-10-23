@@ -56,7 +56,7 @@ for rate in "${RATE_LIST[@]}"; do
     # pick its shard. --unbuffered so metagraph's progress lines appear live.
     srun --unbuffered --ntasks-per-node=1 --cpus-per-task="$SLURM_CPUS_PER_TASK" \
       bash -c 'exec "$@" --shard "$SLURM_NODEID" --num_shards "$SLURM_NNODES"' _ \
-      uv run python run_benchmark.py --config "$CONFIG" --mutation_rate "$rate"
+      uv run python scripts/run_benchmark.py --config "$CONFIG" --mutation_rate "$rate"
 done
 
 # Every accession must be in the merged manifest before trusting the numbers.
@@ -64,4 +64,4 @@ n_indexed=$(grep -c . indexes/sra4571/metagraph/k31/contig_manifest.txt)
 [ "$n_indexed" -eq "$n_accs" ] || { echo "[FAIL] merged index lists $n_indexed contigs, expected $n_accs" >&2; exit 1; }
 echo "[ok] merged index lists $n_indexed contigs"
 
-uv run python print_results.py results/sra4571 "$BUNDLE/queries_mut0.00.parquet" "$BUNDLE/accs.txt" || true
+uv run python scripts/print_results.py results/sra4571 "$BUNDLE/queries_mut0.00.parquet" "$BUNDLE/accs.txt" || true

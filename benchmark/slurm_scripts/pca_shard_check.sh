@@ -30,7 +30,7 @@ IDX=indexes/sra500/locale@8vqiabk9
 STEP=(srun --jobid "$SLURM_JOB_ID" --overlap --unbuffered --ntasks-per-node=1
     --gpus-per-node=4 --cpus-per-task=128)
 SHARDED=(bash -c 'exec "$@" --shard "$SLURM_PROCID" --num_shards "$SLURM_NTASKS"' _)
-RUN=(uv run --no-sync python run_benchmark.py)
+RUN=(uv run --no-sync python scripts/run_benchmark.py)
 
 for label in pca-d128-bf16-1node pca-d128-bf16; do
     if [[ ! -d "$IDX/$label" ]]; then

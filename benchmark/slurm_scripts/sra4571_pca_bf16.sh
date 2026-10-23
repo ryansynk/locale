@@ -32,7 +32,7 @@ STEP=(srun --jobid "$SLURM_JOB_ID" --overlap --unbuffered -N "${#NODES[@]}"
     -n "${#NODES[@]}" --ntasks-per-node=1 -w "$NODELIST"
     --gpus-per-node=4 --cpus-per-task=128)
 SHARDED=(bash -c 'exec "$@" --shard "$SLURM_PROCID" --num_shards "$SLURM_NTASKS"' _)
-RUN=(uv run --no-sync python run_benchmark.py --config "$CONFIG")
+RUN=(uv run --no-sync python scripts/run_benchmark.py --config "$CONFIG")
 
 echo "=== ${#NODES[@]} node(s): ${NODES[*]}"
 showquota 2>/dev/null | grep pscratch || true  # the build adds rows x 128 x 2 B (~213 GB for 830 M rows)

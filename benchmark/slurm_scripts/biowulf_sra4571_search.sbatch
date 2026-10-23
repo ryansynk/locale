@@ -56,6 +56,6 @@ echo "config: $CONFIG  mutation_rate: $MUT_RATE  shard: $SHARD / $NUM_SHARDS  no
 # runs, but the engine artifact (a no-op directory for the exact scan) is
 # created and marked .done here on first use; --stage search refuses unless
 # it already exists (the 2026-10-18 search arrays failed on exactly that).
-uv run --no-sync python run_benchmark.py --config "$CONFIG" \
+uv run --no-sync python scripts/run_benchmark.py --config "$CONFIG" \
   --mutation_rate "$MUT_RATE" \
   --shard "$SHARD" --num_shards "$NUM_SHARDS"

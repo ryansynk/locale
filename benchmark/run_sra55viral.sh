@@ -21,7 +21,7 @@
 # whole allocation: run_benchmark.py gets --shard / --num_shards from SLURM_NODEID / SLURM_NNODES, builds
 # one index shard (or scans one range of vector rows) per node, and rank 0
 # merges. metagraph and mmseqs2 are single-node methods (the sharded build
-# path merges dense indexes only), so they run on one node with --num_shards 1. Plain `python run_benchmark.py` inside a multi-node
+# path merges dense indexes only), so they run on one node with --num_shards 1. Plain `python scripts/run_benchmark.py` inside a multi-node
 # allocation would be a lone rank 0 waiting forever for peers: always srun.
 #
 # Only the clean queries are run: the divergence under test is the real
@@ -113,12 +113,12 @@ run_step() {
         # One node, and tell run_benchmark it is alone so it neither shards
         # the build nor waits for peers.
         srun --unbuffered -N1 -n1 --cpus-per-task="$CPUS_PER_TASK" \
-            uv run python run_benchmark.py --config "$cfg" --mutation_rate "$rate" --num_shards 1
+            uv run python scripts/run_benchmark.py --config "$cfg" --mutation_rate "$rate" --num_shards 1
     else
         srun --unbuffered --ntasks-per-node=1 \
             --gpus-per-node="$GPUS_PER_NODE" --cpus-per-task="$CPUS_PER_TASK" \
             bash -c 'exec "$@" --shard "$SLURM_NODEID" --num_shards "$SLURM_NNODES"' _ \
-            uv run python run_benchmark.py --config "$cfg" --mutation_rate "$rate"
+            uv run python scripts/run_benchmark.py --config "$cfg" --mutation_rate "$rate"
     fi
 }
 
@@ -160,7 +160,7 @@ done
 
 echo
 echo "=== sra55viral results ==="
-uv run python print_results.py "$RESULTS" "$BUNDLE/queries_mut0.00.parquet" "$BUNDLE/accs.txt" || true
+uv run python scripts/print_results.py "$RESULTS" "$BUNDLE/queries_mut0.00.parquet" "$BUNDLE/accs.txt" || true
 
 echo
 if [ ${#skipped[@]} -gt 0 ]; then

@@ -45,7 +45,7 @@ for m in "${METHOD_LIST[@]}"; do
     echo "=== timing $m  ($(date)) ==="
     # --num_shards 1: do_timing is single-node only (no sharded search).
     srun --unbuffered -N1 -n1 --gpus-per-node=4 --cpus-per-task="$SLURM_CPUS_PER_TASK" \
-      uv run python run_benchmark.py --config "$cfg" --mutation_rate 0.0 \
+      uv run python scripts/run_benchmark.py --config "$cfg" --mutation_rate 0.0 \
         --num_shards 1 --do_timing true
     echo "=== done $m  ($(date)) ==="
 done

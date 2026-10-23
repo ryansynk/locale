@@ -48,7 +48,7 @@ for rate in "${RATE_LIST[@]}"; do
         -n "${#NODES[@]}" --ntasks-per-node=1 -w "$NODELIST" \
         --gpus-per-node=4 --cpus-per-task=128 \
         bash -c 'exec "$@" --shard "$SLURM_PROCID" --num_shards "$SLURM_NTASKS"' _ \
-        uv run --no-sync python run_benchmark.py --config "$CONFIG" \
+        uv run --no-sync python scripts/run_benchmark.py --config "$CONFIG" \
         --mutation_rate "$rate" >"$log" 2>&1 ||
         { echo "FAILED at rate $rate (see $log)"; tail -5 "$log"; exit 1; }
     echo "    done in $((SECONDS - t0))s"

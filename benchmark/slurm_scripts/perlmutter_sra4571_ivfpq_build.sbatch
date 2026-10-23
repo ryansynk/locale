@@ -24,4 +24,4 @@ mkdir -p slurm_logs
 export PYTHONUNBUFFERED=1
 srun --unbuffered --ntasks-per-node=4 --gpus-per-task=1 --cpus-per-task=32 \
   bash -c 'exec "$@" --shard "$SLURM_PROCID" --num_shards "$SLURM_NTASKS"' _ \
-  uv run python run_benchmark.py --config "$CONFIG" --stage engine
+  uv run python scripts/run_benchmark.py --config "$CONFIG" --stage engine

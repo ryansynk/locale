@@ -3,7 +3,7 @@
 # directly. Served from exact/top1000/hits/ without a rescan (find_cached_hits),
 # so one GPU node for a minute per rate is enough:
 #   srun --jobid <alloc> --overlap -N1 -n1 --gpus-per-node=4 uv run python \
-#     run_benchmark.py --config <this file> --mutation_rate <rate>
+#     scripts/run_benchmark.py --config <this file> --mutation_rate <rate>
 # Results: results/sra4571/locale@8vqiabk9-endwin0-minlen100/exact/top100/
 model:
   encoder:

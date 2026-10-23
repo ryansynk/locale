@@ -13,14 +13,17 @@ gets in the query's centroid ordering (min over the two strands). From that:
   before any 2 B-row build.
 * the scanned fraction of the index per nprobe, from the sample's cell sizes.
 
-    python ivf_probe.py --config configs/sra4571/perlmutter_locale_sra4571_exact_topk1000.yaml \
+    python scripts/ivf_probe.py --config configs/sra4571/perlmutter_locale_sra4571_exact_topk1000.yaml \
         --nlists 16384,65536 --train_rows 6000000
 """
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # benchmark/, for `src`
 
 import numpy as np
 import polars as pl

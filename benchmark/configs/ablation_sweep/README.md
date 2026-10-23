@@ -27,6 +27,6 @@ baseline. Logan-trained counterparts exist as checkpoints lgodjvzt (no
 mutations), 0zvrmj5m (light) and oupqgxds (reference data, hard negatives off).
 
 The original v1 numbers can be re-derived with
-`uv run python print_results.py old/results_ablations
+`uv run python scripts/print_results.py old/results_ablations
 /pscratch/sd/r/rsynk/hf_bundles/sra50/queries.parquet
 /pscratch/sd/r/rsynk/hf_bundles/sra50/accs.txt --full_model_names true`.

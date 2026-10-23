@@ -43,7 +43,7 @@ for rate in "${RATE_LIST[@]}"; do
     [ "$rate" = "0.0" ] && timing=(--do_timing true)
     # --num_shards 1 keeps run_benchmark on the single-node build path.
     srun --unbuffered -N1 -n1 --cpus-per-task="$SLURM_CPUS_PER_TASK" \
-      uv run python run_benchmark.py --config "$CONFIG" --mutation_rate "$rate" --num_shards 1 "${timing[@]}"
+      uv run python scripts/run_benchmark.py --config "$CONFIG" --mutation_rate "$rate" --num_shards 1 "${timing[@]}"
 done
 
-uv run python print_results.py results/sra50 "$BUNDLE/queries_mut0.00.parquet" "$BUNDLE/accs.txt" || true
+uv run python scripts/print_results.py results/sra50 "$BUNDLE/queries_mut0.00.parquet" "$BUNDLE/accs.txt" || true

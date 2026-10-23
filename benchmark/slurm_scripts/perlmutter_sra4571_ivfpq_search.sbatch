@@ -33,11 +33,11 @@ export PYTHONUNBUFFERED=1
 read -r -a RATE_LIST <<<"${RATES:-0.0 0.05 0.1}"
 if [ "${MODE:-timing}" = timing ]; then
     for rate in "${RATE_LIST[@]}"; do
-        uv run python run_benchmark.py --config "$CONFIG" --mutation_rate "$rate" \
+        uv run python scripts/run_benchmark.py --config "$CONFIG" --mutation_rate "$rate" \
             --do_timing true ${EXTRA:-}
     done
 else
-    uv run python ivf_sweep.py --config "$CONFIG" \
+    uv run python scripts/ivf_sweep.py --config "$CONFIG" \
         --nprobes "${NPROBES:-136,272,544}" --reranks "${RERANKS:-0,10}" \
         --rates "$(echo "${RATE_LIST[@]}" | tr ' ' ,)" ${EXTRA:-}
 fi

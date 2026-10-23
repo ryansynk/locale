@@ -34,12 +34,12 @@ run_config() {  # <node> <config>
     {
         echo "=== engine ($(date))"
         srun --unbuffered -N1 -n1 -w "$node" --gpus-per-node=4 --cpus-per-task=128 \
-            uv run --no-sync python run_benchmark.py --config "$config" --stage engine ||
+            uv run --no-sync python scripts/run_benchmark.py --config "$config" --stage engine ||
             return 1
         for rate in "${RATE_LIST[@]}"; do
             echo "=== search rate $rate ($(date))"
             srun --unbuffered -N1 -n1 -w "$node" --gpus-per-node=4 --cpus-per-task=128 \
-                uv run --no-sync python run_benchmark.py --config "$config" \
+                uv run --no-sync python scripts/run_benchmark.py --config "$config" \
                 --mutation_rate "$rate" --stage search "${TIMING_ARGS[@]}" ||
                 return 1
         done

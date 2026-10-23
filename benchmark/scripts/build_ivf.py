@@ -10,11 +10,15 @@ here with --merge. FastScan search (index.fastscan) loads the shards side by
 side and never merges. The last rank to finish marks the directory .done.
 
     # one process per node, r = its rank, R = the node count:
-    uv run python build_ivf.py --config <dense config with index.engine: ivfrabitq> --shard r --num_shards R
-    python build_ivf.py --config ... --merge true      # CPU node, after the build
+    uv run python scripts/build_ivf.py --config <dense config with index.engine: ivfrabitq> --shard r --num_shards R
+    python scripts/build_ivf.py --config ... --merge true      # CPU node, after the build
 """
 
+import sys
 import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # benchmark/, for `src`
 
 from jsonargparse import CLI
 from src.config import (

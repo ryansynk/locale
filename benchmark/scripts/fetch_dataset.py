@@ -1,6 +1,6 @@
 """Download a published benchmark bundle into a dataset_dir.
 
-Usage: python fetch_dataset.py <name> <dataset_dir>
+Usage: python scripts/fetch_dataset.py <name> <dataset_dir>
 
 Fetches accs.txt, every per-rate query file and the bundle's json metadata;
 run_benchmark.py reads them from dataset_dir and downloads nothing itself

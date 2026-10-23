@@ -39,7 +39,7 @@ accessions, using the checkpoint published with the paper.
 ```bash
 uv sync
 cd benchmark
-uv run python run_benchmark.py \
+uv run python scripts/run_benchmark.py \
   --config configs/locale_config.yaml \
   --max_accessions 3 \
   --num_queries 20 \
@@ -122,8 +122,8 @@ Tests the ability to retrieve relevant SRA accessions given query sequences. Eac
 
 ### Structure
 
-- `run_benchmark.py` — Runs a search method against the benchmark queries
-- `plot_results.py` — Loads result scores and plots recall@k curves
+- `scripts/run_benchmark.py` — Runs a search method against the benchmark queries
+- `scripts/plot_results.py` — Loads result scores and plots recall@k curves
 - `src/` — Index implementations:
   - `dense_index.py` — Vector embedding search (wraps `locale` model); base class for learned methods
   - `metagraph_index.py` — k-mer graph search via Metagraph
@@ -149,7 +149,7 @@ cd benchmark
 
 Then run the benchmark:
 ```bash
-uv run python run_benchmark.py \
+uv run python scripts/run_benchmark.py \
   --config configs/locale_config.yaml \
   --mutation_rate 0.0 \
   --do_timing True \
@@ -162,7 +162,7 @@ builds a shard independently; node 0 waits for all shards and merges them before
 searching:
 ```bash
 srun --nodes=4 --ntasks-per-node=1 \
-  uv run --no-sync python run_benchmark.py \
+  uv run --no-sync python scripts/run_benchmark.py \
   --config configs/locale_config.yaml \
   --mutation_rate 0.0 \
   --do_timing True \
@@ -178,7 +178,7 @@ downloaded dataset — `snapshot_download` reports where it materialised the rep
 or pass `dataset_dir` in the config to choose the location yourself.
 
 ```bash
-uv run python plot_results.py \
+uv run python scripts/plot_results.py \
   results/ \
   <dataset_dir>/queries.parquet \
   <dataset_dir>/accs.txt

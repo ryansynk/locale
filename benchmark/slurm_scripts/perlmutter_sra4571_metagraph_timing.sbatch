@@ -26,7 +26,7 @@ read -r -a RATE_LIST <<<"${RATES:-0.0 0.05 0.1}"
 ( while true; do echo "--- $(date +%T) load $(cut -d' ' -f1 /proc/loadavg)"; top -bn1 -w 200 | sed -n 8,11p; sleep 20; done ) > "slurm_logs/sra4571_metagraph_timing_${SLURM_JOB_ID}.cpu" 2>&1 &
 for rate in "${RATE_LIST[@]}"; do
     echo "=== metagraph timing @ $rate ($(date)) ==="
-    uv run python run_benchmark.py --config configs/sra4571/perlmutter_metagraph_sra4571.yaml \
+    uv run python scripts/run_benchmark.py --config configs/sra4571/perlmutter_metagraph_sra4571.yaml \
         --mutation_rate "$rate" --do_timing true --model.server_parallel ${PARALLEL:-1} --model.search_label "$([ "${PARALLEL:-1}" -gt 1 ] && echo p${PARALLEL} || echo default)"
 done
 uv run python - <<'PY'

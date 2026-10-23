@@ -12,14 +12,17 @@ bytes of the index's, the same thing the net ratios measure. AUPRC and its 95%
 bootstrap band come from plot_results.compute_auprc, the numbers
 print_results.py prints.
 
-    uv run python plot_compression_sweep.py            # sra50 defaults
-    uv run python plot_compression_sweep.py --out figs/sra50_compression
+    uv run python scripts/plot_compression_sweep.py            # sra50 defaults
+    uv run python scripts/plot_compression_sweep.py --out figs/sra50_compression
     # -> figs/sra50_compression_mut0.00.pdf/.png, _mut0.05, _mut0.10
-    uv run python plot_compression_sweep.py \
+    uv run python scripts/plot_compression_sweep.py \
         --families '[epsnet, randsample, pca]' --out figs/sra50_compression_pca
 """
 
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # benchmark/, for `src`
 
 import numpy as np
 import plot_results as pr
@@ -32,7 +35,7 @@ from src.fbin import _load_fbin_mmap
 
 plt.rcParams["text.usetex"] = False  # plot_results turns it on; not needed here
 
-BENCH = Path(__file__).parent
+BENCH = Path(__file__).resolve().parents[1]
 BUNDLE = Path("/pscratch/sd/r/rsynk/locale-data/constructed/sra50/bundle")
 
 # Categorical slots 1-3 of the reference palette, in fixed order.

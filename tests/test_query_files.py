@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-RUN_BENCHMARK = Path(__file__).parent.parent / "benchmark" / "run_benchmark.py"
+RUN_BENCHMARK = Path(__file__).parent.parent / "benchmark" / "scripts" / "run_benchmark.py"
 
 
 def _load_run_benchmark():

@@ -45,5 +45,5 @@ echo "shards .done: $n_done of $NUM_SHARDS"
 # capped the first 100studies merge at ~160 MB/s and would cap search reads.
 lfs setstripe -c 32 -S 16M "$INDEX_PATH" || true
 
-uv run python run_benchmark.py --config "$CONFIG" \
+uv run python scripts/run_benchmark.py --config "$CONFIG" \
   --stage merge --num_shards "$NUM_SHARDS"

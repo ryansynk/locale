@@ -3,6 +3,8 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # benchmark/, for `src`
+
 import polars as pl
 from jsonargparse import CLI
 from src.config import (

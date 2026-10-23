@@ -121,4 +121,4 @@ srun -N "$NNODES" --ntasks-per-node=1 bash -c '
   s=$((BASE + SLURM_NODEID))
   [ "$s" -lt "$NUM_SHARDS" ] || { echo "[rank $SLURM_NODEID] no shard $s; idle"; exit 0; }
   exec "$@" --shard "$s" --num_shards "$NUM_SHARDS"' _ \
-  uv run python run_benchmark.py --config "$CONFIG" --stage embed
+  uv run python scripts/run_benchmark.py --config "$CONFIG" --stage embed

@@ -34,5 +34,5 @@ NUM_SHARDS=${1:-${NUM_SHARDS:-16}}
 echo "config: $CONFIG  shards: $NUM_SHARDS"
 checkquota 2>/dev/null | grep -E '^Mount|^/data' || true  # the merge adds ~3.2 TB
 
-uv run --no-sync python run_benchmark.py --config "$CONFIG" \
+uv run --no-sync python scripts/run_benchmark.py --config "$CONFIG" \
   --stage merge --num_shards "$NUM_SHARDS"

@@ -16,7 +16,7 @@ REPO_ROOT = Path(__file__).parent.parent
 
 ENTRYPOINTS = [
     REPO_ROOT / "train.py",
-    REPO_ROOT / "benchmark" / "run_benchmark.py",
+    REPO_ROOT / "benchmark" / "scripts" / "run_benchmark.py",
 ]
 
 

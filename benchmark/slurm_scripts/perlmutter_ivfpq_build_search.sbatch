@@ -27,11 +27,11 @@ read -r -a RATE_LIST <<<"${RATES:-0.0 0.05 0.1}"
 echo "=== build $SHARDS shard(s) ($(date))"
 srun --unbuffered -N1 -n "$SHARDS" --gpus-per-task=1 --cpus-per-task=$((128 / SHARDS)) \
   bash -c 'exec "$@" --shard "$SLURM_PROCID" --num_shards "$SLURM_NTASKS"' _ \
-  uv run python run_benchmark.py --config "$CONFIG" --stage engine
+  uv run python scripts/run_benchmark.py --config "$CONFIG" --stage engine
 for rate in "${RATE_LIST[@]}"; do
     echo "=== search rate $rate ($(date))"
     srun --unbuffered -N1 -n1 --gpus-per-node=4 --cpus-per-task=128 \
-      uv run python run_benchmark.py --config "$CONFIG" --mutation_rate "$rate" \
+      uv run python scripts/run_benchmark.py --config "$CONFIG" --mutation_rate "$rate" \
         --stage search --num_shards 1 --do_timing true
 done
 echo "=== done ($(date))"

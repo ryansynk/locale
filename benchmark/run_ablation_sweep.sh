@@ -10,7 +10,7 @@
 #
 # Same mechanics as run_backbone_sweep.sh: each srun step launches one
 # run_benchmark.py per node, which builds one index shard per node and has
-# rank 0 merge; plain `python run_benchmark.py` inside a multi-node allocation
+# rank 0 merge; plain `python scripts/run_benchmark.py` inside a multi-node allocation
 # would wait forever for peers. Per config the first rate builds the index and
 # later rates reuse it, so steps run sequentially.
 #
@@ -69,7 +69,7 @@ for row in "${ROWS[@]}"; do
                   --gpus-per-node="$GPUS_PER_NODE" \
                   --cpus-per-task="$CPUS_PER_TASK" \
                   bash -c 'exec "$@" --shard "$SLURM_NODEID" --num_shards "$SLURM_NNODES"' _ \
-                  uv run python run_benchmark.py \
+                  uv run python scripts/run_benchmark.py \
                     --config "$cfg" --mutation_rate "$rate"; then
             echo "[FAIL] $cfg @ $rate" >&2
             failed+=("$cfg @ $rate")
@@ -87,5 +87,5 @@ if [ ${#failed[@]} -gt 0 ]; then
 fi
 
 echo "All ablation sweep runs finished. Recall tables (R-precision = Recall@R_q):"
-uv run python print_results.py "$RESULTS_DIR" "$BUNDLE/queries_mut0.00.parquet" "$BUNDLE/accs.txt" \
+uv run python scripts/print_results.py "$RESULTS_DIR" "$BUNDLE/queries_mut0.00.parquet" "$BUNDLE/accs.txt" \
     --full_model_names true || true

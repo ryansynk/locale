@@ -52,5 +52,5 @@ SHARD=${SLURM_ARRAY_TASK_ID:?run as a job array (--array=0-$((NUM_SHARDS - 1)))}
 echo "config: $CONFIG  shard: $SHARD / $NUM_SHARDS  node: $(hostname)  gpus: ${CUDA_VISIBLE_DEVICES:-?}"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 
-uv run --no-sync python run_benchmark.py --config "$CONFIG" \
+uv run --no-sync python scripts/run_benchmark.py --config "$CONFIG" \
   --stage embed --shard "$SHARD" --num_shards "$NUM_SHARDS"

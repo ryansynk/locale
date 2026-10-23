@@ -21,14 +21,17 @@ would:
 and prints AUPRC / R-precision / Recall@7 (same definitions as
 print_results) with the stage timings.
 
-    python ivf_sweep.py --config configs/sra4571/perlmutter_locale_sra4571_ivf.yaml \
+    python scripts/ivf_sweep.py --config configs/sra4571/perlmutter_locale_sra4571_ivf.yaml \
         --nprobes 128,256,512,1024 --reranks 300 --rates 0.0,0.05,0.1
 """
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # benchmark/, for `src`
 
 import numpy as np
 import polars as pl

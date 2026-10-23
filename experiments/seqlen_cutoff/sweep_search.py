@@ -334,7 +334,7 @@ def main(
         shutil.rmtree(partials_dir)
 
     print(
-        f"{rank_tag} done; score with:\n  uv run python print_results.py "
+        f"{rank_tag} done; score with:\n  uv run python scripts/print_results.py "
         f"--results_dir {sweep_dir} --raw_read_queries_path {bundle / 'queries.parquet'} "
         f"--accessions {bundle / 'accs.txt'}"
     )

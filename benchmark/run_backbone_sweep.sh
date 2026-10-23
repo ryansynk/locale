@@ -10,7 +10,7 @@
 # Each srun step launches one run_benchmark.py process per node in the
 # allocation. run_benchmark.py gets --shard / --num_shards from SLURM_NODEID / SLURM_NNODES, builds one
 # index shard (or scans one range of vector rows) per node, and rank 0 merges.
-# Plain `python run_benchmark.py` inside a multi-node allocation would run a
+# Plain `python scripts/run_benchmark.py` inside a multi-node allocation would run a
 # single rank-0 process that waits forever for peers, so always go through srun.
 #
 # Per config the first rate builds the index; later rates reuse it (the index
@@ -58,7 +58,7 @@ for backbone in "${BACKBONES[@]}"; do
                       --gpus-per-node="$GPUS_PER_NODE" \
                       --cpus-per-task="$CPUS_PER_TASK" \
                       bash -c 'exec "$@" --shard "$SLURM_NODEID" --num_shards "$SLURM_NNODES"' _ \
-                      uv run python run_benchmark.py \
+                      uv run python scripts/run_benchmark.py \
                         --config "$cfg" --mutation_rate "$rate"; then
                 echo "[FAIL] $cfg @ $rate" >&2
                 failed+=("$cfg @ $rate")

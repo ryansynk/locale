@@ -6,7 +6,7 @@ Benchmarks the ability to retrieve relevant SRA accessions given query sequences
 
 ## Datasets
 
-`dataset_dir` must already hold `accs.txt` and the per-rate query files (`queries_mut<rate>.parquet`); `run_benchmark.py` downloads neither. Fetch a published bundle with `python fetch_dataset.py <name> <dataset_dir>`:
+`dataset_dir` must already hold `accs.txt` and the per-rate query files (`queries_mut<rate>.parquet`); `run_benchmark.py` downloads neither. Fetch a published bundle with `python scripts/fetch_dataset.py <name> <dataset_dir>`:
 
 | `dataset_name` | Repo | Accessions | Queries |
 |---|---|---|---|
@@ -53,7 +53,7 @@ Configs live under `configs/<dataset>/` (`sra50`, `sra500`, `sra4571`,
 ### Single node
 
 ```bash
-uv run python run_benchmark.py \
+uv run python scripts/run_benchmark.py \
   --config configs/sra50/perlmutter_locale_sra50v2.yaml \
   --model.encoder.checkpoint_path /path/to/checkpoint.pth.tar \
   --model.encoder_label locale@myrun \
@@ -72,7 +72,7 @@ Use `--num_queries` to subsample (default 1000, capped at the dataset size) and 
 
 ```bash
 srun bash -c 'exec "$@" --shard "$SLURM_NODEID" --num_shards "$SLURM_NNODES"' _ \
-  uv run python run_benchmark.py --config configs/sra500/perlmutter_locale_sra500v2.yaml ...
+  uv run python scripts/run_benchmark.py --config configs/sra500/perlmutter_locale_sra500v2.yaml ...
 ```
 
 An index is rebuilt only when `<index_dir>/<encoder_label>/.done` is absent, so reruns reuse existing indexes.
@@ -215,7 +215,7 @@ into N concurrent requests (experiment id `metagraph_k31_p<N>`); the default
 `plot_results.py` takes three positional arguments: the results directory, the queries parquet, and the accessions list. The latter two come from the downloaded dataset.
 
 ```bash
-uv run python plot_results.py \
+uv run python scripts/plot_results.py \
   results/ \
   <dataset_dir>/queries.parquet \
   <dataset_dir>/accs.txt

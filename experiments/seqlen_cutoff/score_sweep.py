@@ -1,5 +1,5 @@
 """Score the contig-length cutoff sweep and plot AUPRC vs compression ratio in
-the style of benchmark/plot_compression_sweep.py.
+the style of benchmark/scripts/plot_compression_sweep.py.
 
 Compression ratio = total vectors / vectors from contigs >= cutoff (from the
 sweep's sweep.json), the same "total / kept vectors" axis as the epsilon-net

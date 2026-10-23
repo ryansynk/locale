@@ -22,7 +22,7 @@
 # one index shard per node, rank 0 merges, then every node scans its range of
 # vector rows and rank 0 merges the hits. metagraph is a single-node method
 # (the sharded build path merges dense indexes only), so it runs on one node
-# with --num_shards 1. Plain `python run_benchmark.py`
+# with --num_shards 1. Plain `python scripts/run_benchmark.py`
 # inside a multi-node allocation would be a lone rank 0 waiting forever for
 # peers: always srun.
 #
@@ -101,12 +101,12 @@ run_step() {
         # One node, told it is alone so it neither shards the build nor waits
         # for peers.
         srun --unbuffered -N1 -n1 --cpus-per-task="$CPUS_PER_TASK" \
-            uv run python run_benchmark.py --config "$cfg" --mutation_rate "$rate" --num_shards 1
+            uv run python scripts/run_benchmark.py --config "$cfg" --mutation_rate "$rate" --num_shards 1
     else
         srun --unbuffered --ntasks-per-node=1 \
             --gpus-per-node="$GPUS_PER_NODE" --cpus-per-task="$CPUS_PER_TASK" \
             bash -c 'exec "$@" --shard "$SLURM_NODEID" --num_shards "$SLURM_NNODES"' _ \
-            uv run python run_benchmark.py --config "$cfg" --mutation_rate "$rate"
+            uv run python scripts/run_benchmark.py --config "$cfg" --mutation_rate "$rate"
     fi
 }
 
@@ -148,7 +148,7 @@ done
 
 echo
 echo "=== sra500v2 results ==="
-uv run python print_results.py "$RESULTS" "$BUNDLE/queries_mut0.00.parquet" "$BUNDLE/accs.txt" || true
+uv run python scripts/print_results.py "$RESULTS" "$BUNDLE/queries_mut0.00.parquet" "$BUNDLE/accs.txt" || true
 
 echo
 if [ ${#skipped[@]} -gt 0 ]; then
