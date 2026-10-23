@@ -1,5 +1,6 @@
 import os
 from dataclasses import asdict
+from datetime import timedelta
 from pathlib import Path
 
 import torch.distributed as dist
@@ -25,8 +26,8 @@ def cleanup():
 
 
 def par_print(*args, **kwargs):
-    if dist.is_initialized():  
-        if dist.get_rank() == 0:  
+    if dist.is_initialized():
+        if dist.get_rank() == 0:
             print(*args, **kwargs)
     else:
         # Fallback for single GPU runs so it still works
@@ -39,6 +40,9 @@ def main(cfg: TrainConfig):
 
     if is_distributed:
         setup()
+        # CPU-side waits while rank 0 runs the benchmark: a NCCL barrier would
+        # spin a kernel on every waiting GPU and trip the NCCL watchdog.
+        eval_group = dist.new_group(backend="gloo", timeout=timedelta(hours=2))
         local_rank = int(os.environ["LOCAL_RANK"])
         global_rank = int(os.environ["RANK"])
         world_size = int(os.environ["WORLD_SIZE"])
@@ -47,6 +51,7 @@ def main(cfg: TrainConfig):
         local_rank = 0
         global_rank = 0
         world_size = 1
+        eval_group = None
         par_print("Running in Single-GPU mode (No DDP detected).")
 
     par_print(f"World Size: {world_size}")
@@ -89,13 +94,14 @@ def main(cfg: TrainConfig):
         global_rank,
         world_size,
         is_distributed,
+        eval_group,
     )
 
     if global_rank == 0:
         run.finish()  # ty: ignore possibly-missing-attribute
 
     if is_distributed:
-        dist.destroy_process_group() 
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":

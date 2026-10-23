@@ -79,11 +79,9 @@ class AugmentConfig:
 @dataclass
 class TrainConfig:
     dataset_path: str
-    val_dataset_path: str
     data_type: Literal["reference", "contig"] = "contig"
     num_epochs: int = 1
     per_device_batch_size: int = 64
-    val_batch_size: int = 512
     schedule: Literal["cosine", "hold"] = "cosine"
     lr: float = 1e-3
     backbone_lr: float = 4e-6
@@ -99,8 +97,13 @@ class TrainConfig:
     log_dir: str = "logs"
     checkpoint_interval_samples: int = 65_536
     starting_checkpoint_path: Path | None = None
-    num_val_queries: int = 100
-    num_val_keys: int = 100_000
+    # In-training validation: after every checkpoint save the benchmark
+    # (benchmark/scripts/run_benchmark.py, this yaml) is run on this published
+    # bundle and accession recall at the top-10 vectors is logged per rate.
+    # See lae/training/validation.py.
+    val_benchmark_repo: str = "rsynk/locale-benchmark-sra50-sampled"
+    val_benchmark_config: str = "benchmark/configs/val/sra50_sampled.yaml"
+    val_rates: list[float] = field(default_factory=lambda: [0.0, 0.05, 0.10])
     dim: int = 128
     pooling: str = "mean"
     # Encoder backbone id (see lae.modeling.backbones.BACKBONES). Persisted into
