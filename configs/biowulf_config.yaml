@@ -69,6 +69,12 @@ smith_waterman_temperature: 0.1
 starting_checkpoint_path: null
 total_samples: 6000000
 use_hard_negatives: false
-use_projection_head: true 
+use_projection_head: true
+# In-training validation: the benchmark on the sampled sra50 bundle after
+# every checkpoint save (lae/training/validation.py); fetched from HF into
+# <checkpoint_dir>/val_bundle on first use.
+val_benchmark_repo: rsynk/locale-benchmark-sra50-sampled
+val_benchmark_config: benchmark/configs/val/sra50_sampled.yaml
+val_rates: [0.0, 0.05, 0.1]
 warmup_fraction: 0.08
 warmup_samples: null
