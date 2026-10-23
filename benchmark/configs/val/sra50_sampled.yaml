@@ -5,6 +5,7 @@
 # lae.training.validation runs this once per rate after each checkpoint save
 # and supplies what varies per call on the command line:
 #   --model.encoder.checkpoint_path <ckpt> --model.encoder.pooling <pooling>
+#   --model.encoder.project <use_projection_head>
 #   --dataset_dir <bundle> --index_dir <scratch>/step<N> --results_dir <...>
 #   --mutation_rate <rate> [--shard <node> --num_shards <nodes>]
 # then scores the results dir with scripts/score_recall.py.

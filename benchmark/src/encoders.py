@@ -102,6 +102,11 @@ class LOCALEEncoder:
         model = LOCALE(**locale_init_args(checkpoint))
         model.load_state_dict(checkpoint["model"])
         model = model.eval().to(device)
+        if cfg.project and model.projector_q is None:
+            raise ValueError(
+                f"project=True but {checkpoint_path} has no projection head"
+            )
+        self.project = cfg.project
         self.tokenizer = get_tokenizer(model.backbone)
 
         self.model = model
@@ -131,6 +136,8 @@ class LOCALEEncoder:
                 embeddings, _ = outputs.max(dim=1)
             else:
                 raise ValueError(f"self.pooling got unexpected value {self.pooling}")
+            if self.project:
+                embeddings = self.model.projector_q(embeddings)  # as LOCALE._embed
 
             batch_embeds = nn.functional.normalize(embeddings, dim=1)
             embeds_list.append(batch_embeds)

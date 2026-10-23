@@ -93,6 +93,11 @@ class EncoderConfig:
     # whose contigs are all shorter keeps a zero-row entry in meta.parquet.
     # Index-side only: queries are never filtered.
     min_seq_len: int | None = None
+    # Embed through the checkpoint's projection head (the space the
+    # contrastive loss trained, of dimension model_args["dim"]) instead of
+    # the pooled backbone output. locale only; refused for checkpoints
+    # without a head.
+    project: bool = False
     batch_size: int = 128
     # Also embed each query's reverse complement and union the two hit lists
     # before the top_k cut (dense methods only; metagraph/mmseqs already see
@@ -160,6 +165,7 @@ class EncoderConfig:
                 if self.min_seq_len is not None
                 else {}
             ),
+            **({"project": True} if self.project else {}),
         }
 
 

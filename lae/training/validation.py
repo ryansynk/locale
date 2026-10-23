@@ -69,6 +69,8 @@ def run_benchmark_val(
         str(ckpt),
         "--model.encoder.pooling",
         cfg.pooling,
+        "--model.encoder.project",
+        str(cfg.use_projection_head).lower(),
         "--dataset_dir",
         str(bundle),
         "--index_dir",
