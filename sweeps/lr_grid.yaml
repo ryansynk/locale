@@ -1,0 +1,38 @@
+# wandb sweep: 3x3 grid over the two learning-rate components of
+# configs/biowulf_config.yaml, one decade above and below its current values
+# (backbone_lr: 6e-5, lr: 1e-3). Every other setting comes from that config.
+#
+# Create the sweep once from the login node, then launch agents as a job
+# array with sweeps/biowulf_lr_sweep.sbatch (see that file). The values are
+# the pre-scaling values: training.py multiplies both by sqrt(global_batch /
+# reference_global_batch_size), identically for every run.
+name: lr-grid-biowulf
+method: grid
+metric:
+  name: val/recall10_mut0.05
+  goal: maximize
+parameters:
+  backbone_lr:
+    values: [6.0e-6, 6.0e-5, 6.0e-4]
+  lr:
+    values: [1.0e-4, 1.0e-3, 1.0e-2]
+# ${args} expands to "--backbone_lr=<v> --lr=<v>", which jsonargparse applies
+# on top of --config. One torchrun per agent invocation; the sbatch runs each
+# agent with --count 1 so a task never holds the node for a second run.
+program: train.py
+command:
+  - uv
+  - run
+  - --no-sync
+  - python
+  - -m
+  - torch.distributed.run
+  - --standalone
+  - --nnodes=1
+  - --nproc_per_node=8
+  - ${program}
+  - --config
+  - configs/biowulf_config.yaml
+  - --log_dir
+  - logs/lr_sweep
+  - ${args}
