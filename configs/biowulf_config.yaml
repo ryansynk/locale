@@ -43,6 +43,7 @@ augment_config:
     - 0.0
   substitution_rate: 0.02
 backbone_lr: 6.0e-05
+grad_clip_norm: 5.0
 checkpoint_dir: /data/synkrp/locale/checkpoints/
 checkpoint_interval_samples: 1000000
 containment_only: false

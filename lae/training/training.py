@@ -317,6 +317,16 @@ def train(
                 )
                 loss = F.cross_entropy(logits, labels)
                 loss.backward()
+                # Clip the global grad norm. The in-batch InfoNCE loss has a
+                # zero-gradient fixed point where every embedding is identical
+                # (loss == ln(batch)); one oversized step at a high backbone LR
+                # can land there with no way back. Ordinary steps sit well under
+                # the threshold, so this only bounds the spikes.
+                grad_norm_preclip = None
+                if cfg.grad_clip_norm is not None:
+                    grad_norm_preclip = torch.nn.utils.clip_grad_norm_(
+                        ddp_locale.parameters(), cfg.grad_clip_norm
+                    )
                 optimizer.step()
                 scheduler.step()
                 acc1, acc5 = accuracy(logits, labels, topk=(1, 5))
@@ -333,6 +343,11 @@ def train(
                     }
                     if cfg.use_projection_head:
                         metrics["train/head_lr"] = lrs[1]
+                    if grad_norm_preclip is not None:
+                        metrics["metrics/grad_norm_total_preclip"] = (
+                            grad_norm_preclip.item()
+                        )
+                    # Per-group norms below are measured after clipping.
                     for i, group in enumerate(optimizer.param_groups):
                         norm = torch.nn.utils.get_total_norm(
                             [p.grad for p in group["params"]]

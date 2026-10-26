@@ -85,6 +85,8 @@ class TrainConfig:
     schedule: Literal["cosine", "hold"] = "cosine"
     lr: float = 1e-3
     backbone_lr: float = 4e-6
+    # Global grad-norm clip applied before every optimizer step; None disables.
+    grad_clip_norm: float | None = 5.0
     total_samples: int | None = None
     warmup_fraction: float | None = 0.05
     warmup_samples: int | None = None
