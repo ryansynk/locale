@@ -42,8 +42,8 @@ augment_config:
     - 0.14
     - 0.0
   substitution_rate: 0.02
-backbone_lr: 6.0e-05
-grad_clip_norm: 5.0
+backbone_lr: 2.0e-04
+grad_clip_norm: null
 checkpoint_dir: /data/synkrp/locale/checkpoints/
 checkpoint_interval_samples: 1000000
 containment_only: false
@@ -68,7 +68,7 @@ sanity_test: false
 schedule: cosine
 smith_waterman_temperature: 0.1
 starting_checkpoint_path: null
-total_samples: 6000000
+total_samples: null 
 use_hard_negatives: false
 use_projection_head: true
 # In-training validation: the benchmark on the sampled sra50 bundle after
