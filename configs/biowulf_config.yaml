@@ -2,7 +2,7 @@ augment_config:
   alignment_threshold: 0.6
   average_deletion_length: 10
   average_insertion_length: 10
-  containment_prob: 1.0
+  containment_prob: 0.9
   deletion_rate: 0.005
   disable_mutations: false
   identity_max: 88.0
@@ -16,10 +16,10 @@ augment_config:
   max_seq_len: 256
   min_alignment_len: 149
   min_coverage: 0.1
-  min_overlap_percent: 0.4
+  min_overlap_percent: 0.2
   min_read_len: 91
   min_seq_len: 31
-  overlap_prob: 0.0
+  overlap_prob: 0.1
   substitution_matrix:
     A:
     - 0.0
@@ -56,7 +56,7 @@ log_dir: logs
 lr: 0.001
 moco_filter_queue: true
 moco_filter_queue_identity_cutoff: 0.88
-moco_momentum: 0.9995
+moco_momentum: 0.99
 moco_queue_size: 0
 moco_softmax_temp: 0.05
 num_epochs: 1
