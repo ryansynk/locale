@@ -1,0 +1,47 @@
+# wandb sweep: output embedding dimension of the projection head, one point
+# per width (64, 128, 256, 512). Every other setting comes from
+# configs/biowulf_config.yaml (backbone_lr 2e-4, lr 1e-3, no grad clipping,
+# one epoch over the full contig table, 256-row per-device batch).
+#
+# The learning rates are held fixed across widths on purpose: dim only changes
+# the output width of the head's last Linear(768, dim), whose fan-in stays 768,
+# and the embedding is L2-normalized, so neither the AdamW update size nor the
+# cosine/temperature scale depends on dim. The 256 point reproduces run
+# uyqcem0f (val recall@10 at 10% noise 0.883, participation ratio 93) and
+# doubles as the seed-free stability control.
+#
+# Create the sweep once from the login node, then launch agents as a job
+# array with sweeps/biowulf_dim_sweep.sbatch (see that file).
+name: dim-grid-biowulf
+# The team project, so a bare `wandb sweep sweeps/dim_grid.yaml` lands next to
+# the runs train.py logs; without these the CLI targets the personal entity,
+# which the API key cannot create sweeps under (403).
+entity: tomg-group-umd
+project: locale
+method: grid
+metric:
+  name: val/recall10_mut0.10
+  goal: maximize
+parameters:
+  dim:
+    values: [64, 128, 256, 512]
+# ${args} expands to "--dim=<v>", which jsonargparse applies on top of
+# --config. One torchrun per agent invocation; the sbatch runs each agent with
+# --count 1 so a task never holds the node for a second run.
+program: train.py
+command:
+  - uv
+  - run
+  - --no-sync
+  - python
+  - -m
+  - torch.distributed.run
+  - --standalone
+  - --nnodes=1
+  - --nproc_per_node=8
+  - ${program}
+  - --config
+  - configs/biowulf_config.yaml
+  - --log_dir
+  - logs/dim_sweep
+  - ${args}
