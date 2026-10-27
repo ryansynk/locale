@@ -1,0 +1,49 @@
+# wandb sweep: MoCo queue size, one point per K in 4096 .. 65536. Every other
+# setting comes from configs/biowulf_config.yaml, whose own moco_queue_size is
+# 0 (in-batch negatives only); ${args} overrides it, which switches on the
+# MoCo path in LOCALE: a momentum key encoder + key projection head
+# (moco_momentum 0.9995), queue negatives at temperature 0.05, and the
+# k-mer/edlib filter that masks queue entries within 88% identity of a query.
+#
+# With the projection head on, the queue holds the head's dim=256 outputs from
+# the key projector (lae/modeling/model.py allocates it as dim x K), so every
+# K here costs 256*K floats of GPU memory, 64 MB at the top. The global batch
+# is 8 x 256 = 2048, and all five K are multiples of it, so the enqueue never
+# wraps mid-batch. The per-step cost that does scale with K is the k-mer
+# index/edlib filter on the CPU, which touches 2048 inserts + removals per step.
+#
+# Create the sweep once from the login node, then launch agents as a job
+# array with sweeps/biowulf_moco_queue_sweep.sbatch (see that file).
+name: moco-queue-grid-biowulf
+# The team project, so a bare `wandb sweep sweeps/moco_queue_grid.yaml` lands
+# next to the runs train.py logs; without these the CLI targets the personal
+# entity, which the API key cannot create sweeps under (403).
+entity: tomg-group-umd
+project: locale
+method: grid
+metric:
+  name: val/recall10_mut0.10
+  goal: maximize
+parameters:
+  moco_queue_size:
+    values: [4096, 8192, 16384, 32768, 65536]
+# ${args} expands to "--moco_queue_size=<v>", which jsonargparse applies on top
+# of --config. One torchrun per agent invocation; the sbatch runs each agent
+# with --count 1 so a task never holds the node for a second run.
+program: train.py
+command:
+  - uv
+  - run
+  - --no-sync
+  - python
+  - -m
+  - torch.distributed.run
+  - --standalone
+  - --nnodes=1
+  - --nproc_per_node=8
+  - ${program}
+  - --config
+  - configs/biowulf_config.yaml
+  - --log_dir
+  - logs/moco_queue_sweep
+  - ${args}

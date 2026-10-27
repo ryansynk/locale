@@ -155,7 +155,18 @@ class LOCALE(nn.Module):
     ) -> None:
         if is_distributed:
             keys = concat_all_gather(keys)
+            # The strings must line up with the gathered keys: slot ptr+i holds
+            # the embedding of gathered key i, so the sequence stored there has
+            # to be the one that produced it, on every rank. Without this each
+            # rank wrote only its local strings into the first per-rank block
+            # and the alignment filter masked the wrong slots.
+            if sequences is not None:
+                sequences = concat_all_gather_object(list(sequences))
         batch_size = keys.shape[0]
+        if sequences is not None:
+            assert len(sequences) == batch_size, (
+                f"got {len(sequences)} sequences for {batch_size} keys"
+            )
 
         ptr = int(self.queue_ptr)
 
@@ -447,7 +458,11 @@ class LOCALE(nn.Module):
             # Label 0 is always the positive (l_pos is at index 0)
             labels = torch.zeros(logits.shape[0], dtype=torch.long, device=self.device)
 
-            self._dequeue_and_enqueue(k, is_distributed, sequences=key_seqs)
+            # The strings and k-mer index only serve the alignment filter;
+            # skip the (CPU-side, all-gathered) bookkeeping when it is off.
+            self._dequeue_and_enqueue(
+                k, is_distributed, sequences=key_seqs if filter_aligned else None
+            )
 
         else:
             k = self._embed(
@@ -530,6 +545,18 @@ class LOCALE(nn.Module):
 
 # utils
 @torch.no_grad()
+def concat_all_gather_object(objs: list) -> list:
+    """
+    all_gather for a per-rank Python list (e.g. sequence strings); the result is
+    ordered by rank, matching concat_all_gather on the corresponding tensors.
+    """
+    gathered: List[Optional[list]] = [
+        None for _ in range(torch.distributed.get_world_size())
+    ]
+    torch.distributed.all_gather_object(gathered, objs)
+    return [o for part in gathered for o in part]  # ty: ignore not-iterable
+
+
 def concat_all_gather(tensor):
     """
     Performs all_gather operation on the provided tensors.
