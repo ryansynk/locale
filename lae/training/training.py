@@ -112,6 +112,8 @@ def train(
     transformers_logging.set_verbosity_error()
     # Set the device for this process
     torch.cuda.set_device(local_rank)
+    # Identical seed on every rank so model init matches before DDP wraps it.
+    torch.manual_seed(cfg.seed)
 
     # Instantiate model and move to the correct GPU
     locale = LOCALE(
@@ -170,12 +172,21 @@ def train(
     else:
         ddp_locale = locale
 
+    # Per-rank offset so dataloader workers (which draw their seeds from this
+    # RNG each epoch) sample different crops and mutations on each rank.
+    torch.manual_seed(cfg.seed + global_rank)
     reader = Batcher(
         cfg.dataset_path, cfg.augment_config, cfg.data_type, cfg.use_hard_negatives
     )
     sampler = (
         DistributedSampler(
-            reader, num_replicas=world_size, rank=global_rank, shuffle=True
+            reader,
+            num_replicas=world_size,
+            rank=global_rank,
+            shuffle=True,
+            # The sampler permutes with seed + epoch, so adjacent seeds would
+            # share orders shifted by one epoch; spread them apart.
+            seed=cfg.seed * 100_000,
         )
         if is_distributed
         else None
@@ -293,6 +304,10 @@ def train(
 
     with tqdm(total=total_steps, desc="Training", unit="step") as pbar:
         for epoch in range(num_epochs):
+            if sampler is not None:
+                # Without this the sampler reuses epoch 0's permutation, so
+                # every epoch replays the same contigs in the same batches.
+                sampler.set_epoch(epoch)
             par_tqdm_write(f"Training epoch = {epoch + 1}/{num_epochs}")
             for batch in dataloader:
                 if cfg.use_hard_negatives:

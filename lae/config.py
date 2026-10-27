@@ -81,6 +81,9 @@ class TrainConfig:
     dataset_path: str
     data_type: Literal["reference", "contig"] = "contig"
     num_epochs: int = 1
+    # Seeds torch (model init, dataloader worker RNG for crops/mutations) and
+    # the DistributedSampler permutation. Change it to measure run-to-run noise.
+    seed: int = 0
     per_device_batch_size: int = 64
     schedule: Literal["cosine", "hold"] = "cosine"
     lr: float = 1e-3
