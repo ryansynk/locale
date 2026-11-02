@@ -1,0 +1,37 @@
+# LOCALE pc6t1x8j/21380 (projection head) on sra500v2 with 128 bp index
+# windows at stride 64 (chunk_overlap 64), the finer-granularity index from
+# the read-length survival probe (experiments/length_survival, 2026-10-27):
+# the single-vector ceiling for a read of length L is ~sqrt(L/W), so halving
+# W moves the knee of the survival curve toward shorter reads; what this
+# build measures that the probe could not is the background rise from ~1.7x
+# more, less specific vectors. Everything else matches
+# perlmutter_locale_pc6t1x8j_sra500v2.yaml (exact top-100, both strands,
+# project=true, contigs under 100 bp not embedded). The end window fires
+# when the strided windows leave more than 30 bp of a contig's tail
+# uncovered (max tail is step-1 = 63 bp; 50 of 105 was the 256/106 rule).
+#   cd benchmark && ./run_sra500.sh locale_pc6t1x8j_w128
+model:
+  encoder:
+    name: locale
+    checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/pc6t1x8j/checkpoint21380.pth.tar
+    pooling: mean
+    max_seq_len: 128
+    chunk_overlap: 64
+    end_window_min_tail_bp: 30
+    min_seq_len: 100
+    project: true
+    batch_size: 1000
+    device: cuda
+    both_strands: true
+  index:
+    engine: exact
+    top_k: 100
+  encoder_label: locale@pc6t1x8j-proj-w128s64-endwin30-minlen100
+  index_label: exact
+  search_label: top100
+
+dataset_name: sra500v2
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra500/bundle
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes/sra500
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results/sra500
+mutation_rate: 0.0

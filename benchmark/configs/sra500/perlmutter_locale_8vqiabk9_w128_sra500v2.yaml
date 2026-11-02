@@ -1,0 +1,32 @@
+# Paper checkpoint 8vqiabk9/5859 on sra500v2 with 128 bp index windows at
+# stride 64 (chunk_overlap 64), end window at tail > 30 bp, contigs under
+# 100 bp not embedded: the same chunking as
+# perlmutter_locale_pc6t1x8j_w128_sra500v2.yaml, for the old-checkpoint row of
+# the window x checkpoint comparison (2026-10-28). No projection head (the
+# checkpoint has none); 768-d vectors, so expect ~1.65x the 231 GB of the
+# 256/106 minlen100 index, about 380 GB.
+#   cd benchmark && ./run_sra500.sh locale_8vqiabk9_w128
+model:
+  encoder:
+    name: locale
+    checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/8vqiabk9/checkpoint5859.pth.tar
+    pooling: mean
+    max_seq_len: 128
+    chunk_overlap: 64
+    end_window_min_tail_bp: 30
+    min_seq_len: 100
+    batch_size: 1000
+    device: cuda
+    both_strands: true
+  index:
+    engine: exact
+    top_k: 100
+  encoder_label: locale@8vqiabk9-w128s64-endwin30-minlen100
+  index_label: exact
+  search_label: top100
+
+dataset_name: sra500v2
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra500/bundle
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes/sra500
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results/sra500
+mutation_rate: 0.0
