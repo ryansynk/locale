@@ -1,4 +1,5 @@
 import math
+from collections.abc import Sequence
 from enum import Enum
 from pathlib import Path
 
@@ -234,11 +235,14 @@ class Augmenter:
 
     @staticmethod
     def _uniform_random_mutation(
-        sequence: str, target_identity: float
+        sequence: str,
+        target_identity: float,
+        type_probs: Sequence[float] = (0.4, 0.3, 0.3),
     ) -> tuple[str, float]:
         """
         Applies uniform random substitutions, insertions, and deletions
         in a single pass to reach an approximate target identity.
+        ``type_probs`` is P(sub), P(ins), P(del) per mutated position.
         """
         BASES = ["A", "C", "G", "T"]
         seq_len = len(sequence)
@@ -256,7 +260,7 @@ class Augmenter:
         # Converting to a set makes the lookup O(1) in the loop below.
         mutation_indices = set(torch.randperm(seq_len)[:target_errors].tolist())
 
-        mut_probs = torch.tensor([0.4, 0.3, 0.3])
+        mut_probs = torch.tensor(list(type_probs), dtype=torch.float)
         mut_types = torch.multinomial(
             mut_probs, target_errors, replacement=True
         ).tolist()
@@ -306,9 +310,9 @@ class Augmenter:
     # augmented, actual_id = uniform_random_mutation(original, 0.85)
 
     @staticmethod
-    def augment(seq, identity):
+    def augment(seq, identity, type_probs: Sequence[float] = (0.4, 0.3, 0.3)):
         augmented_seq, final_identity = Augmenter._uniform_random_mutation(
-            seq, identity
+            seq, identity, type_probs
         )
         return augmented_seq
 
@@ -355,7 +359,9 @@ class Augmenter:
 
             identity = self._sample_identity()
             augmented_overlap = Augmenter.augment(
-                seq1[seq1_overlap_start:seq1_overlap_end], identity
+                seq1[seq1_overlap_start:seq1_overlap_end],
+                identity,
+                self.cfg.mutation_type_probs,
             )
 
             if torch.rand(size=(1,)).item() < 0.5:

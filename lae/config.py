@@ -48,10 +48,23 @@ class AugmentConfig:
         }
     )
 
+    # How each mutated position is edited: P(substitution), P(insertion),
+    # P(deletion). The benchmark's mutation-simulator queries are ~82%
+    # substitutions / 18% indels at every rate; the historical default is
+    # indel-heavy.
+    mutation_type_probs: list[float] = field(default_factory=lambda: [0.4, 0.3, 0.3])
+
     def __post_init__(self):
         # Validate logic immediately upon loading
         if not np.isclose(self.containment_prob + self.overlap_prob, 1.0):
             raise ValueError("Probabilities must sum to 1.0")
+
+        if len(self.mutation_type_probs) != 3 or not np.isclose(
+            sum(self.mutation_type_probs), 1.0
+        ):
+            raise ValueError(
+                "mutation_type_probs must be [P(sub), P(ins), P(del)] summing to 1.0"
+            )
 
         for _, probs in self.substitution_matrix.items():
             if not np.isclose(sum(probs), 1.0):
