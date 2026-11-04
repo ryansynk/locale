@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+from lae.config import AugmentConfig
 from lae.training.batcher import Augmenter, beta_parameters
 
 _BASES = set("ACGT")
@@ -71,3 +72,35 @@ class TestBetaParameters:
     def test_returns_two_values(self):
         result = beta_parameters(beta_mean=0.8, beta_stdev=0.05, beta_max=1.0)
         assert len(result) == 2
+
+
+# ---------------------------------------------------------------------------
+# Augmenter._sample_identity (Badread semantics: draw scaled by identity_max)
+# ---------------------------------------------------------------------------
+
+
+class TestSampleIdentity:
+    @staticmethod
+    def _draws(mean, stdev, maximum, n=20000):
+        torch.manual_seed(0)
+        aug = Augmenter(
+            AugmentConfig(identity_mean=mean, identity_stdev=stdev, identity_max=maximum)
+        )
+        return torch.tensor([aug._sample_identity() for _ in range(n)])
+
+    def test_heavy_rung_matches_badread_mean_and_max(self):
+        x = self._draws(80.0, 6.0, 88.0)
+        assert abs(x.mean().item() - 0.80) < 0.01
+        assert abs(x.std().item() - 0.06) < 0.01
+        assert x.max().item() <= 0.88
+        assert x.min().item() >= 0.0
+
+    def test_light_rung_matches_badread_mean_and_max(self):
+        x = self._draws(95.0, 2.5, 99.0)
+        assert abs(x.mean().item() - 0.95) < 0.005
+        assert x.max().item() <= 0.99
+
+    def test_fractional_config_is_not_rescaled(self):
+        x = self._draws(0.8, 0.05, 1.0)
+        assert abs(x.mean().item() - 0.80) < 0.01
+        assert x.max().item() <= 1.0

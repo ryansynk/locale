@@ -222,7 +222,15 @@ class Augmenter:
         return seq[crop_start : crop_start + crop_len]
 
     def _sample_identity(self):
-        return self.beta_distribution.sample().item()
+        # Badread convention (--identity mean,max,stdev): the Beta is shaped by
+        # mean/max and stdev/max, and the draw is then scaled by max, so the
+        # realized identity has mean identity_mean and never exceeds
+        # identity_max. Config values are percentages.
+        return self.beta_distribution.sample().item() * self._identity_scale()
+
+    def _identity_scale(self) -> float:
+        m = float(self.cfg.identity_max)
+        return m / 100.0 if m > 1.0 else m
 
     @staticmethod
     def _uniform_random_mutation(
