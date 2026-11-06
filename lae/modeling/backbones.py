@@ -32,6 +32,7 @@ BACKBONES: dict[str, str] = {
     "dnabert2": "zhihan1996/DNABERT-2-117M",
     "nt50m": "InstaDeepAI/nucleotide-transformer-v2-50m-multi-species",
     "hyenadna": "LongSafari/hyenadna-small-32k-seqlen-hf",
+    "hyenadna-large": "LongSafari/hyenadna-large-1m-seqlen-hf",
     # Embed-Search-Align's encoder. Note the benchmark also runs this checkpoint
     # untrained as a baseline (DenseConfig name "dna2vec"); this entry is the
     # same weights used as a *trainable* backbone under the LOCALE recipe.
@@ -155,6 +156,10 @@ def build_backbone(name: str = DEFAULT_BACKBONE) -> tuple[nn.Module, int]:
         model = AutoModel.from_pretrained(repo, trust_remote_code=True)
         return HyenaDNABackbone(model), model.config.d_model
 
+    if name == "hyenadna-large":
+        model = AutoModel.from_pretrained(repo, trust_remote_code=True)
+        return HyenaDNABackbone(model), model.config.d_model
+
     if name == "dna2vec":
         # Unlike NT-v2, the repo's auto_map does map AutoModel, so this pulls
         # the repo's own DNAEncoder. Every parameter of it receives a gradient
@@ -179,7 +184,7 @@ def get_tokenizer(name: str = DEFAULT_BACKBONE):
         raise _unknown(name)
     tokenizer = AutoTokenizer.from_pretrained(BACKBONES[name], trust_remote_code=True)
 
-    if name == "hyenadna":
+    if name == "hyenadna" or name == "hyenadna-large":
         # HyenaDNATokenizer pads but omits attention_mask entirely, because the
         # model itself never consumes one. The pooling head does: it averages
         # over non-padding positions only. Without this the head would average

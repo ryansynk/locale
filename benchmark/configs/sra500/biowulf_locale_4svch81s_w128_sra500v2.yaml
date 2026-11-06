@@ -1,0 +1,41 @@
+# Biowulf twin of perlmutter_locale_4svch81s_w128_sra500v2.yaml: LOCALE
+# 4svch81s/4276 (1-epoch run, projection head) on sra500v2 with 128 bp index
+# windows at stride 64 (chunk_overlap 64), the end window when more than 30 bp
+# of a contig's tail would go uncovered, contigs under 100 bp not embedded,
+# exact top-100 over both strands. Same encoder identity as the Perlmutter
+# config, so the vectors are interchangeable; only paths and batch_size differ:
+#   - contigs, checkpoint, index and results live under /data/synkrp
+#     (/home is 16 GB and nearly full)
+#   - batch_size 3500 per GPU worker: the Perlmutter value of 1000 was sized
+#     for 40 GB A100s and 256 bp windows; these are 141 GB H200s and 128 bp
+#     windows. batch_size is not part of the index identity.
+# Biowulf has no multi-node GPU jobs, so this runs as one 8x H200 node with
+# --num_shards 1 (whole index built in one process, one embedding worker per
+# GPU, exact scan across all 8 GPUs):
+#   sbatch slurm_scripts/biowulf_sra500.sbatch
+#   CONFIG=configs/sra500/<other>.yaml sbatch slurm_scripts/biowulf_sra500.sbatch
+model:
+  encoder:
+    name: locale
+    checkpoint_path: /data/synkrp/locale/checkpoints/4svch81s/checkpoint4276.pth.tar
+    pooling: mean
+    max_seq_len: 128
+    chunk_overlap: 64
+    end_window_min_tail_bp: 30
+    min_seq_len: 100
+    project: true
+    batch_size: 3500
+    device: cuda
+    both_strands: true
+  index:
+    engine: exact
+    top_k: 100
+  encoder_label: locale@4svch81s-proj-w128s64-endwin30-minlen100
+  index_label: exact
+  search_label: top100
+
+dataset_name: sra500v2
+dataset_dir: /data/synkrp/locale-data/constructed/sra500/bundle
+index_dir: /data/synkrp/locale/benchmark/indexes/sra500
+results_dir: /data/synkrp/locale/benchmark/results/sra500
+mutation_rate: 0.0
