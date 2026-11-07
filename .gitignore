@@ -243,3 +243,4 @@ experiments/seqlen_cutoff/*.u32
 experiments/window_grid/summary.txt
 *.npy
 experiments/length_survival/run/mutations/
+*.txt

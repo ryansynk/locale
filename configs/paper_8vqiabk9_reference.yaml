@@ -1,0 +1,128 @@
+# Paper checkpoint 8vqiabk9 ("Training data: Reference" row; the headline
+# LOCALE encoder), re-expressed for the post rawbert->locale TrainConfig.
+#
+# Source: checkpoints/8vqiabk9/config.yaml and
+# wandb/run-20260422_110719-8vqiabk9 (commit 6815968, 2026-04-22). That run was
+#   train.py --config configs/unsupervised_perlmutter_containment.yaml \
+#     --dataset_path .../reference_genome_dataset.parquet --use_hard_negatives True \
+#     --total_samples 6_000_000 --moco_queue_size 0 \
+#     --moco_filter_queue_identity_cutoff 0.7 \
+#     --augment_config.identity_mean 80 --augment_config.identity_max 88 \
+#     --augment_config.identity_stdev 6
+# on 4 nodes x 4 A100 (global batch 1024 -> step 5859 = 6M // 1024).
+#
+# Changes from the saved config, all forced by the current code:
+#   * dropped: unsupervised, val_dataset_path, val_batch_size,
+#     num_val_queries, num_val_keys (fields no longer exist; jsonargparse
+#     rejects unknown keys). In-training validation is now the sra50-sampled
+#     benchmark (val_benchmark_* defaults).
+#   * added: seed, grad_clip_norm (null: the April code had no clipping),
+#     backbone (dnabert2, the only backbone that existed), mutation_type_probs
+#     (0.4/0.3/0.3 was hardcoded in the April batcher).
+#   * identity_*: see the note in augment_config. The values below reproduce
+#     the identity distribution the checkpoint was ACTUALLY trained on.
+#   * dataset_path: the April file moved; this is a byte-identical copy.
+#
+# Launch (4 nodes x 4 GPUs for global batch 1024; training.py sqrt-scales the
+# LRs off reference_global_batch_size if you use a different world size):
+#   srun ... uv run python train.py --config configs/paper_8vqiabk9_reference.yaml
+
+backbone: dnabert2
+seed: 0
+
+data_type: contig
+dataset_path: /pscratch/sd/r/rsynk/locale_data/reference_genome_dataset.parquet
+
+augment_config:
+  # Cropping: containment only, crop lengths uniform in [31, 256], smaller crop
+  # covers >= 40% of the longer.
+  max_len: 256
+  max_seq_len: 256
+  min_seq_len: 31
+  min_overlap_percent: 0.4
+  containment_prob: 1.0
+  overlap_prob: 0.0
+
+  # Mutation injection.
+  #
+  # The run was launched with identity_mean 80 / identity_max 88 / stdev 6, but
+  # the April batcher drew Beta(a, b) and never multiplied by identity_max
+  # (fixed in c078c80, 2026-11-04). The realized per-pair identity was
+  # therefore Beta(a, b) itself: mean 80/88 = 0.909, stdev 6/88 = 0.068,
+  # max 1.0. Under the fixed code the same Beta is obtained by expressing
+  # those numbers as percentages of max = 100, which is what is set here:
+  # beta_parameters(90.909, 6.818, 100) == beta_parameters(80, 6, 88) and the
+  # scale factor is 1.0. This matches what 8vqiabk9 actually saw.
+  #
+  # To train the recipe the paper INTENDED (mean 0.80, max 0.88) instead, use:
+  #   identity_mean: 80.0
+  #   identity_max: 88.0
+  #   identity_stdev: 6.0
+  disable_mutations: false
+  identity_mean: 90.90909090909091
+  identity_max: 100.0
+  identity_stdev: 6.818181818181818
+  mutation_type_probs: [0.4, 0.3, 0.3]
+
+  # Not read in contig mode (kept so the saved config matches the April one).
+  alignment_threshold: 0.6
+  min_alignment_len: 149
+  max_alignment_ratio: 1.0
+  max_containment_ratio: 1.0
+  min_coverage: 0.1
+  min_read_len: 91
+  max_read_len: 150
+  insertion_rate: 0.005
+  deletion_rate: 0.005
+  substitution_rate: 0.02
+  average_insertion_length: 10
+  average_deletion_length: 10
+  substitution_matrix:
+    A: [0.0, 0.15, 0.77, 0.08]
+    C: [0.13, 0.0, 0.17, 0.7]
+    G: [0.7, 0.17, 0.0, 0.13]
+    T: [0.08, 0.78, 0.14, 0.0]
+
+# Objective: InfoNCE with in-batch negatives (moco_queue_size 0 disables the
+# queue) plus one hard negative per query cropped from the same contig outside
+# the covered span (use_hard_negatives). hnm_num_negatives 0 = no queue mining.
+moco_queue_size: 0
+moco_softmax_temp: 0.05
+moco_momentum: 0.9995
+moco_filter_queue: true
+moco_filter_queue_identity_cutoff: 0.7
+use_hard_negatives: true
+hnm_num_negatives: 0
+smith_waterman_temperature: 0.1
+containment_only: false
+kl: false
+
+# Head: mean-pool, L2-normalize, no projection head.
+pooling: mean
+use_projection_head: false
+dim: 128
+
+# Optimizer / schedule.
+backbone_lr: 6.0e-05
+lr: 0.001
+grad_clip_norm: null
+schedule: cosine
+warmup_fraction: 0.08
+warmup_samples: null
+per_device_batch_size: 64
+reference_global_batch_size: 1024
+total_samples: 6000000
+num_epochs: 1
+
+checkpoint_dir: /pscratch/sd/r/rsynk/locale/checkpoints/
+checkpoint_interval_samples: 1000000
+starting_checkpoint_path: null
+log_dir: logs
+num_workers: 24
+sanity_test: false
+
+# In-training validation (new since April): sra50-sampled benchmark after every
+# checkpoint save, fetched from HF into <checkpoint_dir>/val_bundle.
+val_benchmark_repo: rsynk/locale-benchmark-sra50-sampled
+val_benchmark_config: benchmark/configs/val/sra50_sampled.yaml
+val_rates: [0.0, 0.05, 0.1]
