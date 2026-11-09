@@ -1,0 +1,98 @@
+# dnabert2 / none augmentation — backbone-swap ablation (Table 3), under the
+# SAME single-node schedule as the nt50m / hyenadna / dna2vec ladders.
+#
+# Why this file exists: the DNABERT-2 row of Table 3 came from the paper
+# checkpoint (4 nodes x 4 GPUs, global batch 1024, 5,859 steps, backbone LR
+# 6e-5), while every other backbone ran single-node on 8 GPUs (global batch
+# 512, 11,718 steps, LR sqrt-scaled to ~4.24e-5). Same 6M samples, different
+# step count / batch size / in-batch negatives (seqz W4). This config trains
+# DNABERT-2 under the ladder recipe so every Table 3 row shares one config with
+# only `backbone:` (and cluster paths) changed. Diff against nt50m_none.yaml.
+#
+# Run on one 8-GPU node so the effective batch is 8 x 64 = 512 and the run stops
+# at step 11718 like the ladder (training.py sqrt-scales the LRs off
+# reference_global_batch_size):
+#   CONFIG=configs/dnabert2_none.yaml sbatch sweeps/biowulf_train.sbatch
+backbone: dnabert2
+seed: 0
+
+augment_config:
+  # Cropping: containment only, crop lengths uniform in [31, 256], smaller crop
+  # covers >= 40% of the longer.
+  min_seq_len: 31
+  max_seq_len: 256
+  min_overlap_percent: 0.4
+  containment_prob: 1.0
+  overlap_prob: 0.0
+
+  # Mutation injection — THE ABLATED AXIS.
+  # The identity_* values are inert while disable_mutations is true; they are
+  # kept at the heavy rung's REALIZED setting (see dnabert2_heavy.yaml for why
+  # it is 90.9 / 6.8 / 100 rather than 80 / 6 / 88) only so Augmenter's beta
+  # parameters stay valid at construction time.
+  disable_mutations: true
+  identity_mean: 90.90909090909091
+  identity_stdev: 6.818181818181818
+  identity_max: 100.0
+  # Was hardcoded in the ladder-era batcher; now a config field. Same split.
+  mutation_type_probs: [0.4, 0.3, 0.3]
+
+  # NOTE: AugmentConfig also carries substitution_rate / insertion_rate /
+  # deletion_rate / substitution_matrix / average_*_length. None are read in
+  # contig mode. Omitted here so the config shows only knobs that take effect.
+
+# Objective (paper §3.1): InfoNCE with in-batch negatives, tau = 0.05.
+# moco_queue_size 0 disables the MoCo path entirely.
+moco_queue_size: 0
+moco_softmax_temp: 0.05
+moco_momentum: 0.9995
+moco_filter_queue: true
+moco_filter_queue_identity_cutoff: 0.88
+
+# Head: mean-pool over non-padding positions, then L2-normalize. Identical for
+# every backbone — this is what makes the swap a controlled comparison.
+pooling: mean
+use_projection_head: false
+dim: 128
+
+# Optimizer / schedule (paper §3.4) — do NOT re-tune per backbone.
+backbone_lr: 6.0e-05
+lr: 0.001
+# The ladders predate 3260e1c (2026-10-26), which added clipping with a
+# default of 5.0. null reproduces the unclipped ladder runs.
+grad_clip_norm: null
+schedule: cosine
+warmup_fraction: 0.08
+warmup_samples: null
+per_device_batch_size: 64
+reference_global_batch_size: 1024
+total_samples: 6000000
+num_epochs: 1
+
+# Logan contigs, 50-accession training slice; Biowulf copy of
+# /fs/nexus-projects/sra_search/rawbert_datasets/train_contigs.parquet.
+data_type: contig
+dataset_path: /data/synkrp/locale-data/locale_data/train_contigs.parquet
+
+checkpoint_dir: /data/synkrp/locale/checkpoints/
+checkpoint_interval_samples: 10000000
+starting_checkpoint_path: null
+log_dir: logs
+
+# 96 CPUs / 8 ranks on the H200 nodes.
+num_workers: 8
+
+containment_only: false
+use_hard_negatives: false
+hnm_num_negatives: 0
+smith_waterman_temperature: 0.1
+sanity_test: false
+kl: false
+loss: infonce
+
+# In-training validation (did not exist when the ladders ran; eval-only, does
+# not touch the training trajectory): sra50-sampled benchmark after every
+# checkpoint save, fetched from HF into <checkpoint_dir>/val_bundle.
+val_benchmark_repo: rsynk/locale-benchmark-sra50-sampled
+val_benchmark_config: benchmark/configs/val/sra50_sampled.yaml
+val_rates: [0.0, 0.05, 0.1]
