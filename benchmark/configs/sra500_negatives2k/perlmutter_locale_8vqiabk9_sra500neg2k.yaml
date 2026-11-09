@@ -1,0 +1,27 @@
+# Paper checkpoint (8vqiabk9/5859, 256-window exact top-100, both strands)
+# searched with the sra500_negatives2k queries, so the two LOCALE checkpoints
+# are calibrated on the same negative set. Settings of
+# configs/sra500/perlmutter_locale_sra500v2.yaml; the built sra500 index is
+# reused. See perlmutter_locale_l6e9itq9_w128_sra500neg2k.yaml for the srun line.
+model:
+  encoder:
+    name: locale
+    checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/8vqiabk9/checkpoint5859.pth.tar
+    pooling: mean
+    max_seq_len: 256
+    chunk_overlap: 150
+    batch_size: 1000
+    device: cuda
+    both_strands: true
+  index:
+    engine: exact
+    top_k: 100
+  encoder_label: locale@8vqiabk9
+  index_label: exact
+  search_label: top100
+
+dataset_name: sra500neg2k
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra500_negatives2k/bundle
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes/sra500
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results/sra500_negatives2k
+mutation_rate: 0.0

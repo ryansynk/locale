@@ -1,0 +1,40 @@
+# LOCALE on sra500v2 with checkpoint pxve4g5o/9765 (DNABERT-2, no projection
+# head, reference_nohm training set = reference genomes without human/mouse,
+# hard negatives, 1 epoch / 6 M samples, as-trained identity 90.9/100/6.8;
+# final checkpoint of the run). Standard 256 bp windows at the original
+# stride (chunk_overlap 150 -> step 106), with the current w256 protocol of
+# perlmutter_locale_pc6t1x8j_sra500v2.yaml: end-aligned tail window
+# (end_window_min_tail_bp 50), no contigs under 100 bp, exact top-100, both
+# strands. project is left off because the checkpoint has no projector
+# (use_projection_head: false), so the index holds 768-d pooled vectors like
+# locale@8vqiabk9-endwin50-minlen100; compare against
+# results/sra500_minlen/locale@8vqiabk9-endwin50/exact-minlen100/top100/ (same
+# window/stride/protocol, trained with human+mouse).
+#
+#   salloc -A m5408_g -C gpu -q interactive -N 4 -t 4:00:00 \
+#          --ntasks-per-node=1 --gpus-per-node=4 -c 128
+#   cd benchmark && ./run_sra500.sh locale_pxve4g5o
+model:
+  encoder:
+    name: locale
+    checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/pxve4g5o/checkpoint9765.pth.tar
+    pooling: mean
+    max_seq_len: 256
+    chunk_overlap: 150
+    end_window_min_tail_bp: 50
+    min_seq_len: 100
+    batch_size: 1000
+    device: cuda
+    both_strands: true
+  index:
+    engine: exact
+    top_k: 100
+  encoder_label: locale@pxve4g5o-endwin50-minlen100
+  index_label: exact
+  search_label: top100
+
+dataset_name: sra500v2
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra500/bundle
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes/sra500
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results/sra500
+mutation_rate: 0.0

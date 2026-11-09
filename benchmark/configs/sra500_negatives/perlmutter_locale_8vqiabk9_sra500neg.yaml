@@ -1,0 +1,48 @@
+# Negative queries against the sra500v2 index, paper checkpoint (8vqiabk9/5859).
+#
+# Calibrated-FPR experiment: the queries are 500 raw reads from sra4571 runs
+# whose organism never occurs in sra500 and that align to no sra500 accession
+# at >= 90% identity (locale-data/benchmark/build_negative_queries.py), so no
+# relevant accession exists. Their per-query max score gives the null
+# distribution from which 1% / 5% false-positive cutoffs are read.
+#
+# Encoder and search settings are those of configs/sra500/perlmutter_locale_sra500v2.yaml
+# (top-100 regroup, both strands). index_dir is the sra500 index dir, so the
+# existing locale@8vqiabk9 index is reused as is (index identity is the encoder
+# config, not the dataset); only dataset_dir and results_dir differ. The hits
+# cache under results_dir cannot collide with the positive run's.
+#
+# Run from a multi-node GPU allocation (one task per node; nodes shard the
+# vector rows of the exact scan):
+#   cd /pscratch/sd/r/rsynk/locale/benchmark
+#   srun --unbuffered --ntasks-per-node=1 --gpus-per-node=4 --cpus-per-task=128 \
+#     bash -c 'exec "$@" --shard "$SLURM_NODEID" --num_shards "$SLURM_NNODES"' _ \
+#     uv run python scripts/run_benchmark.py \
+#       --config configs/sra500_negatives/perlmutter_locale_8vqiabk9_sra500neg.yaml \
+#       --mutation_rate 0.0
+model:
+  encoder:
+    name: locale
+    checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/8vqiabk9/checkpoint5859.pth.tar
+    pooling: mean
+    max_seq_len: 256
+    chunk_overlap: 150
+    batch_size: 1000
+    device: cuda
+    both_strands: true
+  index:
+    engine: exact
+    top_k: 100
+  encoder_label: locale@8vqiabk9
+  index_label: exact
+  search_label: top100
+
+# Bundle written by build_negative_queries.py: accs.txt is sra500's, and
+# logan_accessions/ links to the sra500 bundle's contigs, so the accession
+# manifest check passes without downloading anything. queries.parquet carries
+# empty relevant sets; negatives_meta.parquet holds the per-read provenance.
+dataset_name: sra500neg
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra500_negatives/bundle
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes/sra500
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results/sra500_negatives
+mutation_rate: 0.0

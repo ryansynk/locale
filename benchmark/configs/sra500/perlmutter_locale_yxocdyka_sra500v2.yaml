@@ -1,0 +1,36 @@
+# LOCALE on sra500v2 with checkpoint yxocdyka/9765 (DNABERT-2, no projection
+# head, edit-distance loss with max_len normalization, reference genomes with
+# hard negatives, 1 epoch / 6 M samples, as-trained identity 90.9/100/6.8,
+# trained on Biowulf; final checkpoint of the run).
+#
+# Protocol is the paper benchmark of perlmutter_locale_sra500v2.yaml
+# (8vqiabk9/5859) with only the checkpoint swapped: 256 bp windows at the
+# original stride (chunk_overlap 150 -> step 106), no end-aligned tail window,
+# no contig-length cutoff, exact top-100, both strands. Compare against
+# results/sra500/locale@8vqiabk9/exact/top100/.
+#
+#   salloc -A m5408_g -C gpu -q interactive -N 4 -t 4:00:00 \
+#          --ntasks-per-node=1 --gpus-per-node=4 -c 128
+#   cd benchmark && ./run_sra500.sh locale_yxocdyka
+model:
+  encoder:
+    name: locale
+    checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/yxocdyka/checkpoint9765.pth.tar
+    pooling: mean
+    max_seq_len: 256
+    chunk_overlap: 150
+    batch_size: 1000
+    device: cuda
+    both_strands: true
+  index:
+    engine: exact
+    top_k: 100
+  encoder_label: locale@yxocdyka
+  index_label: exact
+  search_label: top100
+
+dataset_name: sra500v2
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra500/bundle
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes/sra500
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results/sra500
+mutation_rate: 0.0

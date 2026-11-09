@@ -1,0 +1,18 @@
+# Metagraph k=19 (the best k of the 2026-11-07 k-sweep on sra500) searched
+# with the sra500 negative queries; companion of perlmutter_metagraph_sra500neg.yaml.
+# Reuses indexes/sra500/metagraph-k19/ (.done). Results pair with
+# results/sra500/metagraph-k19/ in calibrate_fpr.py.
+#   CONFIG=configs/sra500_negatives/perlmutter_metagraph_k19_sra500neg.yaml \
+#     sbatch slurm_scripts/perlmutter_sra500neg_metagraph.sbatch
+model:
+  name: metagraph
+  executable: shifter metagraph
+  k: 19
+  label: metagraph-k19
+  search_label: default
+
+dataset_name: sra500neg
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra500_negatives/bundle
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes/sra500
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results/sra500_negatives
+mutation_rate: 0.0
