@@ -36,6 +36,7 @@ class LOCALE(nn.Module):
         T: float = 0.07,
         use_projection_head: bool = False,
         backbone: str = DEFAULT_BACKBONE,
+        edit_distance_scale: bool = False,
     ):
         super().__init__()
         if pooling not in ["class", "mean", "max"]:
@@ -50,8 +51,19 @@ class LOCALE(nn.Module):
         self.T = T
         self.use_projection_head = use_projection_head
         self.backbone = backbone
+        self.edit_distance_scale = edit_distance_scale
 
         self.is_moco = K > 0
+
+        # Log of the scalar in the edit-distance loss's prediction
+        # exp(ed_log_scale) * (1 - cos) (lae/training/losses.py). It lives on
+        # the model only so DDP averages its gradient across ranks; encode()
+        # never reads it. init exp(.) = 0.5: cos 0 <-> normalized distance 0.5,
+        # about a random pair of DNA strings.
+        if edit_distance_scale:
+            self.ed_log_scale = nn.Parameter(torch.tensor(math.log(0.5)))
+        else:
+            self.ed_log_scale = None
 
         # 1. Load Encoders
         # Only the encoder varies across backbones; the pooling head below and
@@ -387,6 +399,29 @@ class LOCALE(nn.Module):
             outputs = embeddings
         return outputs
 
+    def embed_batch(
+        self,
+        query,
+        key,
+        neg_tokens: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+        """Unit-norm query, key and (optional) hard-negative embeddings from
+        the query encoder, with gradients, for losses computed outside the
+        model (lae/training/losses.py). Same encoder and head as the in-batch
+        InfoNCE path of forward(); no temperature, no gather."""
+        embs = []
+        for tokens in (query, key, neg_tokens):
+            if tokens is None:
+                embs.append(None)
+                continue
+            e = self._embed(
+                self.bert_q, self.projector_q, tokens.to(self.device), self.pooling
+            )
+            embs.append(nn.functional.normalize(e, dim=1))
+        q, k, n = embs
+        assert q is not None and k is not None
+        return q, k, n
+
     def forward(
         self,
         query,
@@ -398,7 +433,14 @@ class LOCALE(nn.Module):
         filter_aligned: bool = True,
         neg_tokens: torch.Tensor | None = None,
         neg_seqs: list[str] | None = None,
+        embed_only: bool = False,
     ):
+        # The edit-distance loss (lae/training/losses.py) only needs the
+        # embeddings; it is routed through forward so a DDP wrapper still
+        # hooks the iteration. queue_identity_cutoff is ignored.
+        if embed_only:
+            return self.embed_batch(query, key, neg_tokens)
+
         # Calculate Query Embedding
         q = self._embed(
             self.bert_q, self.projector_q, query.to(self.device), pooling=self.pooling

@@ -71,6 +71,11 @@ def locale_init_args(checkpoint: dict) -> dict:
             "use_projection_head",
             any(k.startswith("projector_q.") for k in state),
         ),
+        # Edit-distance-loss checkpoints carry one extra scalar (training only,
+        # never read by encode()) that a strict load must still expect.
+        "edit_distance_scale": model_args.get(
+            "edit_distance_scale", "ed_log_scale" in state
+        ),
     }
 
 

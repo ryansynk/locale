@@ -21,6 +21,8 @@ from lae.config import TrainConfig
 from lae.modeling.backbones import get_tokenizer
 from lae.modeling.model import LOCALE
 from lae.training.batcher import Batcher
+from lae.training.edit_distance import normalized_edit_distance
+from lae.training.losses import edit_distance_loss
 from lae.training.validation import fetch_bundle, run_benchmark_val
 from wandb import Run
 
@@ -88,6 +90,28 @@ def collate_w_hard_negatives(batch, tokenizer):
     return query_tokens, queries, key_tokens, keys, negative_tokens, negatives
 
 
+def collate_with_edit_distance(batch, tokenizer, with_negatives: bool, normalization):
+    """The matching collate above, plus the exact normalized edit distance of
+    every (query, key) pair, shape (b, b), and of every (query, hard negative)
+    pair, shape (b, b'), as float32 tensors. Computed here so the edlib work
+    lands in the dataloader workers, not the training process."""
+    if with_negatives:
+        out = collate_w_hard_negatives(batch, tokenizer)
+        queries, keys, negatives = out[1], out[3], out[5]
+    else:
+        out = collate(batch, tokenizer)
+        queries, keys, negatives = out[1], out[3], None
+    targets = {
+        "qk": torch.from_numpy(normalized_edit_distance(queries, keys, normalization)),
+        "qn": (
+            torch.from_numpy(normalized_edit_distance(queries, negatives, normalization))
+            if negatives is not None
+            else None
+        ),
+    }
+    return (*out, targets)
+
+
 def get_linear_warmup_with_hold_schedule(optimizer, num_warmup_steps, last_epoch=-1):
     def lr_lambda(current_step: int):
         if current_step < num_warmup_steps:
@@ -124,6 +148,7 @@ def train(
         T=cfg.moco_softmax_temp,
         use_projection_head=cfg.use_projection_head,
         backbone=cfg.backbone,
+        edit_distance_scale=cfg.loss == "edit_distance",
     )
     if cfg.moco_filter_queue:
         locale.set_kmer_k(cfg.moco_filter_queue_identity_cutoff)
@@ -137,6 +162,12 @@ def train(
     backbone_params = list(
         filter(lambda p: p.requires_grad, locale.bert_q.parameters())
     )
+    # The edit-distance scale is a single scalar; it gets the head LR.
+    extra_groups = []
+    if locale.ed_log_scale is not None:
+        extra_groups.append(
+            {"params": [locale.ed_log_scale], "lr": scaled_proj_lr, "name": "ed_scale"}
+        )
     if cfg.use_projection_head:
         assert locale.projector_q
         head_params = list(
@@ -152,6 +183,7 @@ def train(
                 },
                 # Heads need a higher learning rate to learn quickly (e.g., 1e-3 or cfg.lr)
                 {"params": head_params, "lr": scaled_proj_lr, "name": "head"},
+                *extra_groups,
             ]
         )
     else:
@@ -163,6 +195,7 @@ def train(
                     "lr": scaled_backbone_lr,
                     "name": "backbone",
                 },
+                *extra_groups,
             ]
         )
 
@@ -194,13 +227,22 @@ def train(
     # Tokenization is part of the backbone, not a fixed choice — this is the
     # axis the backbone swap is meant to vary.
     tokenizer = get_tokenizer(cfg.backbone)
-    hn_collater = partial(collate_w_hard_negatives, tokenizer=tokenizer)
-    collater = partial(collate, tokenizer=tokenizer)
+    if cfg.loss == "edit_distance":
+        collate_fn = partial(
+            collate_with_edit_distance,
+            tokenizer=tokenizer,
+            with_negatives=cfg.use_hard_negatives,
+            normalization=cfg.ed_normalization,
+        )
+    elif cfg.use_hard_negatives:
+        collate_fn = partial(collate_w_hard_negatives, tokenizer=tokenizer)
+    else:
+        collate_fn = partial(collate, tokenizer=tokenizer)
 
     dataloader = DataLoader(
         reader,
         batch_size=per_device_batch_size,
-        collate_fn=hn_collater if cfg.use_hard_negatives else collater,
+        collate_fn=collate_fn,
         sampler=sampler,
         drop_last=True,
         shuffle=False,
@@ -274,6 +316,7 @@ def train(
                         "T": cfg.moco_softmax_temp,
                         "use_projection_head": cfg.use_projection_head,
                         "backbone": cfg.backbone,
+                        "edit_distance_scale": cfg.loss == "edit_distance",
                     },
                 },
                 checkpoint_dir,
@@ -310,6 +353,9 @@ def train(
                 sampler.set_epoch(epoch)
             par_tqdm_write(f"Training epoch = {epoch + 1}/{num_epochs}")
             for batch in dataloader:
+                ed_targets = None
+                if cfg.loss == "edit_distance":
+                    *batch, ed_targets = batch
                 if cfg.use_hard_negatives:
                     q, query_seqs, k, key_seqs, neg_tokens, neg_seqs = batch
                 else:
@@ -319,18 +365,46 @@ def train(
                 q = q.to(local_rank)
                 k = k.to(local_rank)
                 optimizer.zero_grad()
-                logits, labels = ddp_locale(
-                    q,
-                    k,
-                    cfg.moco_filter_queue_identity_cutoff,
-                    is_distributed=is_distributed,
-                    query_seqs=query_seqs,
-                    key_seqs=key_seqs,
-                    filter_aligned=cfg.moco_filter_queue,
-                    neg_tokens=neg_tokens,
-                    neg_seqs=neg_seqs,
-                )
-                loss = F.cross_entropy(logits, labels)
+                loss_metrics = {}
+                if cfg.loss == "edit_distance":
+                    # Per-rank regression: every local (query, key) and
+                    # (query, hard negative) pair against its exact edit
+                    # distance. DDP still averages the gradients, so the step
+                    # sees the global batch; only the pair set is local.
+                    assert ed_targets is not None
+                    module = ddp_locale.module if is_distributed else ddp_locale
+                    # Through the wrapper's forward (not module.embed_batch),
+                    # so DDP's reducer sees this iteration.
+                    q_emb, k_emb, n_emb = ddp_locale(
+                        q, k, 0.0, neg_tokens=neg_tokens, embed_only=True
+                    )
+                    loss, pred, _, loss_metrics = edit_distance_loss(
+                        q_emb,
+                        k_emb,
+                        n_emb,
+                        ed_targets["qk"].to(local_rank),
+                        ed_targets["qn"].to(local_rank)
+                        if ed_targets["qn"] is not None
+                        else None,
+                        module.ed_log_scale,
+                    )
+                    # Retrieval-style accuracy over the local pairs: the
+                    # positive key should be the nearest by predicted distance.
+                    logits = -pred
+                    labels = torch.arange(q_emb.shape[0], device=pred.device)
+                else:
+                    logits, labels = ddp_locale(
+                        q,
+                        k,
+                        cfg.moco_filter_queue_identity_cutoff,
+                        is_distributed=is_distributed,
+                        query_seqs=query_seqs,
+                        key_seqs=key_seqs,
+                        filter_aligned=cfg.moco_filter_queue,
+                        neg_tokens=neg_tokens,
+                        neg_seqs=neg_seqs,
+                    )
+                    loss = F.cross_entropy(logits, labels)
                 loss.backward()
                 # Clip the global grad norm. The in-batch InfoNCE loss has a
                 # zero-gradient fixed point where every embedding is identical
@@ -355,6 +429,7 @@ def train(
                         "train/acc5": acc5[0],
                         "train/lr": lrs[0],
                         "train/samples_seen": global_step * global_batch_size,
+                        **loss_metrics,
                     }
                     if cfg.use_projection_head:
                         metrics["train/head_lr"] = lrs[1]

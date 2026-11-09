@@ -1,0 +1,126 @@
+# Edit-distance-loss arm of the paper recipe: configs/paper_biowulf_config_nohm.yaml
+# with the InfoNCE objective replaced by an exact edit-distance regression and
+# NOTHING else changed (data, crops, mutations, head, LRs, schedule, batch,
+# validation). The diff from that file is the "Objective" block below.
+#
+# loss: edit_distance (lae/training/edit_distance.py, lae/training/losses.py)
+#   For every local (query, key) and (query, hard negative) pair the model
+#   predicts exp(s) * (1 - cos) and is trained by MSE onto the pair's exact
+#   GLOBAL edit distance (edlib NW: the whole of both crops, overhanging ends
+#   included), divided by the longer crop (ed_normalization: max_len, so
+#   targets lie in [0, 1]). s is one learnable scalar, init log(0.5).
+#   Consequences vs the InfoNCE run:
+#     * negatives are the 64 keys + 64 hard negatives on the same rank (the
+#       loss needs a target for every scored pair and other ranks' strings are
+#       not here), not the 1024 global keys;
+#     * a short crop contained in a long one has a target >= (long - short) /
+#       long before mutation: measured on this recipe, a third of positives
+#       normalize above 0.45 while random pairs sit at ~0.54. Watch
+#       train/ed_pos_beyond_median_neg.
+#   moco_queue_size must be 0 (it is). No temperature is used.
+#
+# Launch (one 8 x H200 node, global batch 512, LRs sqrt-scaled by training.py):
+#   CONFIG=configs/paper_biowulf_config_nohm_edloss.yaml sbatch sweeps/biowulf_train.sbatch
+
+backbone: dnabert2
+seed: 0
+
+data_type: contig
+dataset_path: /data/synkrp/locale-data/locale_data/reference_genome_dataset.parquet
+
+augment_config:
+  # Cropping: containment only, crop lengths uniform in [31, 256], smaller crop
+  # covers >= 40% of the longer.
+  max_len: 256
+  max_seq_len: 256
+  min_seq_len: 31
+  min_overlap_percent: 0.4
+  containment_prob: 1.0
+  overlap_prob: 0.0
+
+  # Mutation injection.
+  #
+  # The run was launched with identity_mean 80 / identity_max 88 / stdev 6, but
+  # the April batcher drew Beta(a, b) and never multiplied by identity_max
+  # (fixed in c078c80, 2026-11-04). The realized per-pair identity was
+  # therefore Beta(a, b) itself: mean 80/88 = 0.909, stdev 6/88 = 0.068,
+  # max 1.0. Under the fixed code the same Beta is obtained by expressing
+  # those numbers as percentages of max = 100, which is what is set here:
+  # beta_parameters(90.909, 6.818, 100) == beta_parameters(80, 6, 88) and the
+  # scale factor is 1.0. This matches what 8vqiabk9 actually saw.
+  #
+  # To train the recipe the paper INTENDED (mean 0.80, max 0.88) instead, use:
+  #   identity_mean: 80.0
+  #   identity_max: 88.0
+  #   identity_stdev: 6.0
+  disable_mutations: false
+  identity_mean: 90.90909090909091
+  identity_max: 100.0
+  identity_stdev: 6.818181818181818
+  mutation_type_probs: [0.4, 0.3, 0.3]
+
+  # Not read in contig mode (kept so the saved config matches the April one).
+  alignment_threshold: 0.6
+  min_alignment_len: 149
+  max_alignment_ratio: 1.0
+  max_containment_ratio: 1.0
+  min_coverage: 0.1
+  min_read_len: 91
+  max_read_len: 150
+  insertion_rate: 0.005
+  deletion_rate: 0.005
+  substitution_rate: 0.02
+  average_insertion_length: 10
+  average_deletion_length: 10
+  substitution_matrix:
+    A: [0.0, 0.15, 0.77, 0.08]
+    C: [0.13, 0.0, 0.17, 0.7]
+    G: [0.7, 0.17, 0.0, 0.13]
+    T: [0.08, 0.78, 0.14, 0.0]
+
+# Objective: exact edit-distance regression (see header) over in-batch keys
+# plus one hard negative per query cropped from the same contig outside the
+# covered span (use_hard_negatives). The moco_* / hnm_* / smith_waterman_*
+# values are unread under this loss and kept only so the diff is one block.
+loss: edit_distance
+ed_normalization: max_len
+moco_queue_size: 0
+moco_softmax_temp: 0.05
+moco_momentum: 0.9995
+moco_filter_queue: true
+moco_filter_queue_identity_cutoff: 0.7
+use_hard_negatives: true
+hnm_num_negatives: 0
+smith_waterman_temperature: 0.1
+containment_only: false
+kl: false
+
+# Head: mean-pool, L2-normalize, no projection head.
+pooling: mean
+use_projection_head: false
+dim: 128
+
+# Optimizer / schedule.
+backbone_lr: 6.0e-05
+lr: 0.001
+grad_clip_norm: null
+schedule: cosine
+warmup_fraction: 0.08
+warmup_samples: null
+per_device_batch_size: 64
+reference_global_batch_size: 1024
+total_samples: 6000000
+num_epochs: 1
+
+checkpoint_dir: /data/synkrp/locale/checkpoints/
+checkpoint_interval_samples: 1000000
+starting_checkpoint_path: null
+log_dir: logs
+num_workers: 24
+sanity_test: false
+
+# In-training validation (new since April): sra50-sampled benchmark after every
+# checkpoint save, fetched from HF into <checkpoint_dir>/val_bundle.
+val_benchmark_repo: rsynk/locale-benchmark-sra50-sampled
+val_benchmark_config: benchmark/configs/val/sra50_sampled.yaml
+val_rates: [0.0, 0.05, 0.1]

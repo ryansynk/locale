@@ -139,4 +139,20 @@ class TrainConfig:
     )
     use_hard_negatives: bool = False
     reference_global_batch_size: int = 1024
+    # Objective. "infonce" is the paper loss (LOCALE.forward). "edit_distance"
+    # regresses exp(scale) * (1 - cos) of every local (query, key) and (query,
+    # hard negative) pair onto the pair's exact global edit distance (edlib
+    # NW, end windows included), normalized per ed_normalization; see
+    # lae/training/edit_distance.py and lae/training/losses.py. Negatives are
+    # then the per-rank batch only (the global keys have no strings on this
+    # rank), and the MoCo queue is unsupported.
+    loss: Literal["infonce", "edit_distance"] = "infonce"
+    ed_normalization: Literal["max_len", "sum_len", "none"] = "max_len"
     augment_config: AugmentConfig = field(default_factory=AugmentConfig)
+
+    def __post_init__(self):
+        if self.loss == "edit_distance" and self.moco_queue_size > 0:
+            raise ValueError(
+                "loss=edit_distance needs in-batch keys (moco_queue_size: 0); "
+                "the queue has no edit-distance targets."
+            )
