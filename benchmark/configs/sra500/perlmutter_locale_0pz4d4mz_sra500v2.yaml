@@ -1,0 +1,40 @@
+# LOCALE on sra500v2 with checkpoint 0pz4d4mz/11718 (DNABERT-2, no projection
+# head, InfoNCE, trained on the Logan train_contigs set rather than reference
+# genomes, no hard negatives, 1 epoch / 6 M samples at global batch 512,
+# as-trained identity 90.9/100/6.8, augmenter max_len 1024, trained on
+# Biowulf; final checkpoint of the run).
+#
+# Protocol is the paper benchmark of perlmutter_locale_sra500v2.yaml
+# (8vqiabk9/5859) with only the checkpoint swapped: 256 bp windows at the
+# original stride (chunk_overlap 150 -> step 106), no end-aligned tail window,
+# no contig-length cutoff, exact top-100, both strands. project is left off
+# because the checkpoint has no projector (use_projection_head: false), so the
+# index holds 768-d pooled vectors. Compare against
+# results/sra500/locale@8vqiabk9/exact/top100/ and
+# results/sra500/locale@yxocdyka/exact/top100/ (same protocol).
+#
+#   salloc -A m5408_g -C gpu -q interactive -N 4 -t 4:00:00 \
+#          --ntasks-per-node=1 --gpus-per-node=4 -c 128
+#   cd benchmark && ./run_sra500.sh locale_0pz4d4mz
+model:
+  encoder:
+    name: locale
+    checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/0pz4d4mz/checkpoint11718.pth.tar
+    pooling: mean
+    max_seq_len: 256
+    chunk_overlap: 150
+    batch_size: 1000
+    device: cuda
+    both_strands: true
+  index:
+    engine: exact
+    top_k: 100
+  encoder_label: locale@0pz4d4mz
+  index_label: exact
+  search_label: top100
+
+dataset_name: sra500v2
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra500/bundle
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes/sra500
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results/sra500
+mutation_rate: 0.0
