@@ -15,10 +15,11 @@ from pathlib import Path
 import torch
 from huggingface_hub import hf_hub_download
 from torch import nn
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoModel, AutoTokenizer, BertConfig
 from transformers.utils import logging as transformers_logging
 
 from lae.modeling.backbones import DEFAULT_BACKBONE, get_tokenizer
+from lae.modeling.bert_layers import BertModel as DNABertModel
 from lae.modeling.model import LOCALE
 from lae.utils.patch import patch_with_flash_lib
 
@@ -43,6 +44,8 @@ class DenseEncoder:
             self._encoder = DNA2VecEncoder(cfg)
         elif cfg.name == "llmed":
             self._encoder = LLMEDEncoder(cfg)
+        elif cfg.name in DNABERT_REPOS:
+            self._encoder = DNABERTEncoder(cfg)
         else:
             raise ValueError(f"Unknown model name: {cfg.name}")
 
@@ -214,6 +217,88 @@ class LLMEDEncoder:
         patch_with_flash_lib(model)
         self.model = model
         self.model = self.model.eval().to(device)
+
+        self.batch_size = cfg.batch_size
+        self.device = device
+        self.pooling = cfg.pooling
+        assert self.tokenizer.vocab_size == self.model.config.vocab_size
+
+    @torch.no_grad()
+    def encode(self, sequences):
+        embeds_list = []
+        assert self.tokenizer
+        for batch in batched(sequences, self.batch_size):
+            tokens = self.tokenizer(batch, return_tensors="pt", padding=True).to(
+                self.device
+            )
+            outputs = self.model(**tokens)[0]
+
+            mask = tokens.attention_mask.unsqueeze(-1)
+            if self.pooling == "class":
+                embeddings = outputs[:, 0, :]
+            elif self.pooling == "mean":
+                embeddings = (outputs * mask).sum(dim=1) / mask.sum(dim=1)
+            elif self.pooling == "max":
+                mask_expanded = mask.expand(outputs.size())
+                outputs = outputs.clone()  # Prevent in-place modification warnings
+                outputs[mask_expanded == 0] = -1e9
+                embeddings, _ = outputs.max(dim=1)
+            else:
+                raise ValueError(f"self.pooling got unexpected value {self.pooling}")
+
+            batch_embeds = nn.functional.normalize(embeddings, dim=1)
+            embeds_list.append(batch_embeds)
+
+        embeddings = torch.cat(embeds_list, dim=0)
+        return embeddings
+
+
+# Pretrained DNABERT-2-architecture encoders run untrained as baselines, keyed
+# by EncoderConfig.name. DNABERT-S (Zhou et al. 2024, arXiv 2402.08777) is
+# DNABERT-2 fine-tuned with same-species contrastive pairs for species
+# clustering / metagenomic binning; its config, BPE vocab and merges are
+# identical to DNABERT-2's (checked 2026-11-09), only the weights differ.
+# "dnabert2" is the raw pretrained base, the control that isolates what the
+# DNABERT-S fine-tune adds.
+DNABERT_REPOS: dict[str, str] = {
+    "dnaberts": "zhihan1996/DNABERT-S",
+    "dnabert2": "zhihan1996/DNABERT-2-117M",
+}
+
+
+class DNABERTEncoder:
+    """Mean-pooled last hidden state of a pretrained DNABERT-2-family model,
+    the embedding recipe of the DNABERT-S model card (which mean-pools a
+    single unpadded sequence; here the mean is attention-mask weighted so
+    padding never enters it, exactly as the other encoders).
+
+    The weights are loaded into the repo's vendored copy of the DNABERT-2
+    modeling code (lae/modeling/bert_layers.py) rather than the HF remote
+    code: the remote code pins transformers 4.27 and a triton flash-attention
+    kernel that the DNABERT-S README says to uninstall, while the local class
+    loads the DNABERT-S checkpoint with no missing or unexpected keys and
+    takes the same flash-attn patch as the LOCALE backbone. The numerics are
+    therefore the same fp16 flash path as every other DNABERT-2 row."""
+
+    def __init__(self, cfg: EncoderConfig):
+        transformers_logging.set_verbosity_error()
+
+        device = cfg.device
+        assert cfg.name in DNABERT_REPOS
+        repo = DNABERT_REPOS[cfg.name]
+        self.tokenizer = AutoTokenizer.from_pretrained(repo, trust_remote_code=True)
+        config = BertConfig.from_pretrained(repo)
+        # DNABERT-2's config has no pad_token_id and DNABERT-S's says 0, but
+        # the tokenizer pads with 3 ([PAD]). Only the embedding's padding_idx
+        # reads it, which is inert at inference; set it for consistency with
+        # lae.modeling.backbones.build_backbone.
+        config.pad_token_id = self.tokenizer.pad_token_id
+        model = DNABertModel.from_pretrained(repo, config=config)
+        if getattr(model, "pooler", None) is not None:
+            del model.pooler
+            model.pooler = None
+        patch_with_flash_lib(model)
+        self.model = model.eval().to(device)
 
         self.batch_size = cfg.batch_size
         self.device = device

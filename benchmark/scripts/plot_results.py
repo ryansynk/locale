@@ -32,6 +32,8 @@ TITLE_NAMES = {
     "esa": "ESA",
     "mmseqs": "MMseqs2",
     "llmed": "LLM-ED",
+    "dnaberts": "DNABERT-S",
+    "dnabert2": "DNABERT-2",
     "locale": "LOCALE",
     "metagraph": "MetaGraph",
     "dna2vec": "ESA",

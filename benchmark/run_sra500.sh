@@ -13,11 +13,12 @@
 # without it that method is skipped, the rest still run.
 #
 #   ./run_sra500.sh                     # locale esa llmed metagraph, all rates
+#   ./run_sra500.sh dnaberts dnabert2   # DNABERT-S and its raw base
 #   ./run_sra500.sh locale              # one method, all rates
 #   ./run_sra500.sh locale llmed        # a subset
 #   RATES="0.0" ./run_sra500.sh esa     # index build + clean-query eval only
 #
-# Dense methods (locale, esa, llmed) run as one process per node across the
+# Dense methods (locale, esa, llmed, dnaberts, dnabert2) run as one process per node across the
 # whole allocation: run_benchmark.py gets --shard / --num_shards from SLURM_NODEID / SLURM_NNODES, builds
 # one index shard per node, rank 0 merges, then every node scans its range of
 # vector rows and rank 0 merges the hits. metagraph is a single-node method
@@ -116,7 +117,7 @@ failed=()
 for method in "${METHODS[@]}"; do
     cfg="configs/sra500/perlmutter_${method}_sra500v2.yaml"
     if [ ! -f "$cfg" ]; then
-        echo "[skip] no config $cfg (methods: locale esa llmed metagraph)"
+        echo "[skip] no config $cfg (methods: locale esa llmed dnaberts dnabert2 metagraph)"
         skipped+=("$method (no config)")
         continue
     fi

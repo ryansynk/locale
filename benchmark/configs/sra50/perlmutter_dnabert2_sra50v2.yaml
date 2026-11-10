@@ -1,0 +1,35 @@
+# Raw pretrained DNABERT-2 (zhihan1996/DNABERT-2-117M, downloaded by the
+# encoder), the base of both DNABERT-S and the LOCALE paper checkpoint, run
+# untrained on sra50v2: the control for what each fine-tune adds.
+# Same protocol as the LLM-ED and paper LOCALE configs: 256 bp windows at
+# the original stride (chunk_overlap 150 -> step 106), no end window, no
+# contig-length cutoff, mean-pooled 768-d, exact top-100, both strands.
+# Compare against results/sra50/llmed/exact/top100/ and
+# results/sra50/locale@8vqiabk9/exact/top100/.
+#
+#   salloc -A m5408_g -C gpu -q interactive -N 1 -t 1:00:00 \
+#          --ntasks-per-node=1 --gpus-per-node=4 -c 128
+#   cd benchmark && srun --ntasks-per-node=1 --gpus-per-node=4 -c 128 \
+#       uv run python scripts/run_benchmark.py --config configs/sra50/perlmutter_dnabert2_sra50v2.yaml --num_shards 1
+model:
+  encoder:
+    name: dnabert2
+    checkpoint_path: null
+    pooling: mean
+    max_seq_len: 256
+    chunk_overlap: 150
+    batch_size: 1000
+    device: cuda
+    both_strands: true
+  index:
+    engine: exact
+    top_k: 100
+  encoder_label: dnabert2
+  index_label: exact
+  search_label: top100
+
+dataset_name: sra50v2
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra50/bundle
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes/sra50
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results/sra50
+mutation_rate: 0.0

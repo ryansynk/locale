@@ -74,7 +74,7 @@ class EncoderConfig:
     not change the vectors (both_strands is a query-time choice and lives in
     the search identity instead)."""
 
-    name: Literal["locale", "dna2vec", "llmed"]
+    name: Literal["locale", "dna2vec", "llmed", "dnaberts", "dnabert2"]
     checkpoint_path: str | None = None  # locale only; None = PAPER_CHECKPOINT
     pooling: str = "mean"
     max_seq_len: int = 256
@@ -110,9 +110,10 @@ class EncoderConfig:
     device: str = "cuda"
 
     def __post_init__(self):
-        if self.name not in ("locale", "dna2vec", "llmed"):
+        if self.name not in ("locale", "dna2vec", "llmed", "dnaberts", "dnabert2"):
             raise ValueError(
-                f"name expected: locale, dna2vec, or llmed. Got = {self.name}"
+                "name expected: locale, dna2vec, llmed, dnaberts, or dnabert2. "
+                f"Got = {self.name}"
             )
         if self.chunk_overlap >= self.max_seq_len:
             raise ValueError("chunk_overlap must be strictly less than max_seq_len")
