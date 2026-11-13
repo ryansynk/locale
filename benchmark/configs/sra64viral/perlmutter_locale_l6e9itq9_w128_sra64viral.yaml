@@ -1,0 +1,46 @@
+# LOCALE l6e9itq9/21380 (5-epoch Badread-fixed run, projection head) on
+# sra64viral-v2 with the windowing of
+# configs/sra500/perlmutter_locale_l6e9itq9_w128_sra500v2.yaml: 128 bp windows
+# at stride 64, end window at tail > 30 bp. Exact top-100 regroup, both
+# strands.
+#
+# Unlike the sra500 config there is no contig-length cutoff (min_seq_len):
+# the HBV runs assemble into short fragments, and 31 of the 500 queries have
+# relevant contigs only under 100 bp, which a 100 bp cutoff would remove from
+# the index.
+model:
+  encoder:
+    name: locale
+    checkpoint_path: /pscratch/sd/r/rsynk/locale/checkpoints/l6e9itq9/checkpoint21380.pth.tar
+    pooling: mean
+    max_seq_len: 128
+    chunk_overlap: 64
+    end_window_min_tail_bp: 30
+    project: true
+    batch_size: 1000
+    device: cuda
+    both_strands: true
+  index:
+    engine: exact
+    top_k: 100
+  encoder_label: locale@l6e9itq9-proj-w128s64-endwin30
+  index_label: exact
+  search_label: top100
+
+# Local bundle (locale-data, built 2026-11-09): 64 accessions (sra50 + 5 HBV
+# genotype B + 5 genotype A + 4 genotype C), 500 raw-read queries from 10 HBV
+# genotype-D runs (not indexed), each confirmed HBV against a 4-genome
+# reference panel. Relevance is alignment-defined as in sra50/sra500 (minimap2
+# identity > 0.9 against the indexed Logan contigs), so Rq varies per query
+# and contig ids / intervals / strand are real. Per-rate query files
+# queries_mut0.00/0.05/0.10.parquet. logan_accessions/ is a per-accession
+# directory of symlinks into ../work/logan_contigs.
+#
+# The clean queries are the protocol: the divergence under test is the real
+# genotype-D-vs-A/B/C difference (best-hit identity 0.90-1.00, median 0.95).
+# The mut0.05 / mut0.10 files stack synthetic noise on top of it.
+dataset_name: sra64viral-v2
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra64viral-v2/bundle
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes/sra64viral
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results/sra64viral
+mutation_rate: 0.0
