@@ -1,0 +1,33 @@
+# sra500-index variant of configs/sra64viral/perlmutter_esa_sra64viral.yaml
+# Embed-Search-Align (dna2vec, "ESA") on sra64viral-v2. Keeps pooling: max as
+# in the published method (LOCALE uses mean). Exact top-100 regroup, both
+# strands.
+model:
+  encoder:
+    name: dna2vec
+    checkpoint_path: null
+    pooling: max
+    max_seq_len: 256
+    chunk_overlap: 150
+    batch_size: 1000
+    device: cuda
+    both_strands: true
+  index:
+    engine: exact
+    top_k: 100
+  encoder_label: esa
+  index_label: exact
+  search_label: top100
+
+
+# The sra64viral-v2 queries searched against the EXISTING sra500 index (search
+# only, nothing is built): index_dir is indexes/sra500 and the bundle's
+# accs.txt is sra500's. scripts/merge_index_results.py unions these results
+# with results/sra64viral (the same queries against the 64-run index), which
+# is exactly a search over one index holding both sets: sra500 as distractors
+# plus the 14 HBV runs. Run: INDEX=sra500 ./run_sra64viral.sh
+dataset_name: sra64viral-v2-sra500idx
+dataset_dir: /pscratch/sd/r/rsynk/locale-data/constructed/sra64viral-v2/bundle_sra500idx
+index_dir: /pscratch/sd/r/rsynk/locale/benchmark/indexes/sra500
+results_dir: /pscratch/sd/r/rsynk/locale/benchmark/results/sra64viral_sra500idx
+mutation_rate: 0.0
