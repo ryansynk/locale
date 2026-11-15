@@ -1,0 +1,231 @@
+#!/usr/bin/env bash
+#
+# Search every coverage/crop condition bundle against existing sra500 indexes,
+# one srun step per (index, condition, rate), from inside a GPU allocation:
+#
+#   salloc -A m5408_g -C gpu -q interactive -N 4 -t 4:00:00 \
+#          --ntasks-per-node=1 --gpus-per-node=4 -c 128 \
+#          --image=ghcr.io/ratschlab/metagraph:master     # only for INDEXES=metagraph
+#   cd /pscratch/sd/r/rsynk/locale/experiments/coverage_crop && ./run.sh
+#
+#   ./run.sh                                        # all conditions, rate 0, l6e9itq9_w128
+#   CONDITIONS="cov0.40 crop100" ./run.sh           # a subset
+#   RATES="0.0 0.1" INDEXES="l6e9itq9_w128 pc6t1x8j_w128 pc6t1x8j" ./run.sh
+#   INDEXES="l6e9itq9_w128 8vqiabk9 metagraph mmseqs" RATES="0.0 0.05 0.1" ./run.sh  # the full rebuttal grid
+#   DRY=1 ./run.sh                                  # print the steps, run nothing
+#
+# INDEXES names the sra500 template configs
+# benchmark/configs/sra500/perlmutter_locale_<index>_sra500v2.yaml, plus the
+# aliases 8vqiabk9 (the paper checkpoint's 256 bp index, from the un-keyed
+# perlmutter_locale_sra500v2.yaml), metagraph (k=31, single node, needs the
+# shifter image on the allocation), mmseqs (MMseqs2, single node), llmed and
+# esa (dense baselines, multi-node like locale); the
+# index must already be built (its .done marker is checked; nothing is built
+# here).
+# Condition bundles are built by locale-data/benchmark/build_coverage_crop_queries.py
+# into locale-data/constructed/sra500_coverage_crop/bundles/<cond>/ (gitignored
+# there, like every constructed set); select_summary.txt here is a copy of
+# that build's selection summary. Per (index, condition) a config is generated
+# into configs/<index>/<cond>.yaml from the template with dataset_dir ->
+# <bundles>/<cond> and results_dir -> results/<cond>. The separate results_dir per condition matters: the hits
+# cache is keyed by query_id, which every condition shares, so conditions in
+# one results_dir would silently reuse each other's hits.
+#
+# Rates above 0 need <bundles>/<cond>/queries_mut<rate>.parquet from the mutate
+# stage; conditions without it are skipped at that rate.
+#
+# Dense searches run one process per node across the allocation (each node
+# scans its range of index rows, rank 0 merges), exactly as run_sra500.sh does.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BENCH=/pscratch/sd/r/rsynk/locale/benchmark
+BUNDLES=/pscratch/sd/r/rsynk/locale-data/constructed/sra500_coverage_crop/bundles  # built by locale-data/benchmark/build_coverage_crop_queries.py
+CONFIGS="$HERE/configs"
+RESULTS="$HERE/results"
+DRY="${DRY:-0}"
+
+if [ -z "${SLURM_JOB_ID:-}" ] && [ "$DRY" != 1 ]; then
+    echo "Not inside a Slurm allocation; run salloc first (or DRY=1)." >&2
+    exit 1
+fi
+
+read -r -a INDEX_LIST <<<"${INDEXES:-l6e9itq9_w128}"
+read -r -a RATE_LIST <<<"${RATES:-0.0}"
+if [ -n "${CONDITIONS:-}" ]; then
+    read -r -a COND_LIST <<<"$CONDITIONS"
+else
+    COND_LIST=()
+    for d in "$BUNDLES"/*/; do
+        [ -f "$d/queries.parquet" ] && COND_LIST+=("$(basename "$d")")
+    done
+fi
+GPUS_PER_NODE="${GPUS_PER_NODE:-4}"
+CPUS_PER_TASK="${CPUS_PER_TASK:-128}"
+
+export PYTHONUNBUFFERED=1
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+cd "$BENCH"
+
+# ---- helpers ------------------------------------------------------------------
+yaml_value() {  # yaml_value FILE KEY  -> value of a top-level or 2-space-indented "key: value"
+    grep -E "^ *$2:" "$1" | head -1 | sed -E "s/^ *$2:[[:space:]]*//; s/[[:space:]]+#.*$//"
+}
+
+make_config() {  # make_config INDEX COND -> path of the generated yaml (on stdout)
+    local index="$1" cond="$2"
+    local template
+    case "$index" in
+        # The paper checkpoint's 256 bp index (locale@8vqiabk9) comes from the
+        # un-keyed original config.
+        8vqiabk9) template="$BENCH/configs/sra500/perlmutter_locale_sra500v2.yaml" ;;
+        # MetaGraph k=31 (the paper baseline); k15/k19/k23 variants are not
+        # templated here.
+        metagraph) template="$BENCH/configs/sra500/perlmutter_metagraph_sra500v2.yaml" ;;
+        # MMseqs2 (single database, max_seqs 300), single node, no image needed.
+        mmseqs) template="$BENCH/configs/sra500/perlmutter_mmseqs2_sra500v2.yaml" ;;
+        # Dense baselines (multi-node like locale; their indexes are built).
+        llmed) template="$BENCH/configs/sra500/perlmutter_llmed_sra500v2.yaml" ;;
+        esa) template="$BENCH/configs/sra500/perlmutter_esa_sra500v2.yaml" ;;
+        *) template="$BENCH/configs/sra500/perlmutter_locale_${index}_sra500v2.yaml" ;;
+    esac
+    [ -f "$template" ] || { echo "no template $template" >&2; return 1; }
+    for key in dataset_name dataset_dir results_dir; do
+        grep -qE "^$key:" "$template" || { echo "$template has no top-level $key" >&2; return 1; }
+    done
+    local out="$CONFIGS/$index/$cond.yaml"
+    mkdir -p "$(dirname "$out")"
+    {
+        echo "# Generated by experiments/coverage_crop/run.sh from $(basename "$template"):"
+        echo "# condition $cond searched against the shared sra500 index."
+        sed -E \
+            -e "s#^dataset_name:.*#dataset_name: sra500v2-$cond#" \
+            -e "s#^dataset_dir:.*#dataset_dir: $BUNDLES/$cond#" \
+            -e "s#^results_dir:.*#results_dir: $RESULTS/$cond#" \
+            "$template"
+    } >"$out"
+    echo "$out"
+}
+
+is_dense() {  # is_dense CONFIG -> 0 for encoder+index methods (model.encoder_label present)
+    grep -qE "^ *encoder_label:" "$1"
+}
+
+index_label_dir() {  # index_label_dir CONFIG -> <index_dir>/<encoder_label or label>
+    local cfg="$1" label
+    if is_dense "$cfg"; then label="$(yaml_value "$cfg" encoder_label)"; else label="$(yaml_value "$cfg" label)"; fi
+    echo "$(yaml_value "$cfg" index_dir)/$label"
+}
+
+has_shifter_image() {  # 0 when this allocation was started with --image=...
+    [ -n "${SHIFTER_IMAGEREQUEST:-}" ] && return 0
+    [ -n "${SLURM_JOB_ID:-}" ] && scontrol show job "$SLURM_JOB_ID" 2>/dev/null | grep -q shifterImage
+}
+
+index_built() {  # index_built CONFIG -> 0 when the index's .done marker exists
+    [ -f "$(index_label_dir "$1")/.done" ]
+}
+
+results_subdir() {  # results_subdir CONFIG -> path under results/<cond>/ the run writes to
+    local cfg="$1"
+    if is_dense "$cfg"; then
+        echo "$(yaml_value "$cfg" encoder_label)/$(yaml_value "$cfg" index_label)/$(yaml_value "$cfg" search_label)"
+    else
+        echo "$(yaml_value "$cfg" label)/$(yaml_value "$cfg" search_label)"
+    fi
+}
+
+run_step() {  # run_step CONFIG RATE
+    local cfg="$1" rate="$2"
+    if is_dense "$cfg"; then
+        if [ "$DRY" = 1 ]; then
+            echo "  [dry] srun (all nodes) run_benchmark.py --config $cfg --mutation_rate $rate"
+            return 0
+        fi
+        srun --unbuffered --ntasks-per-node=1 \
+            --gpus-per-node="$GPUS_PER_NODE" --cpus-per-task="$CPUS_PER_TASK" \
+            bash -c 'exec "$@" --shard "$SLURM_NODEID" --num_shards "$SLURM_NNODES"' _ \
+            uv run python scripts/run_benchmark.py --config "$cfg" --mutation_rate "$rate"
+    else
+        # Single-node method (metagraph: shifter image, one server_query);
+        # told it is alone so it neither shards nor waits for peers.
+        if [ "$DRY" = 1 ]; then
+            echo "  [dry] srun -N1 -n1 run_benchmark.py --config $cfg --mutation_rate $rate --num_shards 1"
+            return 0
+        fi
+        srun --unbuffered -N1 -n1 --cpus-per-task="$CPUS_PER_TASK" \
+            uv run python scripts/run_benchmark.py --config "$cfg" --mutation_rate "$rate" --num_shards 1
+    fi
+}
+
+# ---- main loop ------------------------------------------------------------------
+echo "indexes: ${INDEX_LIST[*]} | conditions: ${COND_LIST[*]} | rates: ${RATE_LIST[*]} | nodes=${SLURM_JOB_NUM_NODES:-?}"
+skipped=()
+failed=()
+done_steps=()
+for index in "${INDEX_LIST[@]}"; do
+    for cond in "${COND_LIST[@]}"; do
+        if [ ! -f "$BUNDLES/$cond/queries.parquet" ]; then
+            echo "[skip] $cond: no bundle at $BUNDLES/$cond"
+            skipped+=("$cond (no bundle)")
+            continue
+        fi
+        if ! cfg="$(make_config "$index" "$cond")"; then
+            skipped+=("$index (no template)")
+            break
+        fi
+        if ! index_built "$cfg"; then
+            echo "[skip] $index: index not built ($(index_label_dir "$cfg")/.done missing)"
+            skipped+=("$index (index not built)")
+            break
+        fi
+        # shifter exits 0 even with no image, so test the allocation's image request.
+        # salloc puts SHIFTER_IMAGEREQUEST only in srun task environments, not the
+        # interactive shell, so fall back to the job record.
+        if [ "$index" = metagraph ] && [ "$DRY" != 1 ] && ! has_shifter_image; then
+            echo "[skip] metagraph: allocation has no shifter image; add --image=ghcr.io/ratschlab/metagraph:master to salloc"
+            skipped+=("metagraph (no image)")
+            break
+        fi
+        for rate in "${RATE_LIST[@]}"; do
+            qfile="$BUNDLES/$cond/$(printf 'queries_mut%.2f.parquet' "$rate")"
+            if [ ! -f "$qfile" ]; then
+                echo "[skip] $cond @ $rate: no $(basename "$qfile") (run the mutate stage)"
+                skipped+=("$cond @ $rate (not mutated)")
+                continue
+            fi
+            echo "=== $index / $cond @ mutation_rate $rate  ($(date)) ==="
+            if run_step "$cfg" "$rate"; then
+                done_steps+=("$index/$cond@$rate")
+            else
+                echo "[FAIL] $index / $cond @ $rate" >&2
+                failed+=("$index/$cond@$rate")
+            fi
+        done
+    done
+done
+
+# ---- quick summary: accession recall at the search's top-k, per step --------------
+if [ "$DRY" != 1 ] && [ ${#done_steps[@]} -gt 0 ]; then
+    echo
+    echo "=== recall of relevant accessions within the top-k hits (score_recall.py; full tables: report stage) ==="
+    for index in "${INDEX_LIST[@]}"; do
+        for cond in "${COND_LIST[@]}"; do
+            cfg="$CONFIGS/$index/$cond.yaml"
+            [ -f "$cfg" ] || continue
+            rdir="$RESULTS/$cond/$(results_subdir "$cfg")"
+            [ -d "$rdir" ] || continue
+            printf '%-16s %-14s ' "$index" "$cond"
+            uv run python scripts/score_recall.py --results_dir "$rdir" --queries "$BUNDLES/$cond/queries.parquet" || echo "(scoring failed)"
+        done
+    done
+fi
+
+echo
+[ ${#skipped[@]} -gt 0 ] && echo "Skipped: ${skipped[*]}"
+if [ ${#failed[@]} -gt 0 ]; then
+    echo "Failed: ${failed[*]}" >&2
+    exit 1
+fi
+echo "Finished ${#done_steps[@]} steps."

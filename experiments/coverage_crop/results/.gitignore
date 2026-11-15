@@ -1,0 +1,7 @@
+# Per-condition result parquets (results/<cond>/<method>/...) are the data; they are
+# regenerable from the bundles and sra500 indexes via ../run.sh and are not tracked.
+# parse_metrics.py rebuilds metrics_all.csv from them.
+*
+!.gitignore
+!parse_metrics.py
+!metrics_all.csv

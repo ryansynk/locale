@@ -1,0 +1,3 @@
+# Per-(index, condition) configs are regenerated from the sra500 templates on every run.sh invocation.
+configs/
+!select_summary.txt
